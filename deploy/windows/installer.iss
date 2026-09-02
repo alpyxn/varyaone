@@ -79,7 +79,7 @@ Source: "{#SourcePath}panelicon.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; Onkosullar (fetch-tools.ps1 indirir). VC++ calisma zamani olmadan gomulu
 ; PostgreSQL initdb 0xC0000135 verir; WebView2 olmadan kontrol paneli acilmaz.
 Source: "{#SourcePath}vc_redist.x64.exe";               Flags: dontcopy
-Source: "{#SourcePath}MicrosoftEdgeWebview2Setup.exe";  Flags: dontcopy
+Source: "{#SourcePath}MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; Flags: dontcopy
 
 [Icons]
 ; Masaustunde iki ayri kisayol: uygulama ve kontrol paneli (ayni exe, farkli ikon).
@@ -92,21 +92,52 @@ Name: "{group}\Varya One Kaldir";           Filename: "{uninstallexe}"
 Name: "{commonstartup}\Varya Kontrol Paneli"; Filename: "{app}\{#ClientExe}"; Parameters: "--tray"; IconFilename: "{app}\panelicon.ico"; Tasks: autostartpanel
 
 [Code]
+var
+  PrerequisiteRestartRequired: Boolean;
+
 // Upgrade/reinstall: stop the existing service before [Files] tries to replace
 // varyaone.exe. Windows keeps a running service executable locked; doing this in
 // [Run] is too late because [Run] starts only after all files are copied.
+function ServiceStoppedOrMissing(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  // First distinguish a missing service from a registered one. Then let
+  // findstr turn the textual SCM state into a useful process exit code.
+  if not Exec(ExpandConstant('{sys}\sc.exe'), 'query VaryaOne', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) then
+  begin
+    Result := False;
+    exit;
+  end;
+  if ResultCode <> 0 then
+  begin
+    Result := True;
+    exit;
+  end;
+  Result := Exec(ExpandConstant('{cmd}'),
+    '/C "sc.exe query VaryaOne | findstr STOPPED >nul"', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
-  ExistingExe: String;
+  I: Integer;
 begin
   Result := '';
-  ExistingExe := ExpandConstant('{app}\{#MyExeName}');
-  if FileExists(ExistingExe) then
+  // Never execute the old installed helper here: older builds used a service
+  // library whose stop waiter could hang forever. sc.exe only submits the stop
+  // request; the bounded loop below verifies the real SCM state.
+  Exec(ExpandConstant('{sys}\sc.exe'), 'stop VaryaOne', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  for I := 1 to 100 do
   begin
-    Exec(ExistingExe, 'service stop', '', SW_HIDE, ewWaitUntilTerminated,
-      ResultCode);
+    if ServiceStoppedOrMissing() then
+      exit;
+    Sleep(250);
   end;
+  Result := 'Varya One servisi 25 saniye içinde durmadı. Kurulum dosyaları güvenle değiştirilemedi; bilgisayarı yeniden başlatıp kurulumu tekrar deneyin.';
 end;
 
 procedure ExecAppRequired(Params: String; StatusText: String);
@@ -122,35 +153,88 @@ begin
     RaiseException(Format('%s %s başarısız oldu (çıkış kodu %d).', [AppExe, Params, ResultCode]));
 end;
 
-// Gomulu PostgreSQL, MSVC calisma zamanina baglidir. Servis kaydindan ONCE,
-// sessizce kur. Cikis kodu yok sayilir: 0 = tamam, 1638 = daha yeni surum zaten
-// var, 3010 = tamam (yeniden baslatma sonra).
-procedure CurStepChanged(CurStep: TSetupStep);
+procedure ExecPrerequisiteRequired(FileName: String; Params: String; DisplayName: String);
 var
   ResultCode: Integer;
+begin
+  WizardForm.StatusLabel.Caption := DisplayName + ' kuruluyor...';
+  if not Exec(FileName, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    RaiseException(Format('%s başlatılamadı.', [DisplayName]));
+  // 1638: daha yeni sürüm zaten kurulu; 3010: başarılı, yeniden başlatma önerilir.
+  if (ResultCode <> 0) and (ResultCode <> 1638) and (ResultCode <> 3010) then
+    RaiseException(Format('%s kurulamadı (çıkış kodu %d).', [DisplayName, ResultCode]));
+  if ResultCode = 3010 then
+    PrerequisiteRestartRequired := True;
+end;
+
+function WebView2Installed(): Boolean;
+var
+  Version: String;
+  RuntimeKey: String;
+begin
+  // Microsoft'un belgelenmiş Evergreen Runtime algılama anahtarı. 64 bit
+  // Windows'ta makine kaydı 32 bit registry görünümündedir; kullanıcı kaydı
+  // doğrudan HKCU altındadır.
+  RuntimeKey := 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  Version := '';
+  if RegQueryStringValue(HKLM32, RuntimeKey, 'pv', Version) and
+    (Version <> '') and (Version <> '0.0.0.0') then
+  begin
+    Result := True;
+    exit;
+  end;
+  Version := '';
+  Result := RegQueryStringValue(HKCU, RuntimeKey, 'pv', Version) and
+    (Version <> '') and (Version <> '0.0.0.0');
+end;
+
+procedure InstallWebView2Required();
+var
+  I: Integer;
+begin
+  if WebView2Installed() then
+    exit;
+  ExecPrerequisiteRequired(
+    ExpandConstant('{tmp}\MicrosoftEdgeWebView2RuntimeInstallerX64.exe'),
+    '/silent /install', 'Microsoft Edge WebView2 çalışma zamanı');
+  // Bazı Evergreen sürümleri asıl updater alt süreci bitmeden 0 ile dönebiliyor.
+  // Paneli hemen açıp yarışmamak için belgelenmiş registry kaydını bekle.
+  for I := 1 to 240 do
+  begin
+    if WebView2Installed() then
+      exit;
+    Sleep(250);
+  end;
+  RaiseException('Microsoft Edge WebView2 çalışma zamanı 60 saniye içinde hazır olmadı.');
+end;
+
+function NeedRestart(): Boolean;
+begin
+  Result := PrerequisiteRestartRequired;
+end;
+
+// Gömülü PostgreSQL MSVC çalışma zamanına bağlıdır. Önkoşulları servis
+// kaydından önce doğrula; hata çıkışlarını kurulum başarısı gibi gösterme.
+procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
     ExtractTemporaryFile('vc_redist.x64.exe');
-    Exec(ExpandConstant('{tmp}\vc_redist.x64.exe'), '/install /quiet /norestart',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    ExecPrerequisiteRequired(ExpandConstant('{tmp}\vc_redist.x64.exe'),
+      '/install /quiet /norestart', 'Microsoft Visual C++ çalışma zamanı');
 
-    // WebView2 Evergreen runtime for varyaone-client.exe. No-ops if present.
-    ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
-    Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // Tam Evergreen standalone paketidir; internet olmayan makinede de çalışır.
+    ExtractTemporaryFile('MicrosoftEdgeWebView2RuntimeInstallerX64.exe');
+    InstallWebView2Required();
 
-    // Kritik uygulama adımları [Run] yerine burada yürütülür: Exec'in gerçek
-    // çıkış kodunu denetlemeden kurulumun başarılı görünmesine izin verme.
-    Exec(ExpandConstant('{app}\{#MyExeName}'), 'service uninstall', '', SW_HIDE,
-      ewWaitUntilTerminated, ResultCode); // ilk kurulumda hata vermesi normal
-    ExecAppRequired('service install', 'Windows servisi kaydediliyor...');
+    // Ağ ayarını servis başlamadan yaz. Ardından repair eski/stale SCM kaydını
+    // durdurur, silinmesini bekler ve yeni executable yoluyla yeniden kurar.
     if WizardIsTaskSelected('lanaccess') then
       ExecAppRequired('netmode lan', 'Ağ modu ayarlanıyor...')
     else
       ExecAppRequired('netmode local', 'Ağ modu ayarlanıyor...');
-    ExecAppRequired('service start', 'Varya One servisi başlatılıyor...');
-    ExecAppRequired('service status', 'Windows servisi doğrulanıyor...');
+    ExecAppRequired('service repair', 'Windows servisi kurulup başlatılıyor...');
+    ExecAppRequired('service wait-ready', 'Varya One kullanıma hazırlanıyor...');
   end;
 end;
 
@@ -161,6 +245,7 @@ Filename: "{app}\{#ClientExe}"; Description: "Varya One'u ac"; Flags: postinstal
 Filename: "{app}\{#MyExeName}"; Parameters: "service stop"; Flags: runhidden; RunOnceId: "VaryaOneServiceStop"
 Filename: "{app}\{#MyExeName}"; Parameters: "service uninstall"; Flags: runhidden; RunOnceId: "VaryaOneServiceUninstall"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Varya One (8080)"""; Flags: runhidden; RunOnceId: "VaryaOneFirewallDelHTTP"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Varya One (HTTP)"""; Flags: runhidden; RunOnceId: "VaryaOneFirewallDelHTTPCurrent"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Varya One (mDNS)"""; Flags: runhidden; RunOnceId: "VaryaOneFirewallDelMDNS"
 
 ; Not: kullanici verisi %ProgramData%\VaryaOne altindadir (pgdata, master.key,

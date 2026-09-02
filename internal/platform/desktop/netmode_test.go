@@ -5,8 +5,8 @@ import "testing"
 func TestNetworkModeRoundTrip(t *testing.T) {
 	l := Layout{Home: t.TempDir()}
 
-	if got := l.NetworkMode(); got != NetLAN {
-		t.Fatalf("default: want %q, got %q", NetLAN, got)
+	if got := l.NetworkMode(); got != NetLocal {
+		t.Fatalf("default: want %q, got %q", NetLocal, got)
 	}
 	if err := l.SetNetworkMode(NetLocal); err != nil {
 		t.Fatal(err)

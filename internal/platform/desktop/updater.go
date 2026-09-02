@@ -440,8 +440,11 @@ func (u *Updater) acquireLock() (func(), error) {
 func waitServiceStopped(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		installed, running := ServiceState()
-		if !installed || !running {
+		stopped, err := managedServiceStopped()
+		if err != nil {
+			return err
+		}
+		if stopped {
 			return nil
 		}
 		if time.Now().After(deadline) {

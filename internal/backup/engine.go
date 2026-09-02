@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -118,6 +119,9 @@ type Options struct {
 	// against a differently-keyed deployment can warn about unreadable
 	// encrypted columns.
 	MasterKey []byte
+	// PostgresBinDir optionally points at bundled PostgreSQL client tools. Empty
+	// retains PATH discovery for container/server deployments.
+	PostgresBinDir string
 }
 
 // Engine creates and restores `.varya` archives.
@@ -153,11 +157,11 @@ func NewEngine(opts Options) (*Engine, error) {
 	if strings.TrimSpace(opts.DatabaseURL) == "" {
 		return nil, errors.New("backup: DatabaseURL is required")
 	}
-	pgDump, err := exec.LookPath("pg_dump")
+	pgDump, err := postgresTool(opts.PostgresBinDir, "pg_dump")
 	if err != nil {
 		return nil, ErrToolMissing
 	}
-	pgRestore, err := exec.LookPath("pg_restore")
+	pgRestore, err := postgresTool(opts.PostgresBinDir, "pg_restore")
 	if err != nil {
 		return nil, ErrToolMissing
 	}
@@ -174,6 +178,21 @@ func NewEngine(opts Options) (*Engine, error) {
 		engine.keyFingerprint = hex.EncodeToString(sum[:])[:16]
 	}
 	return engine, nil
+}
+
+func postgresTool(binDir, name string) (string, error) {
+	if strings.TrimSpace(binDir) == "" {
+		return exec.LookPath(name)
+	}
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(binDir, name)
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return "", ErrToolMissing
+	}
+	return path, nil
 }
 
 // Create streams a complete `.varya` archive to w and returns the manifest it

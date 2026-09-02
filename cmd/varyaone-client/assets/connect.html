@@ -32,14 +32,15 @@
   }
   button {
     padding: 10px 14px; border: 0; border-radius: 8px; background: #c1272d; color: #fff;
-    font-size: 14px; font-weight: 600; cursor: pointer;
+    min-height: 44px; font-size: 14px; font-weight: 600; cursor: pointer;
   }
   button:disabled { opacity: .6; cursor: default; }
+  button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
   .hint { font-size: 12px; opacity: .7; }
   .status { min-height: 18px; font-size: 13px; }
   .status.err { color: #c1272d; }
   .found { font-size: 12px; }
-  .found a { color: #c1272d; cursor: pointer; text-decoration: underline; }
+  .found a { display: inline-block; min-height: 24px; padding: 2px; color: #c1272d; cursor: pointer; text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -60,12 +61,13 @@
     <datalist id="history"></datalist>
     <div class="found" id="found"></div>
     <button id="go">Bağlan</button>
-    <div class="status" id="status"></div>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
     <div class="hint">Aynı ağdaki bir sunucu otomatik bulunursa adres hazır gelir.</div>
   </div>
 
 <script>
   const $ = (id) => document.getElementById(id);
+  const clientToken = "__VARYA_CLIENT_TOKEN__";
   const addr = $("addr"), status = $("status"), goBtn = $("go");
 
   function setStatus(msg, isErr) {
@@ -79,7 +81,7 @@
     goBtn.disabled = true;
     setStatus("Bağlanılıyor…");
     try {
-      await window.hostConnect(url);
+      await window.hostConnect(clientToken, url);
       // On success the host navigates this window away.
     } catch (e) {
       setStatus(String(e && e.message || e), true);
@@ -92,21 +94,30 @@
 
   (async function init() {
     let saved = { lastURL: "", history: [] };
-    try { saved = await window.hostSaved(); } catch (e) {}
+    try { saved = await window.hostSaved(clientToken); } catch (e) {}
     const dl = $("history");
     (saved.history || []).forEach(u => {
       const o = document.createElement("option"); o.value = u; dl.appendChild(o);
     });
 
     let discovered = [];
-    try { discovered = await window.hostDiscover(); } catch (e) {}
+    try { discovered = await window.hostDiscover(clientToken); } catch (e) {}
     if (discovered.length) {
       addr.value = discovered[0].url;
       const box = $("found");
-      box.innerHTML = "Bulundu: " + discovered.map(s =>
-        `<a data-url="${s.url}">${s.name || s.url}</a>`).join(" · ");
-      box.querySelectorAll("a").forEach(a =>
-        a.addEventListener("click", () => { addr.value = a.dataset.url; connect(); }));
+      box.textContent = "Bulundu: ";
+      discovered.forEach((server, index) => {
+        if (index) box.append(document.createTextNode(" · "));
+        const link = document.createElement("a");
+        link.href = "#";
+        link.textContent = server.name || server.url;
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          addr.value = server.url;
+          connect();
+        });
+        box.append(link);
+      });
     } else if (saved.lastURL) {
       addr.value = saved.lastURL;
     } else {
@@ -115,7 +126,7 @@
       // immediately when ready; if first-run initialization is still ongoing,
       // leave the address visible so the user can retry without losing context.
       setStatus("Yerel sunucuya bağlanılıyor…");
-      try { await window.hostConnect(addr.value); return; }
+      try { await window.hostConnect(clientToken, addr.value); return; }
       catch (e) { setStatus("Yerel sunucu henüz hazır değil; tekrar deneyin.", true); }
     }
     addr.focus();

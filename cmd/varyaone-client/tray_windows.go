@@ -112,11 +112,19 @@ func setupTray(hwnd uintptr, startHidden bool) {
 	}
 	trayNID.CbSize = uint32(unsafe.Sizeof(trayNID))
 	copy(trayNID.SzTip[:], windows.StringToUTF16("Varya Kontrol Paneli"))
-	procShellNotifyIcon.Call(nimAdd, uintptr(unsafe.Pointer(&trayNID)))
+	added, _, _ := procShellNotifyIcon.Call(nimAdd, uintptr(unsafe.Pointer(&trayNID)))
+	if added == 0 {
+		// Keep the ordinary window usable if Explorer rejected the tray icon.
+		return
+	}
 
 	cb := windows.NewCallback(trayWndProc)
 	nIndex := int32(gwlpWndProc)
 	r, _, _ := procSetWindowLongPtr.Call(hwnd, uintptr(nIndex), cb)
+	if r == 0 {
+		removeTrayIcon()
+		return
+	}
 	origWndProc = r
 
 	if startHidden {

@@ -36,7 +36,7 @@ func run() error {
 		return desktop.RunAsService(desktop.NewStackLogger())
 	case "service":
 		if len(os.Args) != 3 {
-			return errors.New("usage: varyaone service <ensure|install|uninstall|start|stop|restart|status>")
+			return errors.New("usage: varyaone service <ensure|repair|install|uninstall|start|stop|restart|status|wait-ready>")
 		}
 		return desktop.Control(os.Args[2])
 	case "update-apply":
@@ -124,7 +124,7 @@ func run() error {
 }
 
 func usageError() error {
-	return errors.New("usage: varyaone <server|worker|stack|service <ensure|install|uninstall|start|stop|restart|status>|netmode <local|lan>|update-apply [--target v]|migrate up|migrate status|backup create <file>|backup restore <file>|backup verify <file>>")
+	return errors.New("usage: varyaone <server|worker|stack|service <ensure|repair|install|uninstall|start|stop|restart|status|wait-ready>|netmode <local|lan>|update-apply [--target v]|migrate up|migrate status|backup create <file>|backup restore <file>|backup verify <file>>")
 }
 
 func runBackup(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
@@ -132,10 +132,11 @@ func runBackup(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return errors.New("usage: varyaone backup <create|restore|verify> <file|-> [--force]")
 	}
 	engine, err := backup.NewEngine(backup.Options{
-		DatabaseURL: cfg.DatabaseURL,
-		StorageRoot: cfg.StorageRoot,
-		Release:     cfg.Release,
-		MasterKey:   cfg.MasterKey,
+		DatabaseURL:    cfg.DatabaseURL,
+		StorageRoot:    cfg.StorageRoot,
+		Release:        cfg.Release,
+		MasterKey:      cfg.MasterKey,
+		PostgresBinDir: cfg.PostgresBinDir,
 	})
 	if err != nil {
 		return err

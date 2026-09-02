@@ -51,7 +51,7 @@ jobs:
           path: |
             deploy/windows/pgsql
             deploy/windows/vc_redist.x64.exe
-            deploy/windows/MicrosoftEdgeWebview2Setup.exe
+            deploy/windows/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
           key: windows-runtime-x64-pg${{ env.BUNDLED_PG_VERSION }}-${{ hashFiles('deploy/windows/fetch-tools.ps1') }}
 
       - name: Fetch bundled PostgreSQL
@@ -87,6 +87,95 @@ jobs:
           VARYAONE_REQUIRE_INSTALLER: "1"
         run: deploy/windows/build-bundle.sh "${{ steps.v.outputs.version }}"
 
+      - name: Smoke-test the packaged Windows stack
+        shell: pwsh
+        run: |
+          $stage = Resolve-Path "dist/windows/VaryaOne"
+          $smokeHome = Join-Path $env:RUNNER_TEMP "varyaone-stack-smoke"
+          if (Test-Path $smokeHome) { Remove-Item -Recurse -Force $smokeHome }
+          New-Item -ItemType Directory -Path $smokeHome | Out-Null
+          $env:VARYAONE_DESKTOP_HOME = $smokeHome
+          $env:VARYAONE_HTTP_PORT = "18080"
+          $process = $null
+          try {
+            $process = Start-Process (Join-Path $stage "varyaone.exe") `
+              -ArgumentList "stack" -WindowStyle Hidden -PassThru
+            $deadline = (Get-Date).AddMinutes(2)
+            $ready = $false
+            while ((Get-Date) -lt $deadline) {
+              $process.Refresh()
+              if ($process.HasExited) {
+                throw "packaged stack exited before readiness (code $($process.ExitCode))"
+              }
+              try {
+                $health = Invoke-RestMethod "http://127.0.0.1:18080/health/ready" -TimeoutSec 2
+                if ($health.status -eq "ok" -and $health.service -eq "api") {
+                  $ready = $true
+                  break
+                }
+              } catch { }
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $ready) { throw "packaged stack did not become ready within two minutes" }
+          } catch {
+            $stackLog = Join-Path $smokeHome "logs/stack.log"
+            $postgresLog = Join-Path $smokeHome "logs/postgres.log"
+            if (Test-Path $stackLog) { Get-Content $stackLog -Tail 100 }
+            if (Test-Path $postgresLog) { Get-Content $postgresLog -Tail 100 }
+            throw
+          } finally {
+            if ($process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            $pgData = Join-Path $smokeHome "pgdata"
+            $pgCtl = Join-Path $stage "pgsql/bin/pg_ctl.exe"
+            if ((Test-Path (Join-Path $pgData "PG_VERSION")) -and (Test-Path $pgCtl)) {
+              & $pgCtl stop -w -m fast "--pgdata=$pgData"
+            }
+          }
+
+      - name: Smoke-test installer and Windows service lifecycle
+        shell: pwsh
+        run: |
+          $version = "${{ steps.v.outputs.version }}".TrimStart("v")
+          $setup = Resolve-Path "dist/windows/VaryaOne-Setup-$version.exe"
+          $setupLog = Join-Path $env:RUNNER_TEMP "varyaone-setup.log"
+          $installDir = Join-Path $env:ProgramFiles "VaryaOne"
+          $serverExe = Join-Path $installDir "varyaone.exe"
+          $uninstaller = Join-Path $installDir "unins000.exe"
+          $serviceHome = Join-Path $env:ProgramData "VaryaOne"
+          try {
+            $installed = Start-Process $setup -Wait -PassThru -ArgumentList @(
+              "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+              "/TASKS=lanaccess", "/LOG=$setupLog"
+            )
+            if ($installed.ExitCode -ne 0) {
+              throw "installer exited with code $($installed.ExitCode)"
+            }
+            if (-not (Test-Path $serverExe)) { throw "installed server executable is missing" }
+            & $serverExe service wait-ready
+            if ($LASTEXITCODE -ne 0) { throw "installed service did not become ready" }
+            $service = Get-Service -Name VaryaOne -ErrorAction Stop
+            if ($service.Status -ne "Running") {
+              throw "SCM reports VaryaOne as $($service.Status)"
+            }
+          } catch {
+            if (Test-Path $setupLog) { Get-Content $setupLog -Tail 200 }
+            $stackLog = Join-Path $serviceHome "logs/stack.log"
+            $postgresLog = Join-Path $serviceHome "logs/postgres.log"
+            if (Test-Path $stackLog) { Get-Content $stackLog -Tail 100 }
+            if (Test-Path $postgresLog) { Get-Content $postgresLog -Tail 100 }
+            throw
+          } finally {
+            if (Test-Path $uninstaller) {
+              Start-Process $uninstaller -Wait -ArgumentList @(
+                "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+              )
+            } elseif (Test-Path $serverExe) {
+              & $serverExe service stop
+              & $serverExe service uninstall
+            }
+            if (Test-Path $serviceHome) { Remove-Item -Recurse -Force $serviceHome }
+          }
+
       - name: Verify release artifacts
         shell: bash
         run: |
@@ -97,7 +186,7 @@ jobs:
           archive="dist/windows/varyaone-${version}-windows-amd64.zip"
           7z t "$archive"
           entries="$(7z l -ba "$archive" | awk '{print $NF}' | tr '\\' '/')"
-          for entry in varyaone.exe varyaone-client.exe RELEASE pgsql/bin/initdb.exe pgsql/bin/pg_ctl.exe; do
+          for entry in varyaone.exe varyaone-client.exe RELEASE pgsql/bin/initdb.exe pgsql/bin/pg_ctl.exe pgsql/bin/pg_dump.exe pgsql/bin/pg_restore.exe; do
             grep -Fx "$entry" <<<"$entries"
           done
 

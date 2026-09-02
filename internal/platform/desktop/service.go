@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
+	"syscall"
+	"time"
 
 	"github.com/kardianos/service"
 )
@@ -60,7 +63,11 @@ func (p *program) Stop(service.Service) error {
 		p.cancel()
 	}
 	if p.done != nil {
-		<-p.done
+		select {
+		case <-p.done:
+		case <-time.After(18 * time.Second):
+			return errors.New("stack did not stop within 18 seconds")
+		}
 	}
 	return nil
 }
@@ -76,13 +83,20 @@ func RunAsService(logger *slog.Logger) error {
 }
 
 // Control performs install / uninstall / start / stop / restart / status.
-func Control(action string) error {
+func Control(action string) (resultErr error) {
+	defer func() { recordControlResult("service "+action, resultErr) }()
 	svc, err := service.New(&program{logger: slog.Default()}, serviceConfig())
 	if err != nil {
 		return err
 	}
 	if action == "ensure" {
-		return ensureService(svc)
+		if err := ensureManagedService(svc); err != nil {
+			return err
+		}
+		return reconcileInstalledServiceNetwork()
+	}
+	if action == "repair" {
+		return repairManagedService(svc)
 	}
 	if action == "status" {
 		status, statErr := svc.Status()
@@ -92,7 +106,107 @@ func Control(action string) error {
 		fmt.Println(statusText(status))
 		return nil
 	}
-	return service.Control(svc, action)
+	if action == "wait-ready" {
+		ctx, cancel := context.WithTimeout(context.Background(), serviceReadyTimeout)
+		defer cancel()
+		return WaitForReady(ctx, HTTPPort())
+	}
+	switch action {
+	case "start", "stop", "restart":
+		return controlManagedService(svc, action)
+	default:
+		return service.Control(svc, action)
+	}
+}
+
+func reconcileInstalledServiceNetwork() error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	if err := reconcileFirewall(DiscoverLayout().NetworkMode(), HTTPPort()); err != nil {
+		return fmt.Errorf("reconcile service firewall: %w", err)
+	}
+	return nil
+}
+
+// repairService deliberately rebuilds the SCM registration. It is kept as a
+// separate explicit panel action because reinstalling a healthy registration
+// would be surprising during an ordinary start.
+type repairLifecycle interface {
+	Status() (service.Status, error)
+	Install() error
+	Uninstall() error
+	Start() error
+	Stop() error
+}
+
+func repairService(svc repairLifecycle) error {
+	return repairServiceWith(svc, svc.Stop, svc.Start)
+}
+
+// repairManagedService uses the platform's bounded start/stop implementation.
+// On Windows this avoids an upstream service-library stop loop that can wait
+// forever after its timeout has elapsed.
+func repairManagedService(svc service.Service) error {
+	// kardianos/service collapses PAUSED, STOP_PENDING and STOPPED into the same
+	// status. Ask our idempotent native stop path first whenever registration is
+	// present, so repair never deletes a still-running paused/pending process.
+	if _, err := svc.Status(); err == nil {
+		if err := stopManagedService(svc); err != nil {
+			return fmt.Errorf("stop service for repair: %w", err)
+		}
+	}
+	return repairServiceWith(
+		svc,
+		func() error { return nil },
+		func() error { return startManagedService(svc) },
+	)
+}
+
+func repairServiceWith(svc repairLifecycle, stop, start func() error) error {
+	status, err := svc.Status()
+	markedForDelete := errors.Is(err, syscall.Errno(1072)) // ERROR_SERVICE_MARKED_FOR_DELETE
+	if err != nil && !errors.Is(err, service.ErrNotInstalled) && !markedForDelete {
+		return fmt.Errorf("query service before repair: %w", err)
+	}
+	if err == nil {
+		if status == service.StatusRunning {
+			if stopErr := stop(); stopErr != nil {
+				return fmt.Errorf("stop service for repair: %w", stopErr)
+			}
+		}
+		if uninstallErr := svc.Uninstall(); uninstallErr != nil {
+			return fmt.Errorf("remove old service registration: %w", uninstallErr)
+		}
+		markedForDelete = true
+	}
+	if markedForDelete {
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			_, statusErr := svc.Status()
+			if errors.Is(statusErr, service.ErrNotInstalled) {
+				break
+			}
+			if statusErr != nil && !errors.Is(statusErr, syscall.Errno(1072)) {
+				return fmt.Errorf("wait for old service deletion: %w", statusErr)
+			}
+			if time.Now().After(deadline) {
+				return errors.New("old service registration was not deleted within 15 seconds")
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+	}
+	if err := svc.Install(); err != nil {
+		return fmt.Errorf("install repaired service: %w", err)
+	}
+	if err := reconcileInstalledServiceNetwork(); err != nil {
+		_ = svc.Uninstall()
+		return err
+	}
+	if err := start(); err != nil {
+		return fmt.Errorf("start repaired service: %w", err)
+	}
+	return nil
 }
 
 // serviceLifecycle is the small portion of service.Service needed by ensure.
@@ -109,12 +223,20 @@ type serviceLifecycle interface {
 // already-running service is left alone, a stopped one is started, and a missing
 // one is installed before it is started.
 func ensureService(svc serviceLifecycle) error {
+	return ensureServiceWith(svc, svc.Start)
+}
+
+func ensureManagedService(svc service.Service) error {
+	return ensureServiceWith(svc, func() error { return startManagedService(svc) })
+}
+
+func ensureServiceWith(svc serviceLifecycle, start func() error) error {
 	status, err := svc.Status()
 	if errors.Is(err, service.ErrNotInstalled) {
 		if err := svc.Install(); err != nil {
 			return fmt.Errorf("install service: %w", err)
 		}
-		if err := svc.Start(); err != nil {
+		if err := start(); err != nil {
 			return fmt.Errorf("start newly installed service: %w", err)
 		}
 		return nil
@@ -125,7 +247,7 @@ func ensureService(svc serviceLifecycle) error {
 	if status == service.StatusRunning {
 		return nil
 	}
-	if err := svc.Start(); err != nil {
+	if err := start(); err != nil {
 		return fmt.Errorf("start service: %w", err)
 	}
 	return nil
@@ -161,7 +283,7 @@ func RestartIfRunning() error {
 	if err != nil {
 		return err
 	}
-	return service.Control(svc, "restart")
+	return controlManagedService(svc, "restart")
 }
 
 func statusText(s service.Status) string {

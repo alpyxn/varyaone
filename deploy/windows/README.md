@@ -15,7 +15,8 @@ istemci uygulamasından erişir. Docker gerekmez.
 | Updater tetikleyici (Linux systemd ajanı yerine) | `supervisor.go` `runUpdateApplier` + `spawn_windows.go` | ✅ hazır (uçtan uca test bekliyor) |
 | Pulse yapılandırması (masaüstü varsayılanı) | `settings.go` + `supervisor.go` `config()` | ✅ resmi uç varsayılan, `settings.env` ile geçersiz kılınır |
 | VC++ çalışma zamanı (gömülü PG için şart) | `fetch-tools.ps1` indirir, `installer.iss` `[Code]` sessiz kurar | ✅ yoksa `initdb` `0xC0000135` verir |
-| WebView2 runtime (istemci için şart) | `fetch-tools.ps1` bootstrapper indirir, `installer.iss` `[Code]` `/silent /install` | ✅ Win11/güncel Win10'da zaten var |
+| WebView2 runtime (istemci için şart) | `fetch-tools.ps1` tam x64 Evergreen standalone paketi indirir, installer çevrimdışı kurar | ✅ internet gerektirmez |
+| WebP codec | saf Go codec; Windows binary `CGO_ENABLED=0` kalabilir | ✅ başlangıçta native DLL gerektirmez |
 | Firewall: 8080/TCP + 5353/UDP (mDNS) | `netmode.go` `reconcileFirewall` (private+domain profili) | ✅ servis LocalSystem olduğu için prompt çıkmaz |
 | Port çakışması ön kontrolü | `supervisor.go` `checkHTTPPortFree` | ✅ "8080 kullanımda" net mesajı |
 | Kod imzalama (SmartScreen) | `installer.iss` SignTool iskeleti | ⏳ sertifika gerek (bkz. aşağı) |
@@ -24,7 +25,7 @@ istemci uygulamasından erişir. Docker gerekmez.
 | Ağ modu (`varyaone netmode <local\|lan>`) | `internal/platform/desktop/netmode.go` | ✅ hazır |
 | İstemci + kontrol paneli (WebView2, `--panel`) | `cmd/varyaone-client` | ✅ hazır (uçtan uca test bekliyor) |
 | Inno Setup installer (sihirbaz + servis kaydı + kaldırıcı) | `deploy/windows/installer.iss` | ✅ hazır |
-| CI (`windows-latest`) | `.github/workflows/desktop-windows.yml` | ✅ zip + `setup.exe` üretir, release'e ekler |
+| CI (`windows-2025`) | `.github/workflows/desktop-windows.yml` | ✅ zip + `setup.exe` üretir; paketli stack'i ve gerçek setup/SCM yaşam döngüsünü test eder |
 
 ## Çalışma zamanı mimarisi
 
@@ -32,7 +33,7 @@ istemci uygulamasından erişir. Docker gerekmez.
 Windows Service "VaryaOne"  ->  varyaone.exe stack
    ├── bundled PostgreSQL           %ProgramData%\VaryaOne\pgdata   (127.0.0.1:5433)
    ├── migrate up
-   ├── API + worker (goroutine)     0.0.0.0:8080
+   ├── API + worker (goroutine)     local: 127.0.0.1:8080 / LAN: 0.0.0.0:8080
    ├── embedded SPA                 aynı port, /api ve /health dışındaki her GET
    └── mDNS _varyaone._tcp          LAN keşfi
 ```
@@ -87,7 +88,7 @@ innosetup`). Kullanıcı çift tıklar:
 - Program `C:\Program Files\VaryaOne` altına kurulur. Masaüstüne **iki kısayol**
   düşer: **Varya One** (`appicon.ico`) ve **Varya Kontrol Paneli**
   (`panelicon.ico`, `varyaone-client.exe --panel`).
-- Kurulum: `varyaone service install` → `netmode <lan|local>` → `service start`.
+- Kurulum: `netmode <lan|local>` → `service repair` → `service wait-ready`.
   `VaryaOne` servisi (gecikmeli otomatik başlatma) `varyaone stack`'i sürer.
 - Sihirbazdaki **"Ağdaki diğer bilgisayarlar erişebilsin"** görevi (varsayılan
   işaretli) ağ modunu belirler → `netmode`:
@@ -97,10 +98,11 @@ innosetup`). Kullanıcı çift tıklar:
 - **Kaldırma**: servisi durdurur + kaldırır, firewall kuralını siler,
   `C:\Program Files\VaryaOne`'ı temizler. `%ProgramData%\VaryaOne` (pgdata,
   `master.key`, storage, backups) **korunur** — silinmez.
-- Aynı/yeni sürüm üzerine kurulum: sihirbaz önce eski servisi durdurup kaldırır,
-  dosyaları değiştirir, servisi yeniden kaydeder.
-- Servis, dosya kopyalama başlamadan önce durdurulur; servis kaydı, ağ modu ve
-  yeniden başlatma komutlarından biri hata verirse kurulum başarılı sayılmaz.
+- Aynı/yeni sürüm üzerine kurulum: sihirbaz önce eski servisin gerçekten
+  durduğunu doğrular, dosyaları değiştirir, sonra SCM kaydını sıfırdan onarır.
+- Servis, dosya kopyalama başlamadan önce durdurulur; SCM kaydı sıfırdan
+  onarılır ve `/health/ready` iki dakika içinde başarılı olmadan kurulum
+  tamamlanmış sayılmaz.
 
 ## İstemci ve kontrol paneli (`cmd/varyaone-client`, Windows)
 

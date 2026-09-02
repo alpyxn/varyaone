@@ -12,6 +12,12 @@ import (
 type Config struct {
 	Environment string
 	HTTPAddr    string
+	// SecureCookies controls the Secure attribute independently from the
+	// environment name. Reverse-proxied production deployments use HTTPS and
+	// keep this enabled; the Windows desktop server intentionally serves plain
+	// HTTP on the local network and disables it explicitly.
+	SecureCookies           bool
+	secureCookiesConfigured bool
 	// DatabaseURL is the owner/superuser connection used for migrations and
 	// backups.
 	DatabaseURL string
@@ -32,6 +38,7 @@ type Config struct {
 	StorageAccessKey string
 	StorageSecretKey string
 	StoragePathStyle bool
+	PostgresBinDir   string
 	PulseEndpoint    string
 	PulseIngestKey   string
 	// PulseEnabled turns on the daily anonymous usage summary (per-company
@@ -63,30 +70,55 @@ func (c Config) ServingDatabaseURL() string {
 	return c.DatabaseURL
 }
 
+// CookiesSecure preserves the production-safe default for tests and internal
+// callers that construct Config directly, while allowing Load to carry an
+// explicit desktop HTTP override.
+func (c Config) CookiesSecure() bool {
+	if c.secureCookiesConfigured {
+		return c.SecureCookies
+	}
+	return c.Environment != "development"
+}
+
 type Getenv func(string) string
 
 func Load(getenv Getenv) (Config, error) {
+	environment := valueOr(getenv("VARYAONE_ENV"), "development")
+	secureCookies := environment != "development"
+	if raw := strings.TrimSpace(getenv("VARYAONE_SECURE_COOKIES")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "true", "1", "yes":
+			secureCookies = true
+		case "false", "0", "no":
+			secureCookies = false
+		default:
+			return Config{}, errors.New("VARYAONE_SECURE_COOKIES must be true or false")
+		}
+	}
 	cfg := Config{
-		Environment:      valueOr(getenv("VARYAONE_ENV"), "development"),
-		HTTPAddr:         valueOr(getenv("VARYAONE_HTTP_ADDR"), ":8080"),
-		DatabaseURL:      strings.TrimSpace(getenv("VARYAONE_DATABASE_URL")),
-		AppDatabaseURL:   strings.TrimSpace(getenv("VARYAONE_APP_DATABASE_URL")),
-		LogLevel:         valueOr(getenv("VARYAONE_LOG_LEVEL"), "info"),
-		Release:          valueOr(getenv("VARYAONE_RELEASE"), "dev"),
-		ShutdownTimeout:  15 * time.Second,
-		StorageProvider:  valueOr(getenv("VARYAONE_STORAGE_PROVIDER"), "local"),
-		StorageRoot:      valueOr(getenv("VARYAONE_STORAGE_ROOT"), "/var/lib/varyaone/storage"),
-		StorageEndpoint:  strings.TrimSpace(getenv("VARYAONE_STORAGE_ENDPOINT")),
-		StorageBucket:    strings.TrimSpace(getenv("VARYAONE_STORAGE_BUCKET")),
-		StorageRegion:    valueOr(getenv("VARYAONE_STORAGE_REGION"), "us-east-1"),
-		StorageAccessKey: strings.TrimSpace(getenv("VARYAONE_STORAGE_ACCESS_KEY")),
-		StorageSecretKey: strings.TrimSpace(getenv("VARYAONE_STORAGE_SECRET_KEY")),
-		StoragePathStyle: strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_STORAGE_PATH_STYLE")), "true"),
-		PulseEndpoint:    strings.TrimRight(strings.TrimSpace(getenv("VARYAONE_PULSE_ENDPOINT")), "/"),
-		PulseIngestKey:   strings.TrimSpace(getenv("VARYAONE_PULSE_INGEST_KEY")),
-		PulseEnabled:     strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_PULSE_ENABLED")), "true"),
-		PulseInstallPing: !strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_PULSE_INSTALL_PING")), "false"),
-		UpdateAgentToken: strings.TrimSpace(getenv("VARYAONE_UPDATE_AGENT_TOKEN")),
+		Environment:             environment,
+		HTTPAddr:                valueOr(getenv("VARYAONE_HTTP_ADDR"), ":8080"),
+		SecureCookies:           secureCookies,
+		secureCookiesConfigured: true,
+		DatabaseURL:             strings.TrimSpace(getenv("VARYAONE_DATABASE_URL")),
+		AppDatabaseURL:          strings.TrimSpace(getenv("VARYAONE_APP_DATABASE_URL")),
+		LogLevel:                valueOr(getenv("VARYAONE_LOG_LEVEL"), "info"),
+		Release:                 valueOr(getenv("VARYAONE_RELEASE"), "dev"),
+		ShutdownTimeout:         15 * time.Second,
+		StorageProvider:         valueOr(getenv("VARYAONE_STORAGE_PROVIDER"), "local"),
+		StorageRoot:             valueOr(getenv("VARYAONE_STORAGE_ROOT"), "/var/lib/varyaone/storage"),
+		StorageEndpoint:         strings.TrimSpace(getenv("VARYAONE_STORAGE_ENDPOINT")),
+		StorageBucket:           strings.TrimSpace(getenv("VARYAONE_STORAGE_BUCKET")),
+		StorageRegion:           valueOr(getenv("VARYAONE_STORAGE_REGION"), "us-east-1"),
+		StorageAccessKey:        strings.TrimSpace(getenv("VARYAONE_STORAGE_ACCESS_KEY")),
+		StorageSecretKey:        strings.TrimSpace(getenv("VARYAONE_STORAGE_SECRET_KEY")),
+		StoragePathStyle:        strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_STORAGE_PATH_STYLE")), "true"),
+		PostgresBinDir:          strings.TrimSpace(getenv("VARYAONE_POSTGRES_BIN")),
+		PulseEndpoint:           strings.TrimRight(strings.TrimSpace(getenv("VARYAONE_PULSE_ENDPOINT")), "/"),
+		PulseIngestKey:          strings.TrimSpace(getenv("VARYAONE_PULSE_INGEST_KEY")),
+		PulseEnabled:            strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_PULSE_ENABLED")), "true"),
+		PulseInstallPing:        !strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_PULSE_INSTALL_PING")), "false"),
+		UpdateAgentToken:        strings.TrimSpace(getenv("VARYAONE_UPDATE_AGENT_TOKEN")),
 	}
 	masterKeyValue := strings.TrimSpace(getenv("VARYAONE_MASTER_KEY"))
 	if masterKeyValue == "" {

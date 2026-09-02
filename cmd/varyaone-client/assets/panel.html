@@ -26,15 +26,18 @@
   .pill { background: #eee; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
   .ok { color: #1a7f37; } .bad { color: #c1272d; }
   .urls { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
-  .urls li { cursor: pointer; color: #c1272d; }
+  .url-link { min-height: 28px; padding: 2px 4px; border: 0; background: transparent;
+              color: #c1272d; font: inherit; font-weight: 600; text-align: left; }
   label.opt { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; cursor: pointer; }
   label.opt small { display: block; opacity: .65; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
   button {
     padding: 8px 12px; border: 0; border-radius: 8px; background: #c1272d; color: #fff;
-    font-size: 13px; font-weight: 600; cursor: pointer;
+    min-height: 44px; font-size: 13px; font-weight: 600; cursor: pointer;
   }
   button.ghost { background: transparent; color: inherit; border: 1px solid #999; }
+  button:disabled, input:disabled { cursor: wait; opacity: .55; }
+  button:focus-visible, input:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
   .status { min-height: 18px; font-size: 13px; margin-top: 8px; }
 </style>
 </head>
@@ -58,6 +61,7 @@
     <div class="actions" style="margin-top:10px">
       <button id="open">Sunucuyu aç</button>
       <button class="ghost" id="restart">Servisi yönet</button>
+      <button class="ghost" id="repair">Servisi onar</button>
       <button class="ghost" id="logs">Loglar</button>
     </div>
   </div>
@@ -68,58 +72,105 @@
       <span>Yalnızca bu bilgisayar<small>Sunucu 127.0.0.1'i dinler, güvenlik duvarı kuralı ve ağ yayını kapalı.</small></span></label>
     <label class="opt"><input type="radio" name="mode" value="lan">
       <span>Ağa açık<small>Ağdaki diğer bilgisayarlar erişebilir; 8080 güvenlik duvarı kuralı ve mDNS yayını açık.</small></span></label>
-    <div class="status" id="status"></div>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
   </div>
 
 <script>
   const $ = (id) => document.getElementById(id);
+  const panelToken = "__VARYA_PANEL_TOKEN__";
   let lastState = null;
+  let busy = false;
+  let refreshInFlight = false;
+
+  function errorText(error) {
+    return String(error && error.message || error || "Bilinmeyen hata");
+  }
+
+  function setBusy(value) {
+    busy = value;
+    document.body.setAttribute("aria-busy", String(value));
+    document.querySelectorAll("button, input[name=mode]").forEach(control => {
+      control.disabled = value;
+    });
+  }
 
   async function refresh() {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
     let s;
-    try { s = await window.hostPanelState(); }
-    catch (e) { $("status").textContent = String(e && e.message || e); return; }
+    try { s = await window.hostPanelState(panelToken); }
+    catch (e) {
+      if (!busy) $("status").textContent = errorText(e);
+      refreshInFlight = false;
+      return;
+    }
     lastState = s;
     $("ver").textContent = "Sürüm " + (s.version || "?");
     const svc = $("svc");
-    if (!s.serviceInstalled) { svc.textContent = "kurulu değil"; svc.className = "pill bad"; }
+    if (s.serviceError) { svc.textContent = "durum okunamadı"; svc.className = "pill bad"; }
+    else if (!s.serviceInstalled) { svc.textContent = "kurulu değil"; svc.className = "pill bad"; }
     else if (s.serving) { svc.textContent = "çalışıyor"; svc.className = "pill ok"; }
-    else if (s.running) { svc.textContent = "servis açık, sunucu yanıt vermiyor — Loglar'a bakın"; svc.className = "pill bad"; }
+    else if (s.running) { svc.textContent = "başlatılıyor / henüz hazır değil"; svc.className = "pill bad"; }
+    else if (s.serviceStatus === "stop_pending") { svc.textContent = "durduruluyor"; svc.className = "pill bad"; }
     else { svc.textContent = "durdu"; svc.className = "pill bad"; }
     $("restart").textContent = !s.serviceInstalled ? "Servisi kur ve başlat" :
       (!s.running ? "Servisi başlat" : "Servisi yeniden başlat");
 
     const ul = $("urls"); ul.innerHTML = "";
     (s.urls || []).forEach(u => {
-      const li = document.createElement("li"); li.textContent = u;
-      li.addEventListener("click", () => window.hostConnect(u).catch(()=>{}));
+      const li = document.createElement("li");
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "url-link";
+      link.textContent = u;
+      link.addEventListener("click", () => window.hostPanelConnect(panelToken, u).catch(e => {
+        $("status").textContent = errorText(e);
+      }));
+      li.append(link);
       ul.appendChild(li);
     });
     document.querySelectorAll('input[name=mode]').forEach(r => { r.checked = (r.value === s.mode); });
+    if (!busy && s.serviceError) $("status").textContent = "Windows servis hatası: " + s.serviceError;
+    refreshInFlight = false;
   }
 
   $("open").addEventListener("click", async () => {
     $("status").textContent = "Sunucu açılıyor…";
-    try { await window.hostOpenServer(); }
-    catch (e) { $("status").textContent = String(e && e.message || e); }
+    setBusy(true);
+    try { await window.hostOpenServer(panelToken); }
+    catch (e) { $("status").textContent = errorText(e); }
+    finally { setBusy(false); }
   });
   $("restart").addEventListener("click", async () => {
     const verb = lastState && !lastState.serviceInstalled ? "Kurulup başlatılıyor" :
       (lastState && !lastState.running ? "Başlatılıyor" : "Yeniden başlatılıyor");
     $("status").textContent = verb + "… (yönetici onayı gerekebilir)";
+    setBusy(true);
     try {
-      await window.hostRestart();
-      $("status").textContent = "Komut tamamlandı; sunucu hazırlanıyor…";
-    } catch (e) { $("status").textContent = String(e && e.message || e); }
-    setTimeout(refresh, 1500);
+      await window.hostRestart(panelToken);
+      $("status").textContent = "Varya One çalışıyor ve kullanıma hazır.";
+    } catch (e) { $("status").textContent = errorText(e); }
+    finally { setBusy(false); await refresh(); }
   });
-  $("logs").addEventListener("click", () => window.hostOpenLogs().catch(()=>{}));
+  $("logs").addEventListener("click", () => window.hostOpenLogs(panelToken).catch(e => {
+    $("status").textContent = errorText(e);
+  }));
+  $("repair").addEventListener("click", async () => {
+    $("status").textContent = "Servis kaydı onarılıyor… (yönetici onayı gerekir)";
+    setBusy(true);
+    try {
+      await window.hostRepair(panelToken);
+      $("status").textContent = "Servis kaydı onarıldı; Varya One kullanıma hazır.";
+    } catch (e) { $("status").textContent = errorText(e); }
+    finally { setBusy(false); await refresh(); }
+  });
 
   document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener("change", async () => {
     $("status").textContent = "Ağ modu değiştiriliyor… (yönetici onayı gerekebilir)";
-    try { await window.hostApplyMode(r.value); $("status").textContent = "Uygulandı."; }
-    catch (e) { $("status").textContent = String(e.message||e); }
-    setTimeout(refresh, 2500);
+    setBusy(true);
+    try { await window.hostApplyMode(panelToken, r.value); $("status").textContent = "Ağ modu uygulandı; sunucu hazır."; }
+    catch (e) { $("status").textContent = errorText(e); }
+    finally { setBusy(false); await refresh(); }
   }));
 
   refresh();

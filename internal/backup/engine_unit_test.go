@@ -9,10 +9,31 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestNewEngineUsesBundledPostgresTools(t *testing.T) {
+	bin := t.TempDir()
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	for _, name := range []string{"pg_dump" + suffix, "pg_restore" + suffix} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("tool"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	engine, err := NewEngine(Options{DatabaseURL: "postgres://user:secret@localhost/db", PostgresBinDir: bin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(engine.pgDump) != bin || filepath.Dir(engine.pgRestore) != bin {
+		t.Fatalf("bundled tools not selected: dump=%q restore=%q", engine.pgDump, engine.pgRestore)
+	}
+}
 
 // buildArchive writes a minimal but well-formed `.varya` archive: manifest,
 // database.dump, then one tar entry per storage object. It deliberately does not

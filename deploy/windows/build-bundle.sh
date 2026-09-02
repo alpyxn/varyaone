@@ -82,7 +82,7 @@ if [ -d "$ROOT/deploy/windows/pgsql" ]; then
   # Integrity gate — a broken bundle must never leave CI.
   pgbin="$STAGE/pgsql/bin"
   filesize() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo 0; }
-  for t in initdb.exe postgres.exe pg_ctl.exe psql.exe; do
+  for t in initdb.exe postgres.exe pg_ctl.exe psql.exe pg_dump.exe pg_restore.exe; do
     sz=$(filesize "$pgbin/$t")
     [ "$sz" -ge 20000 ] || { echo "!! FATAL: pgsql/bin/$t missing or truncated ($sz bytes)"; exit 1; }
   done
@@ -119,7 +119,7 @@ sha256sum "$ZIP" | awk '{print $1}' > "$ZIP.sha256"
 
 echo ">> building install wizard"
 missing_prereq=0
-for prereq in vc_redist.x64.exe MicrosoftEdgeWebview2Setup.exe; do
+for prereq in vc_redist.x64.exe MicrosoftEdgeWebView2RuntimeInstallerX64.exe; do
   if [ ! -f "$ROOT/deploy/windows/$prereq" ]; then
     echo "!! deploy/windows/$prereq missing — run fetch-tools.ps1 (installer prerequisite)" >&2
     missing_prereq=1

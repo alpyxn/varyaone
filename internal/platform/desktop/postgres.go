@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -62,7 +63,7 @@ func NewPostgres(layout Layout) (*Postgres, error) {
 // before it turns into an opaque "initdb: exit status 0xC0000135". A bad updater
 // zip or a broken install lands here.
 func verifyPGBundle(bin string) error {
-	for _, name := range []string{"initdb", "postgres", "pg_ctl", "psql"} {
+	for _, name := range []string{"initdb", "postgres", "pg_ctl", "psql", "pg_dump", "pg_restore"} {
 		fi, err := os.Stat(filepath.Join(bin, exe(name)))
 		if err != nil {
 			return fmt.Errorf("PostgreSQL paketi eksik: %s bulunamadı (%s) — yeniden kurun", exe(name), bin)
@@ -177,7 +178,7 @@ func (p *Postgres) EnsureInitialized(ctx context.Context) error {
 	if fileExists(filepath.Join(p.layout.PGData(), "PG_VERSION")) {
 		return nil
 	}
-	if err := os.MkdirAll(p.layout.PGData(), 0o700); err != nil {
+	if err := os.MkdirAll(p.layout.Home, 0o755); err != nil {
 		return err
 	}
 	pw, err := p.password()
@@ -190,8 +191,18 @@ func (p *Postgres) EnsureInitialized(ctx context.Context) error {
 	}
 	defer os.Remove(pwFile)
 
+	// initdb can leave a non-empty, unusable directory when the machine loses
+	// power or a runtime dependency fails halfway through. Build the cluster in
+	// a sibling temporary directory and publish it with a rename only after
+	// initdb has completed. Any old partial directory is preserved for support.
+	initDir, err := os.MkdirTemp(p.layout.Home, "pgdata.init-")
+	if err != nil {
+		return fmt.Errorf("create temporary database directory: %w", err)
+	}
+	defer os.RemoveAll(initDir)
+
 	cmd := exec.CommandContext(ctx, p.tool("initdb"),
-		"--pgdata="+p.layout.PGData(),
+		"--pgdata="+initDir,
 		"--username="+p.dbUser,
 		"--auth=scram-sha-256",
 		"--pwfile="+pwFile,
@@ -201,6 +212,32 @@ func (p *Postgres) EnsureInitialized(ctx context.Context) error {
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("initdb: %w: %s%s", err, out, p.initdbFailureHint(err))
+	}
+	if !fileExists(filepath.Join(initDir, "PG_VERSION")) {
+		return errors.New("initdb completed without creating PG_VERSION")
+	}
+
+	target := p.layout.PGData()
+	if _, statErr := os.Stat(target); statErr == nil {
+		entries, readErr := os.ReadDir(target)
+		if readErr != nil {
+			return fmt.Errorf("inspect incomplete database directory: %w", readErr)
+		}
+		if len(entries) == 0 {
+			if err := os.Remove(target); err != nil {
+				return fmt.Errorf("remove empty database directory: %w", err)
+			}
+		} else {
+			archive := filepath.Join(p.layout.Home, "pgdata.incomplete-"+time.Now().UTC().Format("20060102T150405.000000000Z"))
+			if err := os.Rename(target, archive); err != nil {
+				return fmt.Errorf("archive incomplete database directory: %w", err)
+			}
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect database directory: %w", statErr)
+	}
+	if err := os.Rename(initDir, target); err != nil {
+		return fmt.Errorf("publish initialized database directory: %w", err)
 	}
 	return nil
 }

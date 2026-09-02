@@ -125,10 +125,11 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawP
 	}
 	backupOptions := []httpapi.RouterOption{}
 	backupEngine, err := backup.NewEngine(backup.Options{
-		DatabaseURL: cfg.DatabaseURL,
-		StorageRoot: cfg.StorageRoot,
-		Release:     cfg.Release,
-		MasterKey:   cfg.MasterKey,
+		DatabaseURL:    cfg.DatabaseURL,
+		StorageRoot:    cfg.StorageRoot,
+		Release:        cfg.Release,
+		MasterKey:      cfg.MasterKey,
+		PostgresBinDir: cfg.PostgresBinDir,
 	})
 	switch {
 	case errors.Is(err, backup.ErrToolMissing):
@@ -145,7 +146,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawP
 		backupOptions = append(backupOptions, httpapi.WithSystemUpdate(update.NewService(rawPool, cfg), cfg.UpdateAgentToken))
 	}
 
-	routerOptions := append([]httpapi.RouterOption{httpapi.WithIdentity(identityService, cfg.Environment != "development"), httpapi.WithParty(partyService), httpapi.WithProducts(productService), httpapi.WithPricing(pricingService), httpapi.WithExchange(exchangeService), httpapi.WithTaxes(taxService), httpapi.WithPreferences(preferenceService), httpapi.WithDashboard(dashboardService), httpapi.WithAgenda(agendaService), httpapi.WithFinance(financeService), httpapi.WithInventory(inventoryService), httpapi.WithSales(salesService), httpapi.WithPurchasing(purchasingService), httpapi.WithMedia(mediaService), httpapi.WithSearch(httpapi.NewSearchService(pool)), httpapi.WithDataExchange(dataExchangeService), httpapi.WithReporting(reportingService), httpapi.WithEmailSettings(emailSettingsService), httpapi.WithHREmployee(hrEmployeeService), httpapi.WithHRAdvance(hrAdvanceService), httpapi.WithFixedAsset(fixedAssetService), httpapi.WithHREmployment(hrEmploymentService), httpapi.WithHRDocument(hrDocumentService), httpapi.WithHRSchedule(hrScheduleService), httpapi.WithHRLeave(hrLeaveService), httpapi.WithHRCalendar(hrCalendarService), httpapi.WithHRTimesheet(hrTimesheetService), httpapi.WithPayrollLegislation(payrollLegislationService), httpapi.WithLegislationRepository(legislationRepository), httpapi.WithPayrollRun(payrollRunService), httpapi.WithPayrollPayment(payrollPaymentService), httpapi.WithPayrollDelivery(payrollDeliveryService), httpapi.WithEmail(emailTemplateService, emailComposeService), httpapi.WithCompanyScope(rawPool)}, backupOptions...)
+	routerOptions := append([]httpapi.RouterOption{httpapi.WithIdentity(identityService, cfg.CookiesSecure()), httpapi.WithParty(partyService), httpapi.WithProducts(productService), httpapi.WithPricing(pricingService), httpapi.WithExchange(exchangeService), httpapi.WithTaxes(taxService), httpapi.WithPreferences(preferenceService), httpapi.WithDashboard(dashboardService), httpapi.WithAgenda(agendaService), httpapi.WithFinance(financeService), httpapi.WithInventory(inventoryService), httpapi.WithSales(salesService), httpapi.WithPurchasing(purchasingService), httpapi.WithMedia(mediaService), httpapi.WithSearch(httpapi.NewSearchService(pool)), httpapi.WithDataExchange(dataExchangeService), httpapi.WithReporting(reportingService), httpapi.WithEmailSettings(emailSettingsService), httpapi.WithHREmployee(hrEmployeeService), httpapi.WithHRAdvance(hrAdvanceService), httpapi.WithFixedAsset(fixedAssetService), httpapi.WithHREmployment(hrEmploymentService), httpapi.WithHRDocument(hrDocumentService), httpapi.WithHRSchedule(hrScheduleService), httpapi.WithHRLeave(hrLeaveService), httpapi.WithHRCalendar(hrCalendarService), httpapi.WithHRTimesheet(hrTimesheetService), httpapi.WithPayrollLegislation(payrollLegislationService), httpapi.WithLegislationRepository(legislationRepository), httpapi.WithPayrollRun(payrollRunService), httpapi.WithPayrollPayment(payrollPaymentService), httpapi.WithPayrollDelivery(payrollDeliveryService), httpapi.WithEmail(emailTemplateService, emailComposeService), httpapi.WithCompanyScope(rawPool)}, backupOptions...)
 	routerOptions = append(routerOptions, extraRouterOptions...)
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: httpapi.NewRouter(logger, cfg.Release, readiness{pool: rawPool, migrations: runner}, routerOptions...), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second}
 	errCh := make(chan error, 1)

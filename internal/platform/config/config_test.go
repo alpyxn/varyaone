@@ -11,8 +11,34 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":8080" || cfg.Environment != "development" || cfg.LogLevel != "info" {
+	if cfg.HTTPAddr != ":8080" || cfg.Environment != "development" || cfg.LogLevel != "info" || cfg.SecureCookies {
 		t.Fatalf("unexpected defaults: %#v", cfg)
+	}
+}
+
+func TestLoadSecureCookiesCanBeOverriddenForPlainHTTPDesktop(t *testing.T) {
+	values := map[string]string{
+		"VARYAONE_ENV":            "production",
+		"VARYAONE_SECURE_COOKIES": "false",
+		"VARYAONE_DATABASE_URL":   "postgres://user:secret@db:5432/varyaone",
+		"VARYAONE_MASTER_KEY":     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+	}
+	cfg, err := Load(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SecureCookies {
+		t.Fatal("desktop HTTP override must disable Secure cookies")
+	}
+	values["VARYAONE_SECURE_COOKIES"] = "sometimes"
+	if _, err := Load(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("invalid secure-cookie setting must be rejected")
+	}
+}
+
+func TestCookiesSecureDefaultsSafelyForDirectProductionConfig(t *testing.T) {
+	if !(Config{Environment: "production"}).CookiesSecure() {
+		t.Fatal("direct production config must default to secure cookies")
 	}
 }
 

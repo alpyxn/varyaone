@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	firewallRuleHTTP = "Varya One (8080)"
-	firewallRuleMDNS = "Varya One (mDNS)"
+	firewallRuleHTTP       = "Varya One (HTTP)"
+	legacyFirewallRuleHTTP = "Varya One (8080)"
+	firewallRuleMDNS       = "Varya One (mDNS)"
 )
 
 // NetMode is how far the desktop server exposes itself.
@@ -28,19 +29,21 @@ const (
 	NetLAN   NetMode = "lan"
 )
 
-// networkModeFile is the on-disk toggle under Home; absent means NetLAN.
+// networkModeFile is the on-disk toggle under Home; absent means local-only.
+// The installer writes an explicit choice, while a portable bundle must never
+// expose itself to the LAN merely because a file is missing.
 func (l Layout) networkModeFile() string { return filepath.Join(l.Home, "network-mode") }
 
-// NetworkMode reads the persisted mode, defaulting to NetLAN.
+// NetworkMode reads the persisted mode, defaulting safely to NetLocal.
 func (l Layout) NetworkMode() NetMode {
 	b, err := os.ReadFile(l.networkModeFile())
 	if err != nil {
-		return NetLAN
-	}
-	if NetMode(strings.TrimSpace(string(b))) == NetLocal {
 		return NetLocal
 	}
-	return NetLAN
+	if NetMode(strings.TrimSpace(string(b))) == NetLAN {
+		return NetLAN
+	}
+	return NetLocal
 }
 
 // SetNetworkMode persists the mode. An unknown value is rejected.
@@ -66,25 +69,36 @@ func (m NetMode) BindHost() string {
 // reconcile the Windows Firewall rule for port 8080, and restart the service if it
 // is running so the new bind address takes effect. Requires administrator rights
 // on Windows (the desktop client invokes it elevated).
-func ApplyNetworkMode(m NetMode, logger *slog.Logger) error {
+func ApplyNetworkMode(m NetMode, logger *slog.Logger) (resultErr error) {
+	defer func() { recordControlResult("netmode "+string(m), resultErr) }()
+	if m != NetLocal && m != NetLAN {
+		return os.ErrInvalid
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	l := DiscoverLayout()
+	oldMode := l.NetworkMode()
+
+	if runtime.GOOS == "windows" {
+		port := HTTPPort()
+		if err := reconcileFirewall(m, port); err != nil {
+			return fmt.Errorf("reconcile firewall: %w", err)
+		}
+	}
 	if err := l.SetNetworkMode(m); err != nil {
+		if runtime.GOOS == "windows" {
+			_ = reconcileFirewall(oldMode, HTTPPort())
+		}
 		return fmt.Errorf("persist network mode: %w", err)
 	}
 	logger.Info("network mode set", "mode", m)
 
-	if runtime.GOOS == "windows" {
-		port := DefaultHTTPPort
-		if err := reconcileFirewall(m, port); err != nil {
-			// A missing rule on removal, or a duplicate on add, is not fatal.
-			logger.Warn("firewall reconcile reported an error", "error", err)
-		}
-	}
-
 	if err := RestartIfRunning(); err != nil {
+		_ = l.SetNetworkMode(oldMode)
+		if runtime.GOOS == "windows" {
+			_ = reconcileFirewall(oldMode, HTTPPort())
+		}
 		return fmt.Errorf("restart service: %w", err)
 	}
 	return nil
@@ -95,7 +109,7 @@ func reconcileFirewall(m NetMode, port int) error {
 	defer cancel()
 
 	// Always clear both rules first (idempotent; ok if absent).
-	for _, name := range []string{firewallRuleHTTP, firewallRuleMDNS} {
+	for _, name := range []string{firewallRuleHTTP, legacyFirewallRuleHTTP, firewallRuleMDNS} {
 		_ = exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "delete", "rule",
 			"name="+name).Run()
 	}

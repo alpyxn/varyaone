@@ -59,7 +59,7 @@ Remove-Item $tmp
 # --- integrity gate ---------------------------------------------------------
 # Fail here in CI, never at runtime on a user's machine.
 $bin = Join-Path $dest "bin"
-foreach ($name in @("initdb.exe", "postgres.exe", "pg_ctl.exe", "psql.exe")) {
+foreach ($name in @("initdb.exe", "postgres.exe", "pg_ctl.exe", "psql.exe", "pg_dump.exe", "pg_restore.exe")) {
   $f = Join-Path $bin $name
   if (-not (Test-Path $f)) { throw "PostgreSQL bundle incomplete: $name missing" }
   $sz = (Get-Item $f).Length
@@ -118,9 +118,9 @@ Write-Host ">> staged $dest"
 Get-File "https://aka.ms/vs/17/release/vc_redist.x64.exe" `
   (Join-Path $PSScriptRoot "vc_redist.x64.exe") (10MB)
 
-# WebView2 Evergreen bootstrapper for varyaone-client.exe (absent on Server /
-# LTSC / older Win10). ~2 MB; no-ops if a runtime is already present.
-Get-File "https://go.microsoft.com/fwlink/p/?LinkId=2124703" `
-  (Join-Path $PSScriptRoot "MicrosoftEdgeWebview2Setup.exe") (1MB)
+# Full x64 Evergreen standalone installer. Unlike the tiny bootstrapper this is
+# self-contained, so a clean/offline Windows machine can open the control panel.
+Get-File "https://go.microsoft.com/fwlink/?linkid=2124701" `
+  (Join-Path $PSScriptRoot "MicrosoftEdgeWebView2RuntimeInstallerX64.exe") (100MB)
 
 Write-Host ">> all prerequisites staged"

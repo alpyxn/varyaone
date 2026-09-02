@@ -36,13 +36,19 @@ type Supervisor struct {
 
 // NewSupervisor builds a Supervisor with discovered defaults.
 func NewSupervisor(logger *slog.Logger) *Supervisor {
+	return &Supervisor{Layout: DiscoverLayout(), HTTPPort: HTTPPort(), Logger: logger}
+}
+
+// HTTPPort returns the validated desktop port override shared by the server,
+// panel, readiness probe, and firewall manager.
+func HTTPPort() int {
 	port := DefaultHTTPPort
 	if v := os.Getenv("VARYAONE_HTTP_PORT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 65535 {
 			port = n
 		}
 	}
-	return &Supervisor{Layout: DiscoverLayout(), HTTPPort: port, Logger: logger}
+	return port
 }
 
 // Run blocks until ctx is cancelled or a component fails.
@@ -83,7 +89,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 	// Best-effort clean shutdown of the cluster when the stack exits.
 	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 30_000_000_000)
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := pg.Stop(stopCtx); err != nil {
 			s.Logger.Warn("postgres stop failed", "error", err)
@@ -245,11 +251,16 @@ func (s *Supervisor) config(pg *Postgres) (config.Config, error) {
 	}
 
 	overrides := map[string]string{
-		"VARYAONE_ENV":              valueOr(os.Getenv("VARYAONE_ENV"), "production"),
+		"VARYAONE_ENV": valueOr(os.Getenv("VARYAONE_ENV"), "production"),
+		// The desktop server advertises http:// loopback/LAN URLs. Secure cookies
+		// are never sent to those origins, so keep the production hardening knobs
+		// while explicitly matching the desktop transport.
+		"VARYAONE_SECURE_COOKIES":   "false",
 		"VARYAONE_HTTP_ADDR":        s.Layout.NetworkMode().BindHost() + ":" + strconv.Itoa(s.HTTPPort),
 		"VARYAONE_DATABASE_URL":     dbURL,
 		"VARYAONE_MASTER_KEY":       masterKey,
 		"VARYAONE_STORAGE_ROOT":     s.Layout.Storage(),
+		"VARYAONE_POSTGRES_BIN":     pg.bin,
 		"VARYAONE_RELEASE":          valueOr(os.Getenv("VARYAONE_RELEASE"), readReleaseFile(s.Layout)),
 		"VARYAONE_APP_DATABASE_URL": "", // single bundled role; RLS role split is a later step
 		// Update checks: default to the official varya-pulse catalog so a plain
@@ -266,7 +277,14 @@ func (s *Supervisor) config(pg *Postgres) (config.Config, error) {
 		}
 		return os.Getenv(key)
 	}
-	return config.Load(getenv)
+	cfg, err := config.Load(getenv)
+	if err != nil {
+		return config.Config{}, err
+	}
+	// Windows normally gives a service about 20 seconds to stop. Leave enough
+	// of that budget for the bundled PostgreSQL fast shutdown below.
+	cfg.ShutdownTimeout = 5 * time.Second
+	return cfg, nil
 }
 
 // masterKey reads or generates the persistent encryption master key.
