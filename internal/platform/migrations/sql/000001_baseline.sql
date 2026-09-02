@@ -18,7 +18,11 @@ SET LOCAL check_function_bodies = false;
 -- Name: btree_gist; Type: EXTENSION; Schema: -; Owner: -
 --
 
-CREATE EXTENSION IF NOT EXISTS btree_gist;
+-- Extensions are database-wide, so keep this one out of the caller's
+-- search_path. Integration tests migrate throwaway schemas and drop them during
+-- cleanup; owning the extension from such a schema makes concurrent migrations
+-- race with that cleanup.
+CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
 
 --
 -- Name: EXTENSION btree_gist; Type: COMMENT; Schema: -; Owner: -

@@ -12,7 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18.4-alpine
+        # Pin the verified multi-architecture image. The 18.4-alpine tag is
+        # mutable, and migrations require the bundled btree_gist extension.
+        image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
         env:
           POSTGRES_DB: varyaone_test
           POSTGRES_USER: varyaone
@@ -44,6 +46,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client-18
           echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+      - name: Prepare integration database extensions
+        run: |
+          # Extensions are database-wide. Install btree_gist once in public so
+          # isolated test-schema cleanup can never remove it underneath a
+          # migration running in another package.
+          psql "$VARYAONE_TEST_DATABASE_URL" --set ON_ERROR_STOP=1 \
+            --command 'CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public'
+          test "$(psql "$VARYAONE_TEST_DATABASE_URL" --tuples-only --no-align \
+            --command "SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='btree_gist'")" = public
       - name: Tests (unit packages parallel, database packages serial)
         shell: bash
         run: |
