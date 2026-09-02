@@ -95,6 +95,21 @@ foreach ($crt in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
     Write-Warning "runner has no $crt in System32 — app-local CRT incomplete"
   }
 }
+
+# A file-count gate cannot prove that Windows can actually load initdb and all
+# of its dependent DLLs. Create a disposable cluster now so a 0xC0000135-style
+# runtime failure stops CI instead of reaching a user's first service start.
+$smokeData = Join-Path $env:TEMP "varyaone-pg-smoke-$PID"
+if (Test-Path $smokeData) { Remove-Item -Recurse -Force $smokeData }
+try {
+  Write-Host ">> smoke-testing bundled initdb"
+  & (Join-Path $bin "initdb.exe") `
+    "--pgdata=$smokeData" "--username=varyaone" "--auth=trust" `
+    "--encoding=UTF8" "--locale-provider=libc" "--no-locale"
+  if ($LASTEXITCODE -ne 0) { throw "bundled initdb smoke test failed (exit $LASTEXITCODE)" }
+} finally {
+  if (Test-Path $smokeData) { Remove-Item -Recurse -Force $smokeData }
+}
 Write-Host ">> staged $dest"
 
 # --- runtime prerequisites -------------------------------------------------

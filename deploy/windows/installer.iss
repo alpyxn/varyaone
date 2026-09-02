@@ -150,6 +150,7 @@ begin
     else
       ExecAppRequired('netmode local', 'Ağ modu ayarlanıyor...');
     ExecAppRequired('service start', 'Varya One servisi başlatılıyor...');
+    ExecAppRequired('service status', 'Windows servisi doğrulanıyor...');
   end;
 end;
 

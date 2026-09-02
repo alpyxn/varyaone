@@ -57,7 +57,7 @@
     <ul class="urls" id="urls"></ul>
     <div class="actions" style="margin-top:10px">
       <button id="open">Sunucuyu aç</button>
-      <button class="ghost" id="restart">Servisi yeniden başlat</button>
+      <button class="ghost" id="restart">Servisi yönet</button>
       <button class="ghost" id="logs">Loglar</button>
     </div>
   </div>
@@ -73,16 +73,21 @@
 
 <script>
   const $ = (id) => document.getElementById(id);
+  let lastState = null;
 
   async function refresh() {
     let s;
-    try { s = await window.hostPanelState(); } catch (e) { return; }
+    try { s = await window.hostPanelState(); }
+    catch (e) { $("status").textContent = String(e && e.message || e); return; }
+    lastState = s;
     $("ver").textContent = "Sürüm " + (s.version || "?");
     const svc = $("svc");
     if (!s.serviceInstalled) { svc.textContent = "kurulu değil"; svc.className = "pill bad"; }
     else if (s.serving) { svc.textContent = "çalışıyor"; svc.className = "pill ok"; }
     else if (s.running) { svc.textContent = "servis açık, sunucu yanıt vermiyor — Loglar'a bakın"; svc.className = "pill bad"; }
     else { svc.textContent = "durdu"; svc.className = "pill bad"; }
+    $("restart").textContent = !s.serviceInstalled ? "Servisi kur ve başlat" :
+      (!s.running ? "Servisi başlat" : "Servisi yeniden başlat");
 
     const ul = $("urls"); ul.innerHTML = "";
     (s.urls || []).forEach(u => {
@@ -93,11 +98,20 @@
     document.querySelectorAll('input[name=mode]').forEach(r => { r.checked = (r.value === s.mode); });
   }
 
-  $("open").addEventListener("click", () => window.hostOpenServer().catch(()=>{}));
+  $("open").addEventListener("click", async () => {
+    $("status").textContent = "Sunucu açılıyor…";
+    try { await window.hostOpenServer(); }
+    catch (e) { $("status").textContent = String(e && e.message || e); }
+  });
   $("restart").addEventListener("click", async () => {
-    $("status").textContent = "Yeniden başlatılıyor… (yönetici onayı gerekebilir)";
-    try { await window.hostRestart(); } catch (e) { $("status").textContent = String(e.message||e); }
-    setTimeout(refresh, 2500);
+    const verb = lastState && !lastState.serviceInstalled ? "Kurulup başlatılıyor" :
+      (lastState && !lastState.running ? "Başlatılıyor" : "Yeniden başlatılıyor");
+    $("status").textContent = verb + "… (yönetici onayı gerekebilir)";
+    try {
+      await window.hostRestart();
+      $("status").textContent = "Komut tamamlandı; sunucu hazırlanıyor…";
+    } catch (e) { $("status").textContent = String(e && e.message || e); }
+    setTimeout(refresh, 1500);
   });
   $("logs").addEventListener("click", () => window.hostOpenLogs().catch(()=>{}));
 

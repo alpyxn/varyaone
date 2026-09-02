@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,11 +10,13 @@ import (
 	"github.com/kardianos/service"
 )
 
-const serviceName = "VaryaOne"
+// ServiceName is the stable Windows SCM/system service identifier. The desktop
+// client uses the same value for its low-privilege status query.
+const ServiceName = "VaryaOne"
 
 func serviceConfig() *service.Config {
 	return &service.Config{
-		Name:        serviceName,
+		Name:        ServiceName,
 		DisplayName: "Varya One",
 		Description: "Varya One ERP sunucusu (API, worker, veritabanı ve arayüz).",
 		Arguments:   []string{"stack"},
@@ -78,6 +81,9 @@ func Control(action string) error {
 	if err != nil {
 		return err
 	}
+	if action == "ensure" {
+		return ensureService(svc)
+	}
 	if action == "status" {
 		status, statErr := svc.Status()
 		if statErr != nil {
@@ -87,6 +93,42 @@ func Control(action string) error {
 		return nil
 	}
 	return service.Control(svc, action)
+}
+
+// serviceLifecycle is the small portion of service.Service needed by ensure.
+// Keeping it narrow makes the install/start recovery path unit-testable without
+// touching the host service manager.
+type serviceLifecycle interface {
+	Status() (service.Status, error)
+	Install() error
+	Start() error
+}
+
+// ensureService makes the service usable from either a clean/portable bundle or
+// an installation whose service registration was removed. It is idempotent: an
+// already-running service is left alone, a stopped one is started, and a missing
+// one is installed before it is started.
+func ensureService(svc serviceLifecycle) error {
+	status, err := svc.Status()
+	if errors.Is(err, service.ErrNotInstalled) {
+		if err := svc.Install(); err != nil {
+			return fmt.Errorf("install service: %w", err)
+		}
+		if err := svc.Start(); err != nil {
+			return fmt.Errorf("start newly installed service: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("query service: %w", err)
+	}
+	if status == service.StatusRunning {
+		return nil
+	}
+	if err := svc.Start(); err != nil {
+		return fmt.Errorf("start service: %w", err)
+	}
+	return nil
 }
 
 // ServiceState reports whether the OS service is registered and, if so, running.

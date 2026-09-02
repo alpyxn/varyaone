@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/alpyxn/varyaone/internal/platform/desktop"
@@ -192,10 +193,12 @@ func (a *clientApp) openServer() error {
 		cur = loadConfig().LastURL
 	}
 	if cur == "" {
-		return fmt.Errorf("henüz bir sunucuya bağlanılmadı")
+		cur = fmt.Sprintf("http://127.0.0.1:%d", desktop.DefaultHTTPPort)
 	}
-	a.view.Dispatch(func() { a.view.Navigate(cur) })
-	return nil
+	// Validate the endpoint and remember it just like the normal connection
+	// screen. Previously a fresh control panel had no current/saved URL, so the
+	// button failed silently and never opened its own local server.
+	return a.connect(cur)
 }
 
 func (a *clientApp) openPanel() error {
@@ -233,7 +236,14 @@ func (a *clientApp) applyMode(mode string) error {
 }
 
 func (a *clientApp) restartService() error {
-	return runElevated(siblingExe("varyaone.exe"), "service", "restart")
+	installed, running := serviceState()
+	action := "restart"
+	if !installed {
+		action = "ensure"
+	} else if !running {
+		action = "start"
+	}
+	return runElevated(siblingExe("varyaone.exe"), "service", action)
 }
 
 func (a *clientApp) openLogs() error {
@@ -256,7 +266,7 @@ func serviceState() (installed, running bool) {
 	}
 	defer windows.CloseServiceHandle(scm)
 
-	name, _ := windows.UTF16PtrFromString("VaryaOne")
+	name, _ := windows.UTF16PtrFromString(desktop.ServiceName)
 	h, err := windows.OpenService(scm, name, windows.SERVICE_QUERY_STATUS)
 	if err != nil {
 		// Only ERROR_SERVICE_DOES_NOT_EXIST means "not installed"; any other
@@ -359,14 +369,28 @@ func siblingExe(name string) string {
 	return filepath.Join(filepath.Dir(self), name)
 }
 
-// runElevated launches exe with args through ShellExecute "runas", raising a
-// single UAC prompt. A cancelled prompt surfaces as an error.
+// runElevated launches exe with args through PowerShell's Start-Process/runas,
+// raises a single UAC prompt, waits for completion and propagates the real exit
+// code. ShellExecute alone returns as soon as UAC launches the helper, which made
+// the panel claim success even when service install/start failed afterwards.
 func runElevated(exe string, args ...string) error {
-	verb, _ := windows.UTF16PtrFromString("runas")
-	file, _ := windows.UTF16PtrFromString(exe)
-	argp, _ := windows.UTF16PtrFromString(strings.Join(args, " "))
-	if err := windows.ShellExecute(0, verb, file, argp, nil, windows.SW_HIDE); err != nil {
-		return fmt.Errorf("yönetici olarak çalıştırılamadı: %w", err)
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	quotedArgs := make([]string, 0, len(args))
+	for _, arg := range args {
+		quotedArgs = append(quotedArgs, quote(arg))
+	}
+	script := "$p = Start-Process -FilePath " + quote(exe) +
+		" -ArgumentList @(" + strings.Join(quotedArgs, ",") + ")" +
+		" -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop; exit $p.ExitCode"
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail != "" {
+			return fmt.Errorf("yönetici komutu başarısız: %s", detail)
+		}
+		return fmt.Errorf("yönetici komutu başarısız: %w", err)
 	}
 	return nil
 }

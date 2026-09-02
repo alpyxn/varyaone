@@ -111,6 +111,12 @@
       addr.value = saved.lastURL;
     } else {
       addr.value = "http://localhost:8080";
+      // A clean Windows installation includes its own local server. Open it
+      // immediately when ready; if first-run initialization is still ongoing,
+      // leave the address visible so the user can retry without losing context.
+      setStatus("Yerel sunucuya bağlanılıyor…");
+      try { await window.hostConnect(addr.value); return; }
+      catch (e) { setStatus("Yerel sunucu henüz hazır değil; tekrar deneyin.", true); }
     }
     addr.focus();
   })();
