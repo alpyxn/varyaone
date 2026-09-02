@@ -119,8 +119,7 @@ begin
   if not Exec(AppExe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     RaiseException(Format('%s başlatılamadı: %s', [AppExe, SysErrorMessage(ResultCode)]));
   if ResultCode <> 0 then
-    RaiseException(Format('%s %s başarısız oldu (çıkış kodu %d).',
-      [AppExe, Params, ResultCode]));
+    RaiseException(Format('%s %s başarısız oldu (çıkış kodu %d).', [AppExe, Params, ResultCode]));
 end;
 
 // Gomulu PostgreSQL, MSVC calisma zamanina baglidir. Servis kaydindan ONCE,

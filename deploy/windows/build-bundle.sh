@@ -23,6 +23,21 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$ROOT/dist/windows"
 STAGE="$OUT/VaryaOne"
 
+# Inno's script reader treats a continuation line whose first token is `[` as
+# a new section header even inside [Code]. Catch that cheaply before the SPA and
+# Go builds spend minutes producing artifacts that ISCC will later discard.
+if [ "${VARYAONE_REQUIRE_INSTALLER:-0}" = "1" ]; then
+  awk '
+    /^\[Code\]$/ { in_code=1; next }
+    in_code && /^\[[A-Za-z]/ { in_code=0 }
+    in_code && /^[[:space:]]*\[/ {
+      printf "!! FATAL: installer.iss:%d looks like an invalid section tag: %s\n", NR, $0 > "/dev/stderr"
+      bad=1
+    }
+    END { exit bad }
+  ' "$ROOT/deploy/windows/installer.iss"
+fi
+
 rm -rf "$OUT"
 mkdir -p "$STAGE"
 
