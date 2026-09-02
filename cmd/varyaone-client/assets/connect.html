@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Varya One</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+    background: #f4f4f5; color: #1a1a1a;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1b1b1d; color: #ececec; }
+    input { background: #2a2a2d; color: #ececec; border-color: #444; }
+    .card { background: #232326; }
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 800; }
+  .brand b { color: #c1272d; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 22px; width: 420px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.12); display: flex; flex-direction: column; gap: 12px;
+  }
+  label { font-weight: 600; font-size: 13px; }
+  input {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ccc;
+    font-size: 14px;
+  }
+  button {
+    padding: 10px 14px; border: 0; border-radius: 8px; background: #c1272d; color: #fff;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .6; cursor: default; }
+  .hint { font-size: 12px; opacity: .7; }
+  .status { min-height: 18px; font-size: 13px; }
+  .status.err { color: #c1272d; }
+  .found { font-size: 12px; }
+  .found a { color: #c1272d; cursor: pointer; text-decoration: underline; }
+</style>
+</head>
+<body>
+  <div class="brand">Varya<b>One</b></div>
+  <div class="card">
+    <label for="addr">Sunucu adresi</label>
+    <input id="addr" list="history" placeholder="http://192.168.1.10:8080" autocomplete="off">
+    <datalist id="history"></datalist>
+    <div class="found" id="found"></div>
+    <button id="go">Bağlan</button>
+    <div class="status" id="status"></div>
+    <div class="hint">Aynı ağdaki bir sunucu otomatik bulunursa adres hazır gelir.</div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const addr = $("addr"), status = $("status"), goBtn = $("go");
+
+  function setStatus(msg, isErr) {
+    status.textContent = msg || "";
+    status.className = "status" + (isErr ? " err" : "");
+  }
+
+  async function connect() {
+    const url = addr.value.trim();
+    if (!url) { setStatus("Bir adres girin.", true); return; }
+    goBtn.disabled = true;
+    setStatus("Bağlanılıyor…");
+    try {
+      await window.hostConnect(url);
+      // On success the host navigates this window away.
+    } catch (e) {
+      setStatus(String(e && e.message || e), true);
+      goBtn.disabled = false;
+    }
+  }
+
+  goBtn.addEventListener("click", connect);
+  addr.addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
+
+  (async function init() {
+    let saved = { lastURL: "", history: [] };
+    try { saved = await window.hostSaved(); } catch (e) {}
+    const dl = $("history");
+    (saved.history || []).forEach(u => {
+      const o = document.createElement("option"); o.value = u; dl.appendChild(o);
+    });
+
+    let discovered = [];
+    try { discovered = await window.hostDiscover(); } catch (e) {}
+    if (discovered.length) {
+      addr.value = discovered[0].url;
+      const box = $("found");
+      box.innerHTML = "Bulundu: " + discovered.map(s =>
+        `<a data-url="${s.url}">${s.name || s.url}</a>`).join(" · ");
+      box.querySelectorAll("a").forEach(a =>
+        a.addEventListener("click", () => { addr.value = a.dataset.url; connect(); }));
+    } else if (saved.lastURL) {
+      addr.value = saved.lastURL;
+    } else {
+      addr.value = "http://localhost:8080";
+    }
+    addr.focus();
+  })();
+</script>
+</body>
+</html>

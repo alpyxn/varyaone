@@ -1,0 +1,30 @@
+name: Hata bildirimi
+description: Tekrarlanabilir bir Varya One hatasını bildirin.
+title: "[Hata]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Sorun
+      description: Ne oldu, ne olmasını bekliyordunuz?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Tekrarlama adımları
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Varya One sürümü
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Güvenli günlük çıktısı
+      description: Parola, token, kimlik bilgisi ve firma verilerini mutlaka temizleyin.
+

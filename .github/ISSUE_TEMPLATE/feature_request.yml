@@ -1,0 +1,26 @@
+name: Özellik önerisi
+description: Ürün kapsamına uygun bir geliştirme önerin.
+title: "[Öneri]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: İş problemi
+      description: Kullanıcının çözmeye çalıştığı işi açıklayın.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Önerilen davranış
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Alan
+      options: [Cari, Stok, Satış, Alış, Finans, e-Belgeler, Raporlar, Platform]
+    validations:
+      required: true
+

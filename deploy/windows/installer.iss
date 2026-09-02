@@ -1,0 +1,79 @@
+; Varya One — Windows kurulum sihirbazi (Inno Setup 6).
+;
+; Derleme:
+;   iscc //DMyAppVersion=0.3.0 deploy/windows/installer.iss
+;
+; Once "deploy/windows/build-bundle.sh <version>" calisir; o script hazir kurulum
+; agacini (dist/windows/VaryaOne/) uretir ve iscc'yi bu betikle cagirir.
+; Cikti: dist/windows/VaryaOne-Setup-<version>.exe
+
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-dev"
+#endif
+
+#define MyAppName "Varya One"
+#define MyAppPublisher "Varya One"
+#define MyAppURL "https://varyaone.com/"
+#define MyExeName "varyaone.exe"
+#define ClientExe "varyaone-client.exe"
+
+[Setup]
+AppId={{7E9B2C41-1A55-4F2E-9C7D-1B2A3C4D5E6F}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+DefaultDirName={autopf}\VaryaOne
+DefaultGroupName=Varya One
+DisableProgramGroupPage=yes
+PrivilegesRequired=admin
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+OutputDir={#SourcePath}..\..\dist\windows
+OutputBaseFilename=VaryaOne-Setup-{#MyAppVersion}
+SetupIconFile={#SourcePath}appicon.ico
+UninstallDisplayIcon={app}\appicon.ico
+UninstallDisplayName={#MyAppName}
+WizardStyle=modern
+Compression=lzma2/max
+SolidCompression=yes
+
+[Languages]
+Name: "tr"; MessagesFile: "compiler:Languages\Turkish.isl"
+Name: "en"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+Name: "lanaccess"; Description: "Agdaki diger bilgisayarlar bu sunucuya erisebilsin (Ag modu)"; GroupDescription: "Ag modu"
+
+[Files]
+Source: "{#SourcePath}..\..\dist\windows\VaryaOne\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "{#SourcePath}appicon.ico";   DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourcePath}panelicon.ico"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+; Masaustunde iki ayri kisayol: uygulama ve kontrol paneli (ayni exe, farkli ikon).
+Name: "{autodesktop}\Varya One";            Filename: "{app}\{#ClientExe}"; IconFilename: "{app}\appicon.ico";   Comment: "Varya One'u ac"; Tasks: desktopicon
+Name: "{autodesktop}\Varya Kontrol Paneli"; Filename: "{app}\{#ClientExe}"; Parameters: "--panel"; IconFilename: "{app}\panelicon.ico"; Comment: "Sunucu durumu ve ag ayarlari"; Tasks: desktopicon
+Name: "{group}\Varya One";                  Filename: "{app}\{#ClientExe}"; IconFilename: "{app}\appicon.ico"
+Name: "{group}\Varya Kontrol Paneli";       Filename: "{app}\{#ClientExe}"; Parameters: "--panel"; IconFilename: "{app}\panelicon.ico"
+Name: "{group}\Varya One Kaldir";           Filename: "{uninstallexe}"
+
+[Run]
+; Kurulu bir onceki surumu birak (yeniden kurulumda zararsizca hata verir, yok sayilir).
+Filename: "{app}\{#MyExeName}"; Parameters: "service stop"; Flags: runhidden; StatusMsg: "Onceki servis durduruluyor..."
+Filename: "{app}\{#MyExeName}"; Parameters: "service uninstall"; Flags: runhidden
+Filename: "{app}\{#MyExeName}"; Parameters: "service install"; Flags: runhidden; StatusMsg: "Windows servisi kaydediliyor..."
+; Ag modunu yaz + guvenlik duvari kuralini duzenle (netmode kendisi halleder).
+Filename: "{app}\{#MyExeName}"; Parameters: "netmode lan";   Tasks: lanaccess;     Flags: runhidden; StatusMsg: "Ag modu ayarlaniyor..."
+Filename: "{app}\{#MyExeName}"; Parameters: "netmode local"; Tasks: not lanaccess; Flags: runhidden; StatusMsg: "Ag modu ayarlaniyor..."
+Filename: "{app}\{#MyExeName}"; Parameters: "service start"; Flags: runhidden; StatusMsg: "Varya One servisi baslatiliyor..."
+Filename: "{app}\{#ClientExe}"; Description: "Varya One'u ac"; Flags: postinstall skipifsilent nowait runasoriginaluser
+
+[UninstallRun]
+Filename: "{app}\{#MyExeName}"; Parameters: "service stop"; Flags: runhidden; RunOnceId: "VaryaOneServiceStop"
+Filename: "{app}\{#MyExeName}"; Parameters: "service uninstall"; Flags: runhidden; RunOnceId: "VaryaOneServiceUninstall"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Varya One (8080)"""; Flags: runhidden; RunOnceId: "VaryaOneFirewallDel"
+
+; Not: kullanici verisi %ProgramData%\VaryaOne altindadir (pgdata, master.key,
+; storage, backups). Kaldirma islemi bu klasore DOKUNMAZ.

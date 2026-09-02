@@ -1,0 +1,56 @@
+# Domainli + otomatik SSL katmani.
+#
+# Bu dosya tek basina kullanilmaz; her zaman compose.yaml ile birlikte:
+#   docker compose -f compose.yaml -f compose.domain.yaml up -d
+#
+# Normalde bu dosyayi elle cagirmaniza gerek yok:
+#   ./deploy.sh install --domain erp.example.com --email admin@example.com
+# gerekli her seyi (sertifika dahil) kurar.
+#
+# nginx, disari acilan tek servistir (80/443). frontend ve api yalniz
+# 127.0.0.1'e baglanir (deploy.sh VARYAONE_WEB_BIND/API_BIND=127.0.0.1 yapar),
+# nginx onlara compose agi uzerinden `frontend:3000` olarak ulasir.
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      frontend:
+        condition: service_started
+    ports:
+      - "${VARYAONE_HTTP_PORT:-80}:80"
+      - "${VARYAONE_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot-webroot:/var/www/certbot
+    # Yenilenen sertifikalari almak icin nginx'i periyodik olarak yeniden yukle.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        while :; do sleep 6h & wait $${!}; nginx -s reload; done &
+        exec nginx -g 'daemon off;'
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    # Ilk sertifika deploy.sh tarafindan `certonly` ile alinir; bu servis yalniz
+    # yenileme dongusudur.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        trap exit TERM
+        while :; do
+          certbot renew --webroot -w /var/www/certbot --quiet
+          sleep 12h & wait $${!}
+        done
+    restart: unless-stopped
+
+volumes:
+  letsencrypt:
+  certbot-webroot:

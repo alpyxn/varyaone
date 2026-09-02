@@ -1,0 +1,20 @@
+<svg width="256" height="256" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg">
+  <rect width="220" height="220" rx="34" fill="#C1272D"/>
+  <g transform="translate(110 110)" fill="#ffffff">
+    <path d="M0,-78 a78,78 0 0 1 0,156 a78,78 0 0 1 0,-156 Z
+             M0,-58 A58,58 0 0 0 0,58 A58,58 0 0 0 0,-58 Z" fill-rule="evenodd" opacity="0"/>
+    <g>
+      <circle r="26" fill="none" stroke="#ffffff" stroke-width="16"/>
+      <g id="teeth">
+        <rect x="-9" y="-64" width="18" height="26" rx="3"/>
+      </g>
+      <use href="#teeth" transform="rotate(45)"/>
+      <use href="#teeth" transform="rotate(90)"/>
+      <use href="#teeth" transform="rotate(135)"/>
+      <use href="#teeth" transform="rotate(180)"/>
+      <use href="#teeth" transform="rotate(225)"/>
+      <use href="#teeth" transform="rotate(270)"/>
+      <use href="#teeth" transform="rotate(315)"/>
+    </g>
+  </g>
+</svg>

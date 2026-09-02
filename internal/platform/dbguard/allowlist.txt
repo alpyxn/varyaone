@@ -1,0 +1,19 @@
+# dbguard allowlist — reviewed SQL statements that touch a company-scoped table
+# without a literal company_id predicate because the scope is guaranteed another
+# way. Format: <key>  <reason>
+#
+# The key is <file>:<table>:<hash> and is printed by the test on a new finding.
+# It is line-number independent, so editing an allowed file does not churn this
+# list, but changing the statement text does (forcing re-review).
+#
+# Adding an entry here is a review decision. If you are not certain the row set is
+# already constrained to one company, add the predicate instead.
+
+internal/identity/service.go:api_tokens:5d37d6f5  api_tokens.id is a globally-unique UUID PK; the token was just authenticated by its hash, this only stamps last_used_at on that exact row.
+
+internal/inventory/stock_count_engine.go:stock_count_engine_events:4796acac  event stream read filtered by count_id, a company-scoped aggregate already authorized by the caller.
+
+internal/platform/outbox/worker.go:outbox_events:89b4bde2  trusted outbox processor keyed on event_id (global UUID PK); outbox_events is cross-company infrastructure.
+internal/platform/outbox/worker.go:outbox_events:97f951f7  trusted outbox processor keyed on event_id (global UUID PK).
+internal/platform/outbox/worker.go:outbox_events:c92dcd77  trusted outbox processor keyed on event_id (global UUID PK).
+internal/platform/outbox/worker.go:outbox_events:db96cdae  trusted outbox processor keyed on event_id (global UUID PK).

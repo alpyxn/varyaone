@@ -1,0 +1,14 @@
+<!-- Source for appicon.ico. Regenerate with:
+     for s in 16 24 32 48 64 128 256; do magick -background none appicon.svg -resize ${s}x${s} p$s.png; done
+     magick p16.png p24.png p32.png p48.png p64.png p128.png p256.png appicon.ico -->
+<svg width="256" height="256" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg">
+  <rect width="220" height="220" rx="34" fill="#ffffff"/>
+  <g transform="translate(12 14)">
+    <g fill="#C1272D">
+      <rect x="20" y="100" width="30" height="90" rx="3" transform="rotate(-26 35 190)"/>
+      <rect x="70" y="55" width="30" height="135" rx="3" transform="rotate(-12 85 190)"/>
+      <rect x="120" y="35" width="30" height="155" rx="3" transform="rotate(-4 135 190)"/>
+    </g>
+    <rect x="170" y="10" width="30" height="180" rx="3" fill="#1A1A1A"/>
+  </g>
+</svg>

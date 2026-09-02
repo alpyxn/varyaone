@@ -1,0 +1,8 @@
+package: contract
+output: generated.go
+generate:
+  models: true
+  chi-server: true
+output-options:
+  skip-prune: true
+  include-operation-ids: [getLiveness, getReadiness]

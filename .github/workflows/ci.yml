@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_DB: varyaone_test
+          POSTGRES_USER: varyaone
+          POSTGRES_PASSWORD: test-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U varyaone -d varyaone_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      VARYAONE_DATABASE_URL: postgres://varyaone:test-only-password@localhost:5432/varyaone_test?sslmode=disable
+      VARYAONE_TEST_DATABASE_URL: postgres://varyaone:test-only-password@localhost:5432/varyaone_test?sslmode=disable
+      # config.Load() always requires a key; migrate/status never decrypt with it.
+      # 32 zero bytes, base64 — matches the config package's own test fixtures.
+      VARYAONE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: test -z "$(gofmt -l cmd internal)"
+      - name: PostgreSQL 18 client (backup engine tests shell out to pg_dump)
+        run: |
+          sudo sh -c 'echo "deb [arch=amd64] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+      # -p 1 serialises the package test binaries. The integration tests each
+      # migrate their own schema in the shared database; running them
+      # concurrently races on the catalog (could not open relation with OID …).
+      - run: go test -race -p 1 ./...
+      - run: go vet ./...
+      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.6.1 ./...
+      - name: Verify pending migration is reported
+        run: if go run ./cmd/varyaone migrate status; then exit 1; fi
+      - run: go run ./cmd/varyaone migrate up
+      - run: go run ./cmd/varyaone migrate status
+      - run: go generate ./...
+      - run: docker run --rm -v "$PWD:/src" -w /src sqlc/sqlc:1.30.0 generate
+      - run: git diff --exit-code
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run check
+      - run: npm run test
+      - run: npm run build
+
+  containers:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: ci-only-password
+      VARYAONE_MASTER_KEY: ci-only-master-key-not-a-real-secret
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker compose build

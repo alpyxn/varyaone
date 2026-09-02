@@ -1,0 +1,11 @@
+version: "2"
+sql:
+  - engine: postgresql
+    schema: internal/platform/migrations/sql
+    queries: internal/platform/queries
+    gen:
+      go:
+        package: dbgen
+        out: internal/platform/dbgen
+        emit_interface: true
+        sql_package: pgx/v5

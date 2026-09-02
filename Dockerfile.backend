@@ -1,0 +1,22 @@
+FROM golang:1.26.6-alpine AS build
+WORKDIR /src
+RUN apk add --no-cache ca-certificates git build-base libwebp-dev
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=1 go test ./... && \
+	CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o /out/varyaone ./cmd/varyaone
+
+FROM build AS binary
+
+# alpine:3.24 matches the build stage toolchain and ships postgresql18-client,
+# which the `.varya` backup engine shells out to (server is postgres:18.x).
+FROM alpine:3.24 AS runtime
+RUN apk add --no-cache ca-certificates tzdata wget libwebp postgresql18-client && \
+    addgroup -S varyaone && adduser -S -G varyaone varyaone && \
+    mkdir -p /var/lib/varyaone/storage && \
+    chown -R varyaone:varyaone /var/lib/varyaone
+COPY --from=build /out/varyaone /usr/local/bin/varyaone
+USER varyaone
+ENTRYPOINT ["/usr/local/bin/varyaone"]

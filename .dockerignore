@@ -1,0 +1,9 @@
+.git
+.env
+backups
+graphify-out
+deploy
+web/node_modules
+web/.svelte-kit
+web/build
+

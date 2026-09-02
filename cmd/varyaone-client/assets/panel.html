@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Varya Kontrol Paneli</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 22px; font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+    background: #f4f4f5; color: #1a1a1a;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1b1b1d; color: #ececec; }
+    .card { background: #232326; }
+    .pill { background: #2a2a2d; }
+  }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  h1 b { color: #c1272d; }
+  .sub { opacity: .65; font-size: 12px; margin-bottom: 16px; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px;
+          box-shadow: 0 3px 12px rgba(0,0,0,.08); }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .k { font-weight: 600; }
+  .pill { background: #eee; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+  .ok { color: #1a7f37; } .bad { color: #c1272d; }
+  .urls { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+  .urls li { cursor: pointer; color: #c1272d; }
+  label.opt { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; cursor: pointer; }
+  label.opt small { display: block; opacity: .65; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    padding: 8px 12px; border: 0; border-radius: 8px; background: #c1272d; color: #fff;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: inherit; border: 1px solid #999; }
+  .status { min-height: 18px; font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>Varya <b>Kontrol Paneli</b></h1>
+  <div class="sub" id="ver"></div>
+
+  <div class="card">
+    <div class="row"><span class="k">Servis</span><span id="svc" class="pill">—</span></div>
+    <ul class="urls" id="urls"></ul>
+    <div class="actions" style="margin-top:10px">
+      <button id="open">Sunucuyu aç</button>
+      <button class="ghost" id="restart">Servisi yeniden başlat</button>
+      <button class="ghost" id="logs">Loglar</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="k">Ağ modu</div>
+    <label class="opt"><input type="radio" name="mode" value="local">
+      <span>Yalnızca bu bilgisayar<small>Sunucu 127.0.0.1'i dinler, güvenlik duvarı kuralı ve ağ yayını kapalı.</small></span></label>
+    <label class="opt"><input type="radio" name="mode" value="lan">
+      <span>Ağa açık<small>Ağdaki diğer bilgisayarlar erişebilir; 8080 güvenlik duvarı kuralı ve mDNS yayını açık.</small></span></label>
+    <div class="status" id="status"></div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  async function refresh() {
+    let s;
+    try { s = await window.hostPanelState(); } catch (e) { return; }
+    $("ver").textContent = "Sürüm " + (s.version || "?");
+    const svc = $("svc");
+    if (!s.serviceInstalled) { svc.textContent = "kurulu değil"; svc.className = "pill bad"; }
+    else if (s.running) { svc.textContent = "çalışıyor"; svc.className = "pill ok"; }
+    else { svc.textContent = "durdu"; svc.className = "pill bad"; }
+
+    const ul = $("urls"); ul.innerHTML = "";
+    (s.urls || []).forEach(u => {
+      const li = document.createElement("li"); li.textContent = u;
+      li.addEventListener("click", () => window.hostConnect(u).catch(()=>{}));
+      ul.appendChild(li);
+    });
+    document.querySelectorAll('input[name=mode]').forEach(r => { r.checked = (r.value === s.mode); });
+  }
+
+  $("open").addEventListener("click", () => window.hostOpenServer().catch(()=>{}));
+  $("restart").addEventListener("click", async () => {
+    $("status").textContent = "Yeniden başlatılıyor… (yönetici onayı gerekebilir)";
+    try { await window.hostRestart(); } catch (e) { $("status").textContent = String(e.message||e); }
+    setTimeout(refresh, 2500);
+  });
+  $("logs").addEventListener("click", () => window.hostOpenLogs().catch(()=>{}));
+
+  document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener("change", async () => {
+    $("status").textContent = "Ağ modu değiştiriliyor… (yönetici onayı gerekebilir)";
+    try { await window.hostApplyMode(r.value); $("status").textContent = "Uygulandı."; }
+    catch (e) { $("status").textContent = String(e.message||e); }
+    setTimeout(refresh, 2500);
+  }));
+
+  refresh();
+  setInterval(refresh, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+name: varyaone
+
+x-backend-environment: &backend-environment
+  VARYAONE_ENV: ${VARYAONE_ENV:-production}
+  VARYAONE_HTTP_ADDR: :8080
+  VARYAONE_DATABASE_URL: postgres://${POSTGRES_USER:-varyaone}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-varyaone}?sslmode=disable
+  # Opsiyonel: sunucu ve worker trafigi bu baglantidan servis edilir. Superuser
+  # olmayan `varyaone_app` rolune isaret ettirin; boylece firma izolasyonu
+  # row-level-security ile veritabani seviyesinde zorlanir (migration 000148 rolu
+  # olusturur, operator `ALTER ROLE varyaone_app LOGIN PASSWORD ...` ile acar).
+  # Bos birakilirsa VARYAONE_DATABASE_URL kullanilir (davranis degismez).
+  VARYAONE_APP_DATABASE_URL: ${VARYAONE_APP_DATABASE_URL:-}
+  VARYAONE_LOG_LEVEL: ${VARYAONE_LOG_LEVEL:-info}
+  VARYAONE_RELEASE: ${VARYAONE_RELEASE:-dev}
+  VARYAONE_MASTER_KEY: ${VARYAONE_MASTER_KEY:?VARYAONE_MASTER_KEY is required}
+  VARYAONE_STORAGE_PROVIDER: ${VARYAONE_STORAGE_PROVIDER:-local}
+  VARYAONE_STORAGE_ROOT: ${VARYAONE_STORAGE_ROOT:-/var/lib/varyaone/storage}
+  # Nabiz: anonim kurulum sayaci varsayilan olarak ACIK gelir (opt-out).
+  # Gonderilen tek sey: rastgele kurulum UUID'si + surum. Kapatmak icin:
+  #   VARYAONE_PULSE_INSTALL_PING=false
+  # Ingest anahtari gizli degildir (yalnizca rastgele istek engelleme).
+  VARYAONE_PULSE_ENDPOINT: ${VARYAONE_PULSE_ENDPOINT:-https://varya-pulse.varyaone.workers.dev}
+  VARYAONE_PULSE_INGEST_KEY: ${VARYAONE_PULSE_INGEST_KEY:-0290a2e2fa410b7b7d4656496635a36695a84419027c134225de36b3bf67ce56}
+  VARYAONE_PULSE_INSTALL_PING: ${VARYAONE_PULSE_INSTALL_PING:-true}
+  # Gunluk anonim kullanim ozeti (sirket UUID bazinda sayaclar) opt-IN'dir.
+  VARYAONE_PULSE_ENABLED: ${VARYAONE_PULSE_ENABLED:-false}
+  # Host'taki systemd guncelleme aracinin /internal/update/* uclarina erisim
+  # belirteci. Bos ise o uclar kapali kalir. `./deploy.sh install` uretir.
+  VARYAONE_UPDATE_AGENT_TOKEN: ${VARYAONE_UPDATE_AGENT_TOKEN:-}
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    # PostgreSQL varsayilan olarak yalniz compose agi icinde erisilebilir; host'a
+    # HIC acilmaz. En guvenli davranis budur. Yedekleme/gecici erisim icin
+    # gerekiyorsa asagiyi acin ve MUTLAKA 127.0.0.1'e baglayin (asla 0.0.0.0):
+    # ports:
+    #   - "127.0.0.1:${VARYAONE_POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-varyaone}
+      POSTGRES_USER: ${POSTGRES_USER:-varyaone}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    command: ["migrate", "up"]
+    environment: *backend-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        VARYAONE_RELEASE: ${VARYAONE_RELEASE:-dev}
+    command: ["server"]
+    environment: *backend-environment
+    ports:
+      # VARYAONE_API_BIND varsayilan 0.0.0.0'dir. Domainli kurulumda deploy.sh
+      # bunu 127.0.0.1 yapar; API'ye disaridan dogrudan erisim kapanir, yalniz
+      # nginx + frontend uzerinden gecilir.
+      - "${VARYAONE_API_BIND:-0.0.0.0}:${VARYAONE_API_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - storage-data:/var/lib/varyaone/storage
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        VARYAONE_RELEASE: ${VARYAONE_RELEASE:-dev}
+    command: ["worker"]
+    environment: *backend-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      VARYAONE_API_INTERNAL_URL: http://api:8080
+      # SvelteKit uses ORIGIN to validate form/multipart POST origins in the
+      # production adapter. Keep this aligned with the browser-facing URL.
+      ORIGIN: ${VARYAONE_WEB_ORIGIN:-http://localhost:3000}
+      # adapter-node caps request bodies at 512K by default. The `.varya`
+      # backup restore proxies a full-system archive through this service, so
+      # lift the ceiling to the API's own restore cap (8 GiB).
+      BODY_SIZE_LIMIT: ${VARYAONE_BODY_SIZE_LIMIT:-8589934592}
+    ports:
+      - "${VARYAONE_WEB_BIND:-0.0.0.0}:${VARYAONE_WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend-tests:
+    image: golang:1.26.6-alpine
+    profiles: ["test"]
+    working_dir: /src
+    volumes:
+      - .:/src
+    environment:
+      VARYAONE_TEST_DATABASE_URL: postgres://${POSTGRES_USER:-varyaone}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-varyaone}?sslmode=disable
+    # postgresql-client gives the backup engine's integration test real
+    # pg_dump / pg_restore binaries; without it that test self-skips.
+    command: ["sh", "-c", "apk add --no-cache postgresql-client >/dev/null && exec go test ./..."]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  storage-data:

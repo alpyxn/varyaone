@@ -1,0 +1,37 @@
+.env
+.env.tmp.*
+.DS_Store
+*.log
+CHANGELOG.md
+CONTEXT.md
+AGENTS.md
+CLAUDE.md
+bin/
+deploy/.lock-*
+deploy/.update-rollback
+deploy/.deploy-self.*
+build/
+dist/
+deploy/windows/pgsql/
+coverage/
+backups/
+web/.svelte-kit/
+web/build/
+web/node_modules/
+backups/
+docs/
+.claude/
+graphify-out/
+
+
+# Desktop bundle: only the placeholder index.html is tracked; the real static
+# build is copied in at package time.
+internal/platform/spa/dist/_app/
+internal/platform/spa/dist/favicon.svg
+internal/platform/spa/dist/version.json
+web/playwright-report/
+web/test-results/
+
+
+# deploy.sh tarafindan uretilen nginx yapilandirmasi (domainli kurulum)
+deploy/nginx/conf.d/*.conf

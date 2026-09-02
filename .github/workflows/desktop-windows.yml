@@ -1,0 +1,72 @@
+name: desktop-windows
+
+# Builds the Windows desktop bundle (varyaone.exe + varyaone-client.exe +
+# embedded SPA + bundled PostgreSQL), the updater zip, and the Inno Setup install
+# wizard; on a tag it attaches all three (+ sha256) to the GitHub Release.
+# Registering the release with varya-pulse (so the updater sees it) is a manual
+# step for now — see deploy/windows/README.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "version string (e.g. v0.3.0-rc1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Resolve version
+        id: v
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME:-${{ inputs.version }}}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch bundled PostgreSQL
+        run: pwsh deploy/windows/fetch-tools.ps1
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --no-progress -y
+          echo "C:\Program Files (x86)\Inno Setup 6" >> "$env:GITHUB_PATH"
+
+      - name: Install go-winres (refresh client exe icon)
+        run: go install github.com/tc-hib/go-winres@latest
+
+      - name: Build bundle
+        shell: bash
+        run: deploy/windows/build-bundle.sh "${{ steps.v.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: varyaone-windows-${{ steps.v.outputs.version }}
+          path: |
+            dist/windows/*.zip*
+            dist/windows/*.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/windows/*.zip
+            dist/windows/*.zip.sha256
+            dist/windows/*.exe
