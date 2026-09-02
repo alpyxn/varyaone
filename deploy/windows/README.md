@@ -14,6 +14,11 @@ istemci uygulamasından erişir. Docker gerekmez.
 | Windows updater (`varyaone update-apply`) | `internal/platform/desktop/updater.go` | ✅ hazır (uçtan uca test bekliyor) |
 | Updater tetikleyici (Linux systemd ajanı yerine) | `supervisor.go` `runUpdateApplier` + `spawn_windows.go` | ✅ hazır (uçtan uca test bekliyor) |
 | Pulse yapılandırması (masaüstü varsayılanı) | `settings.go` + `supervisor.go` `config()` | ✅ resmi uç varsayılan, `settings.env` ile geçersiz kılınır |
+| VC++ çalışma zamanı (gömülü PG için şart) | `fetch-tools.ps1` indirir, `installer.iss` `[Code]` sessiz kurar | ✅ yoksa `initdb` `0xC0000135` verir |
+| WebView2 runtime (istemci için şart) | `fetch-tools.ps1` bootstrapper indirir, `installer.iss` `[Code]` `/silent /install` | ✅ Win11/güncel Win10'da zaten var |
+| Firewall: 8080/TCP + 5353/UDP (mDNS) | `netmode.go` `reconcileFirewall` (private+domain profili) | ✅ servis LocalSystem olduğu için prompt çıkmaz |
+| Port çakışması ön kontrolü | `supervisor.go` `checkHTTPPortFree` | ✅ "8080 kullanımda" net mesajı |
+| Kod imzalama (SmartScreen) | `installer.iss` SignTool iskeleti | ⏳ sertifika gerek (bkz. aşağı) |
 | SPA static build (`VARYAONE_ADAPTER=static`) | `web/svelte.config.js` | ✅ hazır |
 | pulse: Windows artefakt alanları | `varya-pulse` migration 0004 + `/release/v1/latest` | ✅ hazır |
 | Ağ modu (`varyaone netmode <local\|lan>`) | `internal/platform/desktop/netmode.go` | ✅ hazır |
@@ -143,6 +148,31 @@ yeni majörde `initdb` → `swap` öncesi alınan `.varya` dökümünü içine g
 Tetikleyici, çalışan binary'ler ile veri dizininin majör karşılaştırmasıdır;
 pulse'taki `pg_major` alanı yalnızca bilgilendirme/panel içindir.
 
+## Kod imzalama (SmartScreen / Defender)
+
+İmzasız `setup.exe` ve `.exe`'ler "bilinmeyen yayıncı" uyarısı verir. Bir
+Authenticode sertifikası (tercihen OV/EV) alındığında:
+
+1. `varyaone.exe` + `varyaone-client.exe`'yi `build-bundle.sh` içinde `signtool`
+   ile imzala (Go derlemesinden sonra, zip'lemeden önce).
+2. `iscc`'ye SignTool tanımını geç:
+   ```
+   iscc "/Ssigntool=signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /f cert.pfx /p $PAROLA $f" ...
+   ```
+   ve `installer.iss`'te `SignTool=signtool` + `SignedUninstaller=yes` satırlarının
+   yorumunu kaldır — Inno hem `setup.exe`'yi hem de kaldırıcıyı imzalar.
+
+VERSIONINFO alanları (`build-bundle.sh` → `//DMyNumericVersion`, go-winres
+`--file-version`) zaten dolduruluyor; imza olmadan tek başına yetmez ama yardımcı olur.
+
+## initdb / postgres ve LocalSystem
+
+Servis LocalSystem olarak çalışır. `postgres.exe` yükseltilmiş bir token ile
+çalışmayı reddeder — ama biz onu hiç doğrudan çağırmıyoruz; `pg_ctl start`
+kısıtlı bir token oluşturup postgres'i onunla başlatır (EDB'nin kendi servisiyle
+aynı desen). `initdb` doğrudan çağrılır ve LocalSystem'de sorunsuz çalışır (Unix'teki
+"root ile çalışamaz" kontrolü Windows'ta yok). VM testinde yine de gözlenecek.
+
 ## Sonraki adımlar
 
 - Kontrol panelini genişlet: yedek al/geri yükle, güncelleme ilerlemesini
@@ -152,3 +182,5 @@ pulse'taki `pg_major` alanı yalnızca bilgilendirme/panel içindir.
   `CREATE_BREAKAWAY_FROM_JOB` ekle. Sürekli çöken bir güncelleme 15 dk'da bir
   yeniden denenir (sıkı döngü değil ama Linux ajanındaki gibi bir "pes et" sayacı yok).
 - CI'da release'i pulse admin ucuna otomatik kaydet.
+- Kod imzalama sertifikası al, `build-bundle.sh` + `installer.iss` SignTool'u aç.
+- 8080 dolu ise otomatik alternatif port dene (şu an sadece net hata veriyor).

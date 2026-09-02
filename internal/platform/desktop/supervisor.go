@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -48,6 +49,11 @@ func NewSupervisor(logger *slog.Logger) *Supervisor {
 func (s *Supervisor) Run(ctx context.Context) error {
 	if err := s.Layout.EnsureDirs(); err != nil {
 		return fmt.Errorf("prepare data directories: %w", err)
+	}
+	// Fail fast with a clear message if the HTTP port is taken — otherwise the
+	// server goroutine dies deep in startup and the reason is easy to miss.
+	if err := s.checkHTTPPortFree(); err != nil {
+		return err
 	}
 	// Sweep any ".old-<ts>" binaries a previous Windows in-place update left behind
 	// (they can only be deleted once the old process has fully exited). The
@@ -142,6 +148,18 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		s.Logger.Info("varya one desktop stack ready", "mode", mode, "url", fmt.Sprintf("http://127.0.0.1:%d", s.HTTPPort))
 	}
 	return group.Wait()
+}
+
+// checkHTTPPortFree probes the configured bind address so a port already in use
+// surfaces as "8080 kullanımda" rather than an opaque late failure. Best-effort:
+// a transient bind between here and the real listen is acceptable.
+func (s *Supervisor) checkHTTPPortFree() error {
+	addr := s.Layout.NetworkMode().BindHost() + ":" + strconv.Itoa(s.HTTPPort)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("HTTP portu %d kullanımda — başka bir uygulama mı çalışıyor? (%s)", s.HTTPPort, addr)
+	}
+	return ln.Close()
 }
 
 // updateApplierPoll is how often the stack checks for an operator-queued apply.

@@ -33,3 +33,20 @@ Remove-Item -Recurse -Force $extract
 Remove-Item $tmp
 
 Write-Host ">> staged $dest"
+
+# The EnterpriseDB binary zip is NOT self-contained: initdb.exe / postgres.exe are
+# linked against the MSVC runtime and fail with 0xC0000135 (DLL not found) on a
+# clean Windows box. Ship the VC++ redistributable so the installer can install
+# it as a prerequisite.
+$vcRedist = Join-Path $PSScriptRoot "vc_redist.x64.exe"
+Write-Host ">> downloading vc_redist.x64.exe"
+Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcRedist
+Write-Host ">> staged $vcRedist"
+
+# WebView2 Evergreen bootstrapper — varyaone-client.exe needs the WebView2
+# runtime, which is absent on Windows Server / LTSC / older Win10. The
+# bootstrapper is ~2 MB and no-ops if a runtime is already present.
+$wv2 = Join-Path $PSScriptRoot "MicrosoftEdgeWebview2Setup.exe"
+Write-Host ">> downloading MicrosoftEdgeWebview2Setup.exe"
+Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $wv2
+Write-Host ">> staged $wv2"

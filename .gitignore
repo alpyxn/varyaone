@@ -13,6 +13,8 @@ deploy/.deploy-self.*
 build/
 /dist/
 deploy/windows/pgsql/
+deploy/windows/vc_redist.x64.exe
+deploy/windows/MicrosoftEdgeWebview2Setup.exe
 coverage/
 backups/
 web/.svelte-kit/

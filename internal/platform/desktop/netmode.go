@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const firewallRuleName = "Varya One (8080)"
+const (
+	firewallRuleHTTP = "Varya One (8080)"
+	firewallRuleMDNS = "Varya One (mDNS)"
+)
 
 // NetMode is how far the desktop server exposes itself.
 //
@@ -88,21 +91,35 @@ func ApplyNetworkMode(m NetMode, logger *slog.Logger) error {
 }
 
 func reconcileFirewall(m NetMode, port int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	del := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "delete", "rule",
-		"name="+firewallRuleName)
-	_ = del.Run() // ok if it did not exist
-
+	// Always clear both rules first (idempotent; ok if absent).
+	for _, name := range []string{firewallRuleHTTP, firewallRuleMDNS} {
+		_ = exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "delete", "rule",
+			"name="+name).Run()
+	}
 	if m != NetLAN {
 		return nil
 	}
-	add := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "add", "rule",
-		"name="+firewallRuleName, "dir=in", "action=allow", "protocol=TCP",
-		fmt.Sprintf("localport=%d", port))
-	if out, err := add.CombinedOutput(); err != nil {
-		return fmt.Errorf("netsh add rule: %w: %s", err, strings.TrimSpace(string(out)))
+
+	// Inbound on the private + domain profiles only (never public): the HTTP API
+	// on 8080/TCP and mDNS discovery on 5353/UDP. A service runs non-interactively
+	// as LocalSystem, so Windows silently blocks inbound with no prompt — without
+	// the 5353 rule the thin client's auto-discovery would not see this server.
+	rules := []struct {
+		name, proto, lport string
+	}{
+		{firewallRuleHTTP, "TCP", fmt.Sprintf("%d", port)},
+		{firewallRuleMDNS, "UDP", "5353"},
+	}
+	for _, r := range rules {
+		add := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "add", "rule",
+			"name="+r.name, "dir=in", "action=allow", "enable=yes",
+			"profile=private,domain", "protocol="+r.proto, "localport="+r.lport)
+		if out, err := add.CombinedOutput(); err != nil {
+			return fmt.Errorf("netsh add rule %q: %w: %s", r.name, err, strings.TrimSpace(string(out)))
+		}
 	}
 	return nil
 }

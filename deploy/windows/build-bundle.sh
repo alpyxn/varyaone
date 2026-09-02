@@ -22,10 +22,27 @@ STAGE="$OUT/VaryaOne"
 rm -rf "$OUT"
 mkdir -p "$STAGE"
 
+# Numeric x.x.x.x for VERSIONINFO resources (strip leading v and any -suffix).
+_NUM="${VERSION#v}"; _NUM="${_NUM%%-*}"
+IFS=. read -r _a _b _c _d <<EOF
+$_NUM
+EOF
+NUMERIC="${_a:-0}.${_b:-0}.${_c:-0}.${_d:-0}"
+
 echo ">> building SPA bundle"
 ( cd "$ROOT/web" && VARYAONE_ADAPTER=static npm ci && VARYAONE_ADAPTER=static npm run build )
 rm -rf "$ROOT/internal/platform/spa/dist"
 cp -r "$ROOT/web/build" "$ROOT/internal/platform/spa/dist"
+
+# Refresh embedded manifest/version (+icon for the client) resources when
+# go-winres is available; committed rsrc_windows_amd64.syso files are the fallback.
+if command -v go-winres >/dev/null 2>&1; then
+  for d in varyaone varyaone-client; do
+    ( cd "$ROOT/cmd/$d/winres" && go-winres make --in winres.json --arch amd64 \
+        --file-version "$NUMERIC" --product-version "$NUMERIC" \
+        --out "$ROOT/cmd/$d/rsrc" ) || true
+  done
+fi
 
 echo ">> building varyaone.exe (windows/amd64)"
 ( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
@@ -35,12 +52,6 @@ echo ">> building varyaone.exe (windows/amd64)"
 echo "$VERSION" > "$STAGE/RELEASE"
 
 echo ">> building varyaone-client.exe (windows/amd64)"
-# Refresh the embedded icon/manifest resource if go-winres is available; the
-# committed rsrc_windows_amd64.syso is the fallback.
-if command -v go-winres >/dev/null 2>&1; then
-  ( cd "$ROOT/cmd/varyaone-client/winres" && \
-    go-winres make --in winres.json --arch amd64 --out "$ROOT/cmd/varyaone-client/rsrc" ) || true
-fi
 ( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
     go build -buildvcs=false -ldflags "-s -w -H windowsgui -X main.version=$VERSION" \
     -o "$STAGE/varyaone-client.exe" ./cmd/varyaone-client )
@@ -61,8 +72,12 @@ ZIP="$OUT/varyaone-$VERSION-windows-amd64.zip"
 sha256sum "$ZIP" | awk '{print $1}' > "$ZIP.sha256"
 
 echo ">> building install wizard"
+for prereq in vc_redist.x64.exe MicrosoftEdgeWebview2Setup.exe; do
+  [ -f "$ROOT/deploy/windows/$prereq" ] || \
+    echo "!! deploy/windows/$prereq missing — run fetch-tools.ps1 (installer prerequisite)"
+done
 if command -v iscc >/dev/null 2>&1; then
-  iscc "//DMyAppVersion=${VERSION#v}" "$ROOT/deploy/windows/installer.iss"
+  iscc "//DMyAppVersion=${VERSION#v}" "//DMyNumericVersion=${NUMERIC}" "$ROOT/deploy/windows/installer.iss"
   echo "   $OUT/VaryaOne-Setup-${VERSION#v}.exe"
 else
   echo "!! iscc (Inno Setup) not found — skipped the setup .exe (zip still produced)"
