@@ -38,6 +38,7 @@ const (
 	keyLatest      = "update.latest"
 	keyState       = "update.state"
 	keyTarget      = "update.target"
+	keyTargetInfo  = "update.target_info"
 	keyProgress    = "update.progress"
 	keyResult      = "update.result"
 	keyApplied     = "update.applied"
@@ -62,6 +63,10 @@ var (
 	// ErrBusy is returned by RequestApply when an apply is already queued or
 	// running.
 	ErrBusy = errors.New("an update is already in progress")
+	// ErrTargetMetadata is returned when the exact release queued by the
+	// operator no longer has matching artifact metadata. Applying a newer
+	// `latest` artifact under an older target name would corrupt update state.
+	ErrTargetMetadata = errors.New("queued release metadata is unavailable")
 	// ErrMandatory is returned by Snooze when the pending release may not be
 	// deferred.
 	ErrMandatory = errors.New("this update is mandatory and cannot be snoozed")
@@ -111,10 +116,9 @@ type LatestInfo struct {
 	// update agent (varyaone update-apply) downloads and verifies them.
 	WindowsArtifactURL string `json:"windows_artifact_url,omitempty"`
 	WindowsSHA256      string `json:"windows_sha256,omitempty"`
-	// PGMajor is the PostgreSQL major version this release runs on. Non-zero only
-	// when the release changes it (e.g. 18 -> 19); both update paths compare it
-	// with the running cluster's major and, on a mismatch, run the dump & restore
-	// upgrade instead of an in-place restart. Zero = unchanged.
+	// PGMajor is informational metadata for the UI/catalog. The installers use
+	// the actual bundled/running PostgreSQL binaries as the authoritative major
+	// version when deciding whether dump-and-restore is required.
 	PGMajor int `json:"pg_major,omitempty"`
 }
 
@@ -225,6 +229,7 @@ func (s *Service) RequestApply(ctx context.Context) error {
 	writes := []struct{ k, v string }{
 		{keyState, quote(StateApplyRequested)},
 		{keyTarget, quote(st.Latest.Version)},
+		{keyTargetInfo, mustJSON(st.Latest)},
 		{keyProgress, "null"},
 		{keyResult, "null"},
 		{keyApplied, "null"},
@@ -264,7 +269,7 @@ func (s *Service) Ack(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	for _, k := range []string{keyState, keyTarget, keyProgress, keyResult, keyApplied} {
+	for _, k := range []string{keyState, keyTarget, keyTargetInfo, keyProgress, keyResult, keyApplied} {
 		v := "null"
 		if k == keyState {
 			v = quote(StateIdle)
@@ -274,6 +279,27 @@ func (s *Service) Ack(ctx context.Context) error {
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// TargetRelease returns the immutable release metadata captured when the
+// operator queued target. For requests created by an older binary, it safely
+// falls back to update.latest only when the versions still match exactly.
+func (s *Service) TargetRelease(ctx context.Context, target string) (*LatestInfo, error) {
+	meta, err := s.readAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return targetRelease(meta, target)
+}
+
+func targetRelease(meta metaMap, target string) (*LatestInfo, error) {
+	if info := meta.targetInfo(); info != nil && info.Version == target {
+		return info, nil
+	}
+	if latest := meta.latest(); latest != nil && latest.Version == target {
+		return latest, nil
+	}
+	return nil, fmt.Errorf("%w: %s", ErrTargetMetadata, target)
 }
 
 /* ------------------------------------------------------------ agent ops --- */
@@ -397,6 +423,9 @@ func (s *Service) RecordResult(ctx context.Context, in ResultInput) error {
 			return err
 		}
 		if err := setRawTx(ctx, tx, keyTarget, "null"); err != nil {
+			return err
+		}
+		if err := setRawTx(ctx, tx, keyTargetInfo, "null"); err != nil {
 			return err
 		}
 		if err := setRawTx(ctx, tx, keySnoozeUntil, "null"); err != nil {
@@ -564,10 +593,11 @@ func (m metaMap) time(key string) *time.Time {
 	return &t
 }
 
-func (m metaMap) latest() *LatestInfo { return jsonInto[LatestInfo](m[keyLatest]) }
-func (m metaMap) progress() *Progress { return jsonInto[Progress](m[keyProgress]) }
-func (m metaMap) result() *Result     { return jsonInto[Result](m[keyResult]) }
-func (m metaMap) applied() *Applied   { return jsonInto[Applied](m[keyApplied]) }
+func (m metaMap) latest() *LatestInfo     { return jsonInto[LatestInfo](m[keyLatest]) }
+func (m metaMap) targetInfo() *LatestInfo { return jsonInto[LatestInfo](m[keyTargetInfo]) }
+func (m metaMap) progress() *Progress     { return jsonInto[Progress](m[keyProgress]) }
+func (m metaMap) result() *Result         { return jsonInto[Result](m[keyResult]) }
+func (m metaMap) applied() *Applied       { return jsonInto[Applied](m[keyApplied]) }
 
 func jsonInto[T any](raw string) *T {
 	if raw == "" || raw == "null" {
@@ -582,7 +612,7 @@ func jsonInto[T any](raw string) *T {
 
 func (s *Service) readAll(ctx context.Context) (metaMap, error) {
 	keys := []string{
-		keyLatest, keyState, keyTarget, keyProgress, keyResult,
+		keyLatest, keyState, keyTarget, keyTargetInfo, keyProgress, keyResult,
 		keyApplied, keySnoozeUntil, keyCheckedAt,
 	}
 	rows, err := s.pool.Query(ctx,

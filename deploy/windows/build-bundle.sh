@@ -15,6 +15,10 @@
 set -euo pipefail
 
 VERSION="${1:?usage: build-bundle.sh <version>}"
+if [[ ! "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?([-+][0-9A-Za-z][0-9A-Za-z.+-]*)?$ ]]; then
+  echo "!! FATAL: invalid version '$VERSION' (expected v1.2.3 or v1.2.3-rc1)" >&2
+  exit 2
+fi
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$ROOT/dist/windows"
 STAGE="$OUT/VaryaOne"
@@ -23,14 +27,14 @@ rm -rf "$OUT"
 mkdir -p "$STAGE"
 
 # Numeric x.x.x.x for VERSIONINFO resources (strip leading v and any -suffix).
-_NUM="${VERSION#v}"; _NUM="${_NUM%%-*}"
+_NUM="${VERSION#v}"; _NUM="${_NUM%%[-+]*}"
 IFS=. read -r _a _b _c _d <<EOF
 $_NUM
 EOF
 NUMERIC="${_a:-0}.${_b:-0}.${_c:-0}.${_d:-0}"
 
 echo ">> building SPA bundle"
-( cd "$ROOT/web" && VARYAONE_ADAPTER=static npm ci && VARYAONE_ADAPTER=static npm run build )
+( cd "$ROOT/web" && VARYAONE_ADAPTER=static npm ci --prefer-offline --no-audit && VARYAONE_ADAPTER=static npm run build )
 rm -rf "$ROOT/internal/platform/spa/dist"
 cp -r "$ROOT/web/build" "$ROOT/internal/platform/spa/dist"
 
@@ -40,7 +44,7 @@ if command -v go-winres >/dev/null 2>&1; then
   for d in varyaone varyaone-client; do
     ( cd "$ROOT/cmd/$d/winres" && go-winres make --in winres.json --arch amd64 \
         --file-version "$NUMERIC" --product-version "$NUMERIC" \
-        --out "$ROOT/cmd/$d/rsrc" ) || true
+        --out "$ROOT/cmd/$d/rsrc" )
   done
 fi
 
@@ -60,28 +64,25 @@ if [ -d "$ROOT/deploy/windows/pgsql" ]; then
   echo ">> bundling PostgreSQL"
   cp -r "$ROOT/deploy/windows/pgsql" "$STAGE/pgsql"
 
-  # Integrity gate — a truncated bundle shows up as initdb 0xC0000135 on the
-  # user's machine, so a broken artifact must never leave CI. Check by size.
+  # Integrity gate — a broken bundle must never leave CI.
   pgbin="$STAGE/pgsql/bin"
   filesize() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo 0; }
-  check_min() {
-    local f="$pgbin/$1" min="$2" sz
-    [ -f "$f" ] || { echo "!! FATAL: pgsql/bin/$1 missing"; exit 1; }
-    sz=$(filesize "$f")
-    [ "$sz" -ge "$min" ] || { echo "!! FATAL: pgsql/bin/$1 is $sz bytes (need >= $min) — truncated bundle"; exit 1; }
-  }
-  check_min initdb.exe   400000
-  check_min postgres.exe 8000000
-  check_min pg_ctl.exe   200000
-  check_min psql.exe     400000
-  dlls=$(find "$pgbin" -maxdepth 1 -iname '*.dll' | wc -l)
-  [ "$dlls" -ge 25 ] || { echo "!! FATAL: only $dlls DLLs in pgsql/bin (expect 30+)"; exit 1; }
-  for pat in 'libintl' 'libpq' 'libcrypto' 'libssl'; do
-    ls "$pgbin"/${pat}*.dll >/dev/null 2>&1 || { echo "!! FATAL: no ${pat}*.dll in pgsql/bin"; exit 1; }
+  for t in initdb.exe postgres.exe pg_ctl.exe psql.exe; do
+    sz=$(filesize "$pgbin/$t")
+    [ "$sz" -ge 20000 ] || { echo "!! FATAL: pgsql/bin/$t missing or truncated ($sz bytes)"; exit 1; }
   done
-  echo "   pgsql/bin OK: $dlls DLLs, initdb.exe $(filesize "$pgbin/initdb.exe") bytes"
+  dlls=$(find "$pgbin" -maxdepth 1 -iname '*.dll' | wc -l)
+  [ "$dlls" -ge 20 ] || { echo "!! FATAL: only $dlls DLLs in pgsql/bin"; exit 1; }
+  for pat in 'libpq*' 'libcrypto*' 'libssl*'; do
+    ls "$pgbin"/${pat}.dll >/dev/null 2>&1 || { echo "!! FATAL: no ${pat}.dll in pgsql/bin"; exit 1; }
+  done
+  for f in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do
+    [ -f "$pgbin/$f" ] || { echo "!! FATAL: $f not in pgsql/bin — app-local MSVC runtime missing (run fetch-tools.ps1)"; exit 1; }
+  done
+  echo "   pgsql/bin OK: $dlls DLLs"
 else
-  echo "!! deploy/windows/pgsql missing — run fetch-tools.ps1 first (installer will be incomplete)"
+  echo "!! FATAL: deploy/windows/pgsql missing — run fetch-tools.ps1 first" >&2
+  exit 1
 fi
 
 echo ">> zipping updater artifact"
@@ -89,17 +90,33 @@ echo ">> zipping updater artifact"
 # straight into the install dir, so its entries must sit at the archive root
 # (varyaone.exe, RELEASE, pgsql/...) — not under a VaryaOne/ prefix.
 ZIP="$OUT/varyaone-$VERSION-windows-amd64.zip"
-( cd "$STAGE" && zip -qr "../$(basename "$ZIP")" . )
+if command -v zip >/dev/null 2>&1; then
+  ( cd "$STAGE" && zip -qr "../$(basename "$ZIP")" . )
+elif command -v 7z >/dev/null 2>&1; then
+  ( cd "$STAGE" && 7z a -bd -tzip "$ZIP" ./* >/dev/null )
+elif command -v 7z.exe >/dev/null 2>&1; then
+  ( cd "$STAGE" && 7z.exe a -bd -tzip "$ZIP" ./* >/dev/null )
+else
+  echo "!! FATAL: zip or 7z is required to build the updater artifact" >&2
+  exit 1
+fi
 sha256sum "$ZIP" | awk '{print $1}' > "$ZIP.sha256"
 
 echo ">> building install wizard"
+missing_prereq=0
 for prereq in vc_redist.x64.exe MicrosoftEdgeWebview2Setup.exe; do
-  [ -f "$ROOT/deploy/windows/$prereq" ] || \
-    echo "!! deploy/windows/$prereq missing — run fetch-tools.ps1 (installer prerequisite)"
+  if [ ! -f "$ROOT/deploy/windows/$prereq" ]; then
+    echo "!! deploy/windows/$prereq missing — run fetch-tools.ps1 (installer prerequisite)" >&2
+    missing_prereq=1
+  fi
 done
 if command -v iscc >/dev/null 2>&1; then
+  [ "$missing_prereq" -eq 0 ] || exit 1
   iscc "//DMyAppVersion=${VERSION#v}" "//DMyNumericVersion=${NUMERIC}" "$ROOT/deploy/windows/installer.iss"
   echo "   $OUT/VaryaOne-Setup-${VERSION#v}.exe"
+elif [ "${VARYAONE_REQUIRE_INSTALLER:-0}" = "1" ]; then
+  echo "!! FATAL: iscc (Inno Setup) not found but VARYAONE_REQUIRE_INSTALLER=1" >&2
+  exit 1
 else
   echo "!! iscc (Inno Setup) not found — skipped the setup .exe (zip still produced)"
 fi

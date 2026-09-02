@@ -44,10 +44,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client-18
           echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
-      # -p 1 serialises the package test binaries. The integration tests each
-      # migrate their own schema in the shared database; running them
-      # concurrently races on the catalog (could not open relation with OID …).
-      - run: go test -race -p 1 ./...
+      - name: Tests (unit packages parallel, database packages serial)
+        shell: bash
+        run: |
+          # Only packages whose tests use the shared PostgreSQL service need
+          # -p 1; serialising every pure unit package made the whole suite wait.
+          mapfile -t db_packages < <(
+            rg -l 'VARYAONE_TEST_DATABASE_URL' cmd internal --glob '*_test.go' |
+              xargs -r -n1 dirname | sort -u | sed 's#^#./#'
+          )
+          mapfile -t all_packages < <(
+            go list -f '{{.Dir}}' ./... | sed "s#^${GITHUB_WORKSPACE}#.#" | sort -u
+          )
+          mapfile -t unit_packages < <(
+            comm -23 \
+              <(printf '%s\n' "${all_packages[@]}") \
+              <(printf '%s\n' "${db_packages[@]}")
+          )
+          go test -race "${unit_packages[@]}"
+          # Integration packages each migrate an isolated schema, but their
+          # catalog work is intentionally serial to avoid PostgreSQL OID races.
+          go test -race -p 1 "${db_packages[@]}"
       - run: go vet ./...
       - run: go run honnef.co/go/tools/cmd/staticcheck@v0.6.1 ./...
       - name: Verify pending migration is reported
@@ -70,7 +87,7 @@ jobs:
           node-version: 24.19.0
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci
+      - run: npm ci --prefer-offline --no-audit
       - run: npm run lint
       - run: npm run check
       - run: npm run test
@@ -78,10 +95,28 @@ jobs:
 
   containers:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: backend
+            context: .
+            dockerfile: ./Dockerfile.backend
+          - image: frontend
+            context: ./web
+            dockerfile: ./web/Dockerfile
     env:
       POSTGRES_PASSWORD: ci-only-password
       VARYAONE_MASTER_KEY: ci-only-master-key-not-a-real-secret
     steps:
       - uses: actions/checkout@v4
       - run: docker compose config --quiet
-      - run: docker compose build
+      - uses: docker/setup-buildx-action@v4
+      - name: Build ${{ matrix.image }} image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          cache-from: type=gha,scope=containers-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=containers-${{ matrix.image }}

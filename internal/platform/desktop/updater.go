@@ -65,21 +65,41 @@ func (u *Updater) Apply(ctx context.Context, target string) (err error) {
 	if err != nil {
 		return fmt.Errorf("read update status: %w", err)
 	}
-	if status.Latest == nil {
-		return fmt.Errorf("no release metadata available")
-	}
 	if target == "" {
+		if status.Latest == nil {
+			return fmt.Errorf("no release metadata available")
+		}
 		target = status.Latest.Version
 	}
 	from := status.CurrentVersion
-	art := status.Latest
+	art, err := svc.TargetRelease(ctx, target)
+	if err != nil {
+		_ = svc.RecordResult(ctx, update.ResultInput{
+			OK: false, FromVersion: from, ToVersion: target,
+			Error: "resolve queued release metadata: " + err.Error(),
+		})
+		return fmt.Errorf("resolve queued release %s: %w", target, err)
+	}
 
 	report := func(phase, msg string) { _ = svc.RecordProgress(ctx, phase, msg) }
 	fail := func(phase string, cause error, rolledBack bool) error {
-		_ = svc.RecordResult(ctx, update.ResultInput{
+		result := update.ResultInput{
 			OK: false, RolledBack: rolledBack, FromVersion: from, ToVersion: target,
 			Error: fmt.Sprintf("%s: %v", phase, cause),
-		})
+		}
+		// Most failures happen while the original pool is still open. After the
+		// service-stop phase it has deliberately been closed, so briefly reopen
+		// the bundled database instead of silently losing the terminal result.
+		if recordErr := svc.RecordResult(ctx, result); recordErr != nil {
+			recordCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			if resultSvc, closeResultDB, openErr := u.updateService(recordCtx, pg); openErr == nil {
+				_ = resultSvc.RecordResult(recordCtx, result)
+				closeResultDB()
+			} else {
+				u.Logger.Error("could not persist update failure", "phase", phase, "error", recordErr, "reopen_error", openErr)
+			}
+		}
 		return fmt.Errorf("%s: %w", phase, cause)
 	}
 
@@ -230,28 +250,53 @@ func (u *Updater) rollbackPGUpgrade(pg *Postgres, phase string, cause error, pgA
 	stopCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	_ = pg.Stop(stopCtx)
-	if err := pg.RestoreArchivedDataDir(pgArchive); err != nil {
-		u.Logger.Error("CRITICAL: could not restore pre-upgrade data directory", "archive", pgArchive, "error", err)
+	restoreDataErr := pg.RestoreArchivedDataDir(pgArchive)
+	if restoreDataErr != nil {
+		u.Logger.Error("CRITICAL: could not restore pre-upgrade data directory", "archive", pgArchive, "error", restoreDataErr)
 	}
-	return u.rollback(pg, phase, cause, true, from, target)
+	return u.rollbackWithIssue(pg, phase, cause, true, restoreDataErr, from, target)
 }
 
 // rollback restores files only (schema untouched).
 func (u *Updater) rollback(pg *Postgres, phase string, cause error, filesExtracted bool, from, target string) error {
+	return u.rollbackWithIssue(pg, phase, cause, filesExtracted, nil, from, target)
+}
+
+// rollbackWithIssue restores files and records any earlier database/data-dir
+// recovery failure as part of the final rollback result. A healthy old service
+// alone must not turn a failed database restore into a false success report.
+func (u *Updater) rollbackWithIssue(pg *Postgres, phase string, cause error, filesExtracted bool, rollbackIssue error, from, target string) error {
 	u.Logger.Error("update failed — rolling back files", "phase", phase, "error", cause)
+	var restoreErr error
 	if filesExtracted {
-		_ = restoreRollback(u.Layout)
+		restoreErr = restoreRollback(u.Layout)
+		if restoreErr != nil {
+			u.Logger.Error("CRITICAL: could not restore previous install files", "error", restoreErr)
+		}
 	}
-	_ = Control("start")
+	if startErr := Control("start"); startErr != nil {
+		u.Logger.Warn("service start during rollback returned an error", "error", startErr)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	_ = u.waitHealthy(ctx, 3*time.Minute)
+	healthErr := u.waitHealthy(ctx, 3*time.Minute)
+	if healthErr != nil {
+		u.Logger.Error("CRITICAL: rollback health check failed", "error", healthErr)
+	}
+	rolledBack := rollbackIssue == nil && restoreErr == nil && healthErr == nil
+	resultError := fmt.Sprintf("%s: %v", phase, cause)
+	if !rolledBack {
+		resultError += fmt.Sprintf("; rollback incomplete: database=%v restore=%v health=%v", rollbackIssue, restoreErr, healthErr)
+	}
 	if svc, closeDB, err := u.updateService(ctx, pg); err == nil {
 		defer closeDB()
 		_ = svc.RecordResult(ctx, update.ResultInput{
-			OK: false, RolledBack: true, FromVersion: from, ToVersion: target,
-			Error: fmt.Sprintf("%s: %v", phase, cause),
+			OK: false, RolledBack: rolledBack, FromVersion: from, ToVersion: target,
+			Error: resultError,
 		})
+	}
+	if !rolledBack {
+		return fmt.Errorf("%s failed and rollback is incomplete (%s): %w", phase, resultError, cause)
 	}
 	return fmt.Errorf("%s failed, rolled back: %w", phase, cause)
 }
@@ -260,17 +305,23 @@ func (u *Updater) rollback(pg *Postgres, phase string, cause error, filesExtract
 func (u *Updater) rollbackWithDB(ctx context.Context, pg *Postgres, phase string, cause error, schemaChanged bool, backupPath, from, target string) error {
 	u.Logger.Error("update failed — rolling back", "phase", phase, "error", cause)
 	_ = restoreRollback(u.Layout)
+	var databaseRestoreErr error
 	if schemaChanged {
 		startCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		if err := pg.Start(startCtx); err == nil {
+		if err := pg.Start(startCtx); err != nil {
+			databaseRestoreErr = fmt.Errorf("start previous database for restore: %w", err)
+		} else {
 			if err := u.run(ctx, pg, u.selfExe(), "backup", "restore", backupPath, "--force"); err != nil {
+				databaseRestoreErr = fmt.Errorf("restore pre-update backup: %w", err)
 				u.Logger.Error("CRITICAL: database restore failed", "error", err)
 			}
-			_ = pg.Stop(startCtx)
 		}
+		cancel()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Minute)
+		_ = pg.Stop(stopCtx)
+		stopCancel()
 	}
-	return u.rollback(pg, phase, cause, true, from, target)
+	return u.rollbackWithIssue(pg, phase, cause, true, databaseRestoreErr, from, target)
 }
 
 func (u *Updater) updateService(ctx context.Context, pg *Postgres) (*update.Service, func(), error) {
@@ -363,7 +414,25 @@ func (u *Updater) acquireLock() (func(), error) {
 	}
 	fmt.Fprintf(f, "%d\n", os.Getpid())
 	_ = f.Close()
-	return func() { _ = os.Remove(path) }, nil
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case now := <-ticker.C:
+				// Keep the age-based stale-lock recovery from stealing a live
+				// updater whose backup/download legitimately takes over two hours.
+				_ = os.Chtimes(path, now, now)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		_ = os.Remove(path)
+	}, nil
 }
 
 // waitServiceStopped blocks until the OS service reports not-running (or is not
@@ -384,8 +453,10 @@ func waitServiceStopped(timeout time.Duration) error {
 
 /* ------------------------------------------------------------ file helpers -- */
 
-// stageRollback copies the swappable parts of the install (binary + web bundle)
-// into Home/rollback so a failed update can be reverted.
+// stageRollback copies every install artifact replaced by a release into
+// Home/rollback so a failed update can be reverted. This includes pgsql/: the
+// release zip replaces those binaries, and an old data directory cannot safely
+// be restarted with binaries from a newer PostgreSQL major.
 func stageRollback(l Layout) error {
 	if err := os.MkdirAll(l.Rollback(), 0o755); err != nil {
 		return err
@@ -417,9 +488,10 @@ func restoreRollback(l Layout) error {
 	return nil
 }
 
-// swappable lists install-relative paths a release artifact replaces. pgsql/ and
-// the data Home are never touched by an update.
-var swappable = []string{exe("varyaone"), exe("varyaone-panel"), exe("varyaone-client"), "web", "RELEASE"}
+// swappable lists install-relative paths a release artifact replaces. The data
+// Home (pgdata, storage, backups) is deliberately outside InstallDir and is never
+// copied here.
+var swappable = []string{exe("varyaone"), exe("varyaone-panel"), exe("varyaone-client"), "pgsql", "web", "RELEASE"}
 
 func copyTree(src, dst string) error {
 	info, err := os.Stat(src)

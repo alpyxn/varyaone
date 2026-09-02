@@ -992,11 +992,14 @@ UPD_TOKEN=""
 UPD_PREV_COMMIT=""
 UPD_PREV_RELEASE=""
 UPD_NEW_RELEASE=""
+UPD_TARGET_VERSION=""
 UPD_PRE_BACKUP=""
 UPD_MIGRATED=0
 UPD_FROM_VERSION=""
 UPD_PRE_MIGRATE_VERSION=""
 UPD_ROLLING_BACK=0
+UPD_PG_UPGRADED=0
+UPD_PG_FROM_MAJOR=""
 
 current_release() {
   git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "unknown"
@@ -1025,7 +1028,7 @@ report_result() {
   if [ "$UPD_REPORT" = 1 ] && [ -n "$UPD_SELF_URL" ] && [ -n "$UPD_TOKEN" ]; then
     curl -fsS -m 15 -X POST "$UPD_SELF_URL/internal/update/result" \
       -H "authorization: Bearer $UPD_TOKEN" -H 'content-type: application/json' \
-      -d "{\"ok\":$_ok,\"error\":\"$_err\",\"rolled_back\":$_rb,\"from_version\":\"$UPD_FROM_VERSION\",\"to_version\":\"${UPD_NEW_RELEASE:-$UPD_FROM_VERSION}\",\"log_tail\":\"$_tail\"}" \
+      -d "{\"ok\":$_ok,\"error\":\"$_err\",\"rolled_back\":$_rb,\"from_version\":\"$UPD_FROM_VERSION\",\"to_version\":\"${UPD_NEW_RELEASE:-${UPD_TARGET_VERSION:-$UPD_FROM_VERSION}}\",\"log_tail\":\"$_tail\"}" \
       >/dev/null 2>&1 || true
   fi
 }
@@ -1168,7 +1171,7 @@ rollback_update() {
   if ! git checkout --quiet --force --detach "$UPD_PREV_COMMIT" 2>>"${UPD_LOG:-/dev/null}"; then
     if ! git reset --hard "$UPD_PREV_COMMIT" >>"${UPD_LOG:-/dev/null}" 2>&1; then
       report_phase rollback "KRİTİK: kaynak ağacı $UPD_PREV_COMMIT sürümüne döndürülemedi — elle müdahale gerekli"
-      report_result fail "Geri alma başarısız: git ağacı geri alınamadı ($UPD_PREV_COMMIT). Sistemi elle onarın." 1
+      report_result fail "Geri alma başarısız: git ağacı geri alınamadı ($UPD_PREV_COMMIT). Sistemi elle onarın." 0
       release_lock
       exit 1
     fi
@@ -1217,7 +1220,7 @@ rollback_update() {
         # DB tutarsiz: yeni imajlari BASLATMA, postgres'i durdur, elle mudahale.
         compose stop >>"${UPD_LOG:-/dev/null}" 2>&1
         report_phase rollback "KRİTİK: otomatik DB geri yükleme başarısız — sistem DURDURULDU"
-        report_result fail "Geri alma sırasında DB geri yükleme başarısız. Sistem tutarsız ve durduruldu. Elle geri yükleyin: $UPD_PRE_BACKUP" 1
+        report_result fail "Geri alma sırasında DB geri yükleme başarısız. Sistem tutarsız ve durduruldu. Elle geri yükleyin: $UPD_PRE_BACKUP" 0
         release_lock
         exit 1
       fi
@@ -1230,11 +1233,10 @@ rollback_update() {
   if wait_healthy 180; then
     report_phase rollback "önceki sürüme dönüldü — sistem sağlıklı ($UPD_PREV_RELEASE)"
     rm -f "$project_dir/deploy/.update-rollback"
-    UPD_NEW_RELEASE=$UPD_PREV_RELEASE
     report_result fail "Güncelleme '$_phase' aşamasında başarısız oldu; sistem $UPD_PREV_RELEASE sürümüne geri alındı." 1
   else
     report_phase rollback "KRİTİK: geri alma sonrası sistem sağlıksız — elle müdahale gerekli"
-    report_result fail "Güncelleme '$_phase' aşamasında başarısız; geri alma da sağlıksız — deploy/update log dosyasına bakın." 1
+    report_result fail "Güncelleme '$_phase' aşamasında başarısız; geri alma da sağlıksız — deploy/update log dosyasına bakın." 0
   fi
   release_lock
   exit 1
@@ -1254,11 +1256,13 @@ recover_update() {
   # shellcheck disable=SC1090
   UPD_PREV_COMMIT=$(sed -n 's/^prev_commit=//p' "$_rb" | head -n1)
   UPD_PREV_RELEASE=$(sed -n 's/^prev_release=//p' "$_rb" | head -n1)
+  UPD_TARGET_VERSION=$(sed -n 's/^target_version=//p' "$_rb" | head -n1)
   UPD_PRE_MIGRATE_VERSION=$(sed -n 's/^pre_migrate_version=//p' "$_rb" | head -n1)
   UPD_MIGRATED=$(sed -n 's/^migrated=//p' "$_rb" | head -n1); UPD_MIGRATED=${UPD_MIGRATED:-0}
   UPD_PG_UPGRADED=$(sed -n 's/^pg_upgraded=//p' "$_rb" | head -n1); UPD_PG_UPGRADED=${UPD_PG_UPGRADED:-0}
   UPD_PG_FROM_MAJOR=$(sed -n 's/^pg_from_major=//p' "$_rb" | head -n1)
-  UPD_PRE_BACKUP=$(ls -1t "$project_dir"/backups/pre-update-*.varya 2>/dev/null | head -n1)
+  UPD_PRE_BACKUP=$(sed -n 's/^pre_backup=//p' "$_rb" | head -n1)
+  [ -n "$UPD_PRE_BACKUP" ] || UPD_PRE_BACKUP=$(ls -1t "$project_dir"/backups/pre-update-*.varya 2>/dev/null | head -n1)
   [ -n "$UPD_PREV_COMMIT" ] || { echo "  .update-rollback okunamadı; elle müdahale gerekli." >&2; exit 1; }
   echo "  Önceki sürüm: ${UPD_PREV_RELEASE:-?} ($UPD_PREV_COMMIT), migrated=$UPD_MIGRATED"
   rollback_update interrupted "$UPD_MIGRATED"
@@ -1312,9 +1316,13 @@ run_update() {
     UPD_LOG="$project_dir/deploy/recover-$(date -u +%Y%m%dT%H%M%SZ).log"; : > "$UPD_LOG"
     UPD_PREV_COMMIT=$(sed -n 's/^prev_commit=//p' "$project_dir/deploy/.update-rollback" | head -n1)
     UPD_PREV_RELEASE=$(sed -n 's/^prev_release=//p' "$project_dir/deploy/.update-rollback" | head -n1)
+    UPD_TARGET_VERSION=$(sed -n 's/^target_version=//p' "$project_dir/deploy/.update-rollback" | head -n1)
     UPD_PRE_MIGRATE_VERSION=$(sed -n 's/^pre_migrate_version=//p' "$project_dir/deploy/.update-rollback" | head -n1)
     _lm=$(sed -n 's/^migrated=//p' "$project_dir/deploy/.update-rollback" | head -n1)
-    UPD_PRE_BACKUP=$(ls -1t "$project_dir"/backups/pre-update-*.varya 2>/dev/null | head -n1)
+    UPD_PG_UPGRADED=$(sed -n 's/^pg_upgraded=//p' "$project_dir/deploy/.update-rollback" | head -n1); UPD_PG_UPGRADED=${UPD_PG_UPGRADED:-0}
+    UPD_PG_FROM_MAJOR=$(sed -n 's/^pg_from_major=//p' "$project_dir/deploy/.update-rollback" | head -n1)
+    UPD_PRE_BACKUP=$(sed -n 's/^pre_backup=//p' "$project_dir/deploy/.update-rollback" | head -n1)
+    [ -n "$UPD_PRE_BACKUP" ] || UPD_PRE_BACKUP=$(ls -1t "$project_dir"/backups/pre-update-*.varya 2>/dev/null | head -n1)
     [ -n "$UPD_PREV_COMMIT" ] && rollback_update interrupted "${_lm:-0}"
     rm -f "$project_dir/deploy/.update-rollback"
     UPD_ROLLING_BACK=0
@@ -1339,11 +1347,22 @@ run_update() {
   report_phase fetch "sürüm bilgisi alınıyor"
   git fetch --tags --prune --quiet origin >>"$UPD_LOG" 2>&1 || { report_result fail "git fetch başarısız." 0; exit 1; }
   if [ -z "$target_ref" ]; then
-    target_ref=$(git rev-parse --verify --quiet origin/HEAD >/dev/null 2>&1 && echo "origin/HEAD" || echo "origin/main")
+    # Manual updates follow the stable release channel too: prefer the newest
+    # final SemVer tag instead of deploying whatever happens to be on main.
+    # Development repositories without release tags retain the old main/HEAD
+    # fallback so bootstrap environments still work.
+    target_ref=$(git tag --list 'v*' --sort=-version:refname \
+      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+    if [ -n "$target_ref" ]; then
+      target_ref="refs/tags/$target_ref"
+    else
+      target_ref=$(git rev-parse --verify --quiet origin/HEAD >/dev/null 2>&1 && echo "origin/HEAD" || echo "origin/main")
+    fi
   elif git rev-parse --verify --quiet "refs/tags/$target_ref" >/dev/null 2>&1; then
     target_ref="refs/tags/$target_ref"
   fi
   git rev-parse --verify --quiet "$target_ref" >/dev/null 2>&1 || { report_result fail "Hedef sürüm bulunamadı: $target_ref" 0; exit 1; }
+  UPD_TARGET_VERSION=${target_ref#refs/tags/}
 
   if [ "$assume_yes" != 1 ]; then
     interactive || { echo "Etkileşimsiz çalıştırma için --yes gerekli." >&2; exit 2; }
@@ -1353,8 +1372,8 @@ run_update() {
   # 2) Anlik durum (geri donus noktasi)
   report_phase snapshot "geri dönüş noktası kaydediliyor"
   UPD_PRE_MIGRATE_VERSION=$(db_migration_version)
-  printf 'prev_commit=%s\nprev_release=%s\npre_migrate_version=%s\nstarted_at=%s\n' \
-    "$UPD_PREV_COMMIT" "$UPD_PREV_RELEASE" "${UPD_PRE_MIGRATE_VERSION:-}" "$(date -u +%FT%TZ)" \
+  printf 'prev_commit=%s\nprev_release=%s\ntarget_version=%s\npre_migrate_version=%s\nstarted_at=%s\n' \
+    "$UPD_PREV_COMMIT" "$UPD_PREV_RELEASE" "$UPD_TARGET_VERSION" "${UPD_PRE_MIGRATE_VERSION:-}" "$(date -u +%FT%TZ)" \
     > "$project_dir/deploy/.update-rollback"
   for _svc in api worker frontend migrate; do
     $DK image inspect "varyaone-${_svc}:latest" >/dev/null 2>&1 && \
@@ -1387,6 +1406,7 @@ run_update() {
       report_phase backup "UYARI: sha256sum yok — yedek sağlama dosyası yazılamadı"
     fi
     report_phase backup "yedek doğrulandı: $(basename "$UPD_PRE_BACKUP")"
+    printf 'pre_backup=%s\n' "$UPD_PRE_BACKUP" >> "$project_dir/deploy/.update-rollback"
     # Son 3 on-guncelleme yedegini tut.
     ls -1t "$project_dir"/backups/pre-update-*.varya 2>/dev/null | tail -n +4 | while read -r _old; do
       rm -f "$_old" "$_old.sha256"

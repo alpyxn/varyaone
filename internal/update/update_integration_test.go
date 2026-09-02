@@ -83,6 +83,21 @@ func TestUpdateLifecycleIntegration(t *testing.T) {
 	if err := svc.RequestApply(ctx); err != nil {
 		t.Fatalf("RequestApply: %v", err)
 	}
+	targetInfo, err := svc.TargetRelease(ctx, "v1.5.0")
+	if err != nil || targetInfo.Version != "v1.5.0" || targetInfo.NotesMD == "" {
+		t.Fatalf("TargetRelease = %+v err=%v", targetInfo, err)
+	}
+	// A later catalog refresh must not retarget an already-approved apply.
+	newer := &LatestInfo{Version: "v1.6.0", WindowsArtifactURL: "https://example.invalid/v1.6.zip"}
+	if err := svc.setRaw(ctx, keyLatest, mustJSON(newer)); err != nil {
+		t.Fatal(err)
+	}
+	if targetInfo, err = svc.TargetRelease(ctx, "v1.5.0"); err != nil || targetInfo.Version != "v1.5.0" {
+		t.Fatalf("queued target drifted after latest refresh: %+v err=%v", targetInfo, err)
+	}
+	if err := svc.setRaw(ctx, keyLatest, mustJSON(st.Latest)); err != nil {
+		t.Fatal(err)
+	}
 	if err := svc.RequestApply(ctx); err != ErrBusy {
 		t.Fatalf("second RequestApply = %v, want ErrBusy", err)
 	}

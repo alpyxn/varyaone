@@ -74,6 +74,11 @@ curl -X POST https://varya-pulse.varyaone.workers.dev/admin/v1/releases \
        "win_artifact_sha256":"<zip.sha256 içeriği>"}'
 ```
 
+`pgsql/` yoksa betik eksik bir zip üretmez, hata ile durur. CI,
+`VARYAONE_REQUIRE_INSTALLER=1` kullandığı için Inno Setup veya installer
+önkoşulları eksikken de release işi başarılı sayılmaz. PostgreSQL + VC++
+dosyaları sürüm ve indirme betiği hash'ine göre cache'lenir.
+
 ## Kurulum sihirbazı (`VaryaOne-Setup-<v>.exe`)
 
 `deploy/windows/installer.iss` (Inno Setup 6 — `x64compatible`, `choco install
@@ -94,6 +99,8 @@ innosetup`). Kullanıcı çift tıklar:
   `master.key`, storage, backups) **korunur** — silinmez.
 - Aynı/yeni sürüm üzerine kurulum: sihirbaz önce eski servisi durdurup kaldırır,
   dosyaları değiştirir, servisi yeniden kaydeder.
+- Servis, dosya kopyalama başlamadan önce durdurulur; servis kaydı, ağ modu ve
+  yeniden başlatma komutlarından biri hata verirse kurulum başarılı sayılmaz.
 
 ## İstemci ve kontrol paneli (`cmd/varyaone-client`, Windows)
 
@@ -135,6 +142,11 @@ VARYAONE_PULSE_INGEST_KEY=kendi-anahtarin
 
 Fazlar aynı: `preflight → backup → download → stop → swap → [pg-upgrade] →
 migrate → restart → healthcheck` (hata → `rollback`).
+
+Operatör güncellemeyi kuyruğa aldığı anda hedef sürümün Windows artefakt URL'si
+ve SHA-256 değeri sabitlenir. Katalog daha yeni bir sürüme ilerlese bile çalışan
+iş yanlış zip'e kaymaz. Rollback hem uygulama exe'lerini hem `pgsql/`
+binary'lerini geri getirir; sağlık kontrolü geçmezse “geri alındı” raporlanmaz.
 
 ### PostgreSQL majör yükseltmesi (`pg-upgrade` fazı)
 

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -26,6 +27,43 @@ func writeTestZip(t *testing.T, path string, files map[string]string) {
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRollbackIncludesBundledPostgres(t *testing.T) {
+	if !slices.Contains(swappable, "pgsql") {
+		t.Fatal("pgsql must be staged for rollback because release zips replace its binaries")
+	}
+
+	root := t.TempDir()
+	layout := Layout{
+		Home:       filepath.Join(root, "home"),
+		InstallDir: filepath.Join(root, "install"),
+	}
+	oldPGCtl := filepath.Join(layout.InstallDir, "pgsql", "bin", "pg_ctl.exe")
+	if err := os.MkdirAll(filepath.Dir(oldPGCtl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPGCtl, []byte("old-postgres"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := stageRollback(layout); err != nil {
+		t.Fatalf("stage rollback: %v", err)
+	}
+	if err := os.WriteFile(oldPGCtl, []byte("new-postgres"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreRollback(layout); err != nil {
+		t.Fatalf("restore rollback: %v", err)
+	}
+
+	got, err := os.ReadFile(oldPGCtl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old-postgres" {
+		t.Fatalf("restored pg_ctl = %q, want old-postgres", got)
 	}
 }
 

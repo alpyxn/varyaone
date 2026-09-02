@@ -46,6 +46,8 @@ ShowLanguageDialog=no
 LanguageDetectionMethod=none
 Compression=lzma2/max
 SolidCompression=yes
+CloseApplications=yes
+RestartApplications=no
 
 ; VERSIONINFO — SmartScreen/Defender'a "bilinmeyen yayinci" izlenimini biraz azaltir
 ; (asil cozum kod imzalama, asagiya bakin).
@@ -90,6 +92,37 @@ Name: "{group}\Varya One Kaldir";           Filename: "{uninstallexe}"
 Name: "{commonstartup}\Varya Kontrol Paneli"; Filename: "{app}\{#ClientExe}"; Parameters: "--tray"; IconFilename: "{app}\panelicon.ico"; Tasks: autostartpanel
 
 [Code]
+// Upgrade/reinstall: stop the existing service before [Files] tries to replace
+// varyaone.exe. Windows keeps a running service executable locked; doing this in
+// [Run] is too late because [Run] starts only after all files are copied.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  ExistingExe: String;
+begin
+  Result := '';
+  ExistingExe := ExpandConstant('{app}\{#MyExeName}');
+  if FileExists(ExistingExe) then
+  begin
+    Exec(ExistingExe, 'service stop', '', SW_HIDE, ewWaitUntilTerminated,
+      ResultCode);
+  end;
+end;
+
+procedure ExecAppRequired(Params: String; StatusText: String);
+var
+  ResultCode: Integer;
+  AppExe: String;
+begin
+  WizardForm.StatusLabel.Caption := StatusText;
+  AppExe := ExpandConstant('{app}\{#MyExeName}');
+  if not Exec(AppExe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    RaiseException(Format('%s başlatılamadı: %s', [AppExe, SysErrorMessage(ResultCode)]));
+  if ResultCode <> 0 then
+    RaiseException(Format('%s %s başarısız oldu (çıkış kodu %d).',
+      [AppExe, Params, ResultCode]));
+end;
+
 // Gomulu PostgreSQL, MSVC calisma zamanina baglidir. Servis kaydindan ONCE,
 // sessizce kur. Cikis kodu yok sayilir: 0 = tamam, 1638 = daha yeni surum zaten
 // var, 3010 = tamam (yeniden baslatma sonra).
@@ -107,18 +140,21 @@ begin
     ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
     Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    // Kritik uygulama adımları [Run] yerine burada yürütülür: Exec'in gerçek
+    // çıkış kodunu denetlemeden kurulumun başarılı görünmesine izin verme.
+    Exec(ExpandConstant('{app}\{#MyExeName}'), 'service uninstall', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode); // ilk kurulumda hata vermesi normal
+    ExecAppRequired('service install', 'Windows servisi kaydediliyor...');
+    if WizardIsTaskSelected('lanaccess') then
+      ExecAppRequired('netmode lan', 'Ağ modu ayarlanıyor...')
+    else
+      ExecAppRequired('netmode local', 'Ağ modu ayarlanıyor...');
+    ExecAppRequired('service start', 'Varya One servisi başlatılıyor...');
   end;
 end;
 
 [Run]
-; Kurulu bir onceki surumu birak (yeniden kurulumda zararsizca hata verir, yok sayilir).
-Filename: "{app}\{#MyExeName}"; Parameters: "service stop"; Flags: runhidden; StatusMsg: "Onceki servis durduruluyor..."
-Filename: "{app}\{#MyExeName}"; Parameters: "service uninstall"; Flags: runhidden
-Filename: "{app}\{#MyExeName}"; Parameters: "service install"; Flags: runhidden; StatusMsg: "Windows servisi kaydediliyor..."
-; Ag modunu yaz + guvenlik duvari kuralini duzenle (netmode kendisi halleder).
-Filename: "{app}\{#MyExeName}"; Parameters: "netmode lan";   Tasks: lanaccess;     Flags: runhidden; StatusMsg: "Ag modu ayarlaniyor..."
-Filename: "{app}\{#MyExeName}"; Parameters: "netmode local"; Tasks: not lanaccess; Flags: runhidden; StatusMsg: "Ag modu ayarlaniyor..."
-Filename: "{app}\{#MyExeName}"; Parameters: "service start"; Flags: runhidden; StatusMsg: "Varya One servisi baslatiliyor..."
 Filename: "{app}\{#ClientExe}"; Description: "Varya One'u ac"; Flags: postinstall skipifsilent nowait runasoriginaluser
 
 [UninstallRun]

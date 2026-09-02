@@ -20,7 +20,9 @@ permissions:
 
 jobs:
   bundle:
-    runs-on: windows-latest
+    runs-on: windows-2025
+    env:
+      BUNDLED_PG_VERSION: 18.4-1
     steps:
       - uses: actions/checkout@v4
 
@@ -42,22 +44,62 @@ jobs:
         # branch, so prefer the explicit input there.
         run: echo "version=${{ inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch bundled PostgreSQL
-        run: pwsh deploy/windows/fetch-tools.ps1
+      - name: Cache Windows runtime bundle
+        id: runtime-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            deploy/windows/pgsql
+            deploy/windows/vc_redist.x64.exe
+            deploy/windows/MicrosoftEdgeWebview2Setup.exe
+          key: windows-runtime-x64-pg${{ env.BUNDLED_PG_VERSION }}-${{ hashFiles('deploy/windows/fetch-tools.ps1') }}
 
-      - name: Install Inno Setup + zip
+      - name: Fetch bundled PostgreSQL
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./deploy/windows/fetch-tools.ps1 -PgVersion $env:BUNDLED_PG_VERSION
+
+      - name: Locate packaging tools
+        shell: pwsh
         run: |
-          choco install innosetup zip --no-progress -y
-          echo "C:\Program Files (x86)\Inno Setup 6" >> "$env:GITHUB_PATH"
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" |
+              Select-Object -First 1
+          }
+          Split-Path $iscc.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $sevenZip = Get-Command 7z.exe -ErrorAction SilentlyContinue
+          if ($sevenZip) { $sevenZipPath = $sevenZip.Source }
+          else { $sevenZipPath = "$env:ProgramFiles\7-Zip\7z.exe" }
+          if (-not (Test-Path $sevenZipPath)) { throw "The runner's preinstalled 7z.exe was not found" }
+          Split-Path $sevenZipPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Install go-winres (refresh client exe icon)
         run: |
-          go install github.com/tc-hib/go-winres@latest
+          go install github.com/tc-hib/go-winres@v0.3.3
           echo "$(go env GOPATH)\bin" >> "$env:GITHUB_PATH"
 
       - name: Build bundle
         shell: bash
+        env:
+          VARYAONE_REQUIRE_INSTALLER: "1"
         run: deploy/windows/build-bundle.sh "${{ steps.v.outputs.version }}"
+
+      - name: Verify release artifacts
+        shell: bash
+        run: |
+          version="${{ steps.v.outputs.version }}"
+          test -s "dist/windows/varyaone-${version}-windows-amd64.zip"
+          test -s "dist/windows/varyaone-${version}-windows-amd64.zip.sha256"
+          test -s "dist/windows/VaryaOne-Setup-${version#v}.exe"
+          archive="dist/windows/varyaone-${version}-windows-amd64.zip"
+          7z t "$archive"
+          entries="$(7z l -ba "$archive" | awk '{print $NF}' | tr '\\' '/')"
+          for entry in varyaone.exe varyaone-client.exe RELEASE pgsql/bin/initdb.exe pgsql/bin/pg_ctl.exe; do
+            grep -Fx "$entry" <<<"$entries"
+          done
 
       - uses: actions/upload-artifact@v4
         with:

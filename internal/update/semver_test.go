@@ -1,6 +1,9 @@
 package update
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestCompareVersions(t *testing.T) {
 	cases := []struct {
@@ -35,5 +38,34 @@ func TestIsSemver(t *testing.T) {
 		if isSemver(v) {
 			t.Errorf("isSemver(%q) = true, want false", v)
 		}
+	}
+}
+
+func TestTargetReleaseKeepsQueuedArtifactWhenLatestChanges(t *testing.T) {
+	queued := LatestInfo{
+		Version:            "v1.5.0",
+		WindowsArtifactURL: "https://example.invalid/v1.5.zip",
+		WindowsSHA256:      "old-hash",
+	}
+	latest := LatestInfo{
+		Version:            "v1.6.0",
+		WindowsArtifactURL: "https://example.invalid/v1.6.zip",
+		WindowsSHA256:      "new-hash",
+	}
+	meta := metaMap{
+		keyTargetInfo: mustJSON(queued),
+		keyLatest:     mustJSON(latest),
+	}
+
+	got, err := targetRelease(meta, "v1.5.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != queued.Version || got.WindowsSHA256 != queued.WindowsSHA256 {
+		t.Fatalf("targetRelease = %+v, want queued artifact %+v", got, queued)
+	}
+
+	if _, err := targetRelease(metaMap{keyLatest: mustJSON(latest)}, "v1.5.0"); !errors.Is(err, ErrTargetMetadata) {
+		t.Fatalf("mismatched latest error = %v, want ErrTargetMetadata", err)
 	}
 }

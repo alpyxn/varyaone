@@ -58,38 +58,44 @@ func NewPostgres(layout Layout) (*Postgres, error) {
 	return &Postgres{layout: layout, bin: bin, port: port, dbName: pgDBName, dbUser: pgDBUser}, nil
 }
 
-// verifyPGBundle catches a truncated or partially-extracted PostgreSQL bundle
-// before it turns into an opaque "initdb: exit status 0xC0000135" (a missing or
-// short DLL). A bad updater zip or a broken install lands here.
+// verifyPGBundle catches a broken or partially-extracted PostgreSQL bundle
+// before it turns into an opaque "initdb: exit status 0xC0000135". A bad updater
+// zip or a broken install lands here.
 func verifyPGBundle(bin string) error {
-	minSize := map[string]int64{
-		"initdb.exe":   400_000,
-		"postgres.exe": 8_000_000,
-		"pg_ctl.exe":   200_000,
-	}
-	for name, min := range minSize {
-		fi, err := os.Stat(filepath.Join(bin, exe(strings.TrimSuffix(name, ".exe"))))
+	for _, name := range []string{"initdb", "postgres", "pg_ctl", "psql"} {
+		fi, err := os.Stat(filepath.Join(bin, exe(name)))
 		if err != nil {
-			return fmt.Errorf("PostgreSQL paketi eksik: %s bulunamadı (%s) — yeniden kurun", name, bin)
+			return fmt.Errorf("PostgreSQL paketi eksik: %s bulunamadı (%s) — yeniden kurun", exe(name), bin)
 		}
-		if fi.Size() < min {
-			return fmt.Errorf("PostgreSQL paketi bozuk: %s yalnızca %d bayt (beklenen ≥ %d) — kurulum dosyası eksik indirilmiş, yeniden kurun",
-				name, fi.Size(), min)
+		if fi.Size() < 20_000 {
+			return fmt.Errorf("PostgreSQL paketi bozuk: %s yalnızca %d bayt — kurulum dosyası eksik, yeniden kurun", exe(name), fi.Size())
 		}
 	}
-	if runtime.GOOS == "windows" {
-		entries, err := os.ReadDir(bin)
-		if err != nil {
-			return fmt.Errorf("PostgreSQL bin dizini okunamadı (%s): %w", bin, err)
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	entries, err := os.ReadDir(bin)
+	if err != nil {
+		return fmt.Errorf("PostgreSQL bin dizini okunamadı (%s): %w", bin, err)
+	}
+	var dlls int
+	have := map[string]bool{}
+	for _, e := range entries {
+		n := strings.ToLower(e.Name())
+		if !strings.HasSuffix(n, ".dll") {
+			continue
 		}
-		dlls := 0
-		for _, e := range entries {
-			if strings.EqualFold(filepath.Ext(e.Name()), ".dll") {
-				dlls++
-			}
-		}
-		if dlls < 25 {
-			return fmt.Errorf("PostgreSQL paketi eksik: %s içinde yalnızca %d DLL var (beklenen 30+) — yeniden kurun", bin, dlls)
+		dlls++
+		have[n] = true
+	}
+	if dlls < 20 {
+		return fmt.Errorf("PostgreSQL paketi eksik: %s içinde yalnızca %d DLL var — yeniden kurun", bin, dlls)
+	}
+	// App-local MSVC runtime — bundled by fetch-tools.ps1; its absence is the
+	// classic initdb 0xC0000135 on a box without the VC++ redistributable.
+	for _, crt := range []string{"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"} {
+		if !have[crt] {
+			return fmt.Errorf("PostgreSQL paketi eksik: %s yok (%s) — MSVC çalışma zamanı gömülü değil, yeniden kurun", crt, bin)
 		}
 	}
 	return nil

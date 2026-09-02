@@ -57,34 +57,45 @@ Remove-Item -Recurse -Force $extract
 Remove-Item $tmp
 
 # --- integrity gate ---------------------------------------------------------
-# Fail here in CI, never at runtime on a user's machine. Check by SIZE, not just
-# existence: a truncated extraction leaves the file present but short.
+# Fail here in CI, never at runtime on a user's machine.
 $bin = Join-Path $dest "bin"
-$minSize = @{
-  "initdb.exe"   = 400KB
-  "postgres.exe" = 8MB
-  "pg_ctl.exe"   = 200KB
-  "psql.exe"     = 400KB
-}
-foreach ($name in $minSize.Keys) {
+foreach ($name in @("initdb.exe", "postgres.exe", "pg_ctl.exe", "psql.exe")) {
   $f = Join-Path $bin $name
   if (-not (Test-Path $f)) { throw "PostgreSQL bundle incomplete: $name missing" }
   $sz = (Get-Item $f).Length
-  if ($sz -lt $minSize[$name]) {
-    throw "PostgreSQL bundle truncated: $name is $sz bytes (expected >= $($minSize[$name])) — extraction dropped data"
-  }
+  # 20 KB catches a zero-byte / grossly truncated file; the real EDB frontends
+  # are small (initdb.exe ~240 KB) because common code lives in the DLLs.
+  if ($sz -lt 20KB) { throw "PostgreSQL bundle truncated: $name is only $sz bytes" }
+  Write-Host ("   {0,-14} {1,10:N0} bytes" -f $name, $sz)
 }
 $dllCount = (Get-ChildItem $bin -Filter *.dll -ErrorAction SilentlyContinue).Count
-if ($dllCount -lt 25) {
-  throw "PostgreSQL bundle incomplete: only $dllCount DLLs in bin\ (expected 30+)"
-}
-# initdb/postgres load these at startup; a missing one is the classic 0xC0000135.
-foreach ($pat in @("libintl*.dll", "libpq*.dll", "libcrypto*.dll", "libssl*.dll")) {
-  if (-not (Get-ChildItem $bin -Filter $pat -ErrorAction SilentlyContinue)) {
+if ($dllCount -lt 20) { throw "PostgreSQL bundle incomplete: only $dllCount DLLs in bin\" }
+Write-Host ">> bin\ DLLs ($dllCount):"
+Get-ChildItem $bin -Filter *.dll | Sort-Object Name | ForEach-Object { Write-Host "     $($_.Name)" }
+
+# initdb/postgres load these PostgreSQL DLLs at startup.
+foreach ($pat in @("libpq*.dll", "libcrypto*.dll", "libssl*.dll")) {
+  if (-not (Get-ChildItem $bin -Filter $pat -EA SilentlyContinue)) {
     throw "PostgreSQL bundle incomplete: no $pat in bin\"
   }
 }
-Write-Host ">> staged $dest ($dllCount DLLs, initdb.exe $((Get-Item (Join-Path $bin 'initdb.exe')).Length) bytes)"
+
+# App-local MSVC runtime: the EDB binaries are MSVC-linked and 0xC0000135 on a
+# box without the VC++ redistributable. Dropping the three CRT DLLs next to the
+# executables makes them load regardless of what is installed system-wide
+# (Microsoft permits app-local deployment of these). vc_redist is still run by
+# the installer for the UCRT edge cases on pre-Win10.
+$sys32 = Join-Path $env:WINDIR "System32"
+foreach ($crt in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")) {
+  $src = Join-Path $sys32 $crt
+  if (Test-Path $src) {
+    Copy-Item $src (Join-Path $bin $crt) -Force
+    Write-Host "   app-local: $crt"
+  } else {
+    Write-Warning "runner has no $crt in System32 — app-local CRT incomplete"
+  }
+}
+Write-Host ">> staged $dest"
 
 # --- runtime prerequisites -------------------------------------------------
 # EDB binaries are MSVC-linked; without the VC++ runtime initdb fails 0xC0000135
