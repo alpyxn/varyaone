@@ -19,11 +19,15 @@ func TestEnsureInitializedArchivesPartialClusterAndPublishesAtomically(t *testin
 		t.Fatal(err)
 	}
 	initdb := filepath.Join(bin, "initdb")
+	// Mimic real initdb: it creates the data directory itself (we no longer
+	// pre-create it, because Windows initdb cannot chmod an existing one).
 	script := `#!/bin/sh
 for arg in "$@"; do
   case "$arg" in --pgdata=*) dir="${arg#--pgdata=}";; esac
 done
 test -n "$dir" || exit 2
+test ! -e "$dir" || exit 3
+mkdir -p "$dir"
 printf '18\n' > "$dir/PG_VERSION"
 `
 	if err := os.WriteFile(initdb, []byte(script), 0o755); err != nil {

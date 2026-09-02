@@ -195,11 +195,17 @@ func (p *Postgres) EnsureInitialized(ctx context.Context) error {
 	// power or a runtime dependency fails halfway through. Build the cluster in
 	// a sibling temporary directory and publish it with a rename only after
 	// initdb has completed. Any old partial directory is preserved for support.
-	initDir, err := os.MkdirTemp(p.layout.Home, "pgdata.init-")
+	//
+	// initdb must create the data directory itself: on Windows it fails to
+	// change permissions on a directory that already exists ("could not change
+	// permissions of directory ...: Permission denied"), so hand it a
+	// not-yet-existing child of the temp dir rather than the temp dir itself.
+	initParent, err := os.MkdirTemp(p.layout.Home, "pgdata.init-")
 	if err != nil {
 		return fmt.Errorf("create temporary database directory: %w", err)
 	}
-	defer os.RemoveAll(initDir)
+	defer os.RemoveAll(initParent)
+	initDir := filepath.Join(initParent, "pgdata")
 
 	cmd := exec.CommandContext(ctx, p.tool("initdb"),
 		"--pgdata="+initDir,
@@ -275,7 +281,10 @@ func (p *Postgres) Start(ctx context.Context) error {
 		return p.ensureDatabase(ctx)
 	}
 	logFile := filepath.Join(p.layout.Logs(), "postgres.log")
-	opts := fmt.Sprintf("-p %d -c listen_addresses=127.0.0.1 -c unix_socket_directories=", p.port)
+	// The squashed baseline migration creates the whole schema in one
+	// transaction (hundreds of objects), which overflows the default
+	// max_locks_per_transaction (64) lock table on a fresh cluster.
+	opts := fmt.Sprintf("-p %d -c listen_addresses=127.0.0.1 -c unix_socket_directories= -c max_locks_per_transaction=256", p.port)
 	cmd := exec.CommandContext(ctx, p.tool("pg_ctl"),
 		"start", "-w", "-t", "60",
 		"--pgdata="+p.layout.PGData(),

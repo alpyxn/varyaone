@@ -60,19 +60,37 @@ jobs:
         run: |
           # Only packages whose tests use the shared PostgreSQL service need
           # -p 1; serialising every pure unit package made the whole suite wait.
-          mapfile -t db_packages < <(
-            rg -l 'VARYAONE_TEST_DATABASE_URL' cmd internal --glob '*_test.go' |
+          # Use git grep: it is guaranteed on an actions/checkout runner, while
+          # ripgrep is not part of GitHub's runner contract. An empty result is
+          # a hard failure, otherwise DB tests would silently join the parallel
+          # unit batch and exhaust PostgreSQL's shared lock table.
+          db_test_files_text="$(
+            git grep -l 'VARYAONE_TEST_DATABASE_URL' -- cmd internal |
+              awk '/_test\.go$/'
+          )"
+          mapfile -t db_test_files <<< "$db_test_files_text"
+          ((${#db_test_files[@]} > 0)) || {
+            echo "database-backed test package detection returned no files" >&2
+            exit 1
+          }
+          db_packages_text="$(
+            printf '%s\n' "${db_test_files[@]}" |
               xargs -r -n1 dirname | sort -u |
               sed "s#^#$(go list -m)/#"
-          )
-          mapfile -t all_packages < <(
-            go list ./... | sort -u
-          )
-          mapfile -t unit_packages < <(
+          )"
+          mapfile -t db_packages <<< "$db_packages_text"
+          all_packages_text="$(go list ./... | sort -u)"
+          mapfile -t all_packages <<< "$all_packages_text"
+          unit_packages_text="$(
             comm -23 \
               <(printf '%s\n' "${all_packages[@]}") \
               <(printf '%s\n' "${db_packages[@]}")
-          )
+          )"
+          mapfile -t unit_packages <<< "$unit_packages_text"
+          ((${#all_packages[@]} == ${#unit_packages[@]} + ${#db_packages[@]})) || {
+            echo "Go package partition is incomplete or overlapping" >&2
+            exit 1
+          }
           # Never pass an empty/root filesystem path to `go test`; package
           # import paths remain stable across local and GitHub runner layouts.
           module_path="$(go list -m)"
