@@ -41,21 +41,37 @@ type Config struct {
 	PostgresBinDir   string
 	PulseEndpoint    string
 	PulseIngestKey   string
-	// PulseEnabled turns on the daily anonymous usage summary (per-company
-	// counts). It is opt-in.
-	PulseEnabled bool
 	// PulseInstallPing sends the one-off anonymous install-count ping whenever a
-	// collector is configured. It is opt-out (default true) and independent of
-	// PulseEnabled.
+	// collector is configured. It is opt-out (default true). It is the only
+	// thing the collector is told about this instance besides user-submitted
+	// feedback: there is no usage telemetry.
 	PulseInstallPing bool
 	// UpdateAgentToken authenticates the host-side systemd update agent against
 	// the /internal/update/* endpoints. Empty disables those endpoints
 	// entirely (the UI-facing /api/v1/system/update routes stay available).
 	UpdateAgentToken string
+	// UpdateCatalogURLs are the release-catalog documents (latest.json) the
+	// updater polls, tried in order until one parses. They are plain public
+	// https objects — no key, no rate limit — so update checks are independent
+	// of pulse. Empty disables update checking entirely; like PulseEndpoint,
+	// there is no built-in default here — the desktop supervisor and
+	// compose.yaml supply one, same as they do for PulseEndpoint.
+	UpdateCatalogURLs []string
+	// UpdateArtifactPrefix pins where a release artifact may be downloaded
+	// from. A catalog entry whose artifact URL does not start with this prefix
+	// has its artifact fields dropped, so a tampered catalog cannot point the
+	// updater at a fork or a third-party host. Empty disables the check (any
+	// https URL accepted) — only meaningful together with a non-default
+	// UpdateCatalogURLs pointed at a fork/self-host.
+	UpdateArtifactPrefix string
 }
 
-// PulseConfigured reports whether a collector endpoint + ingest key are set, i.e.
-// whether pulse (install ping and/or usage summary) can talk to anything.
+// UpdateConfigured reports whether a release catalog is available, i.e. whether
+// update checks can run.
+func (c Config) UpdateConfigured() bool { return len(c.UpdateCatalogURLs) > 0 }
+
+// PulseConfigured reports whether a collector endpoint + ingest key are set,
+// i.e. whether the install ping and user feedback can reach anything.
 func (c Config) PulseConfigured() bool {
 	return c.PulseEndpoint != "" && c.PulseIngestKey != ""
 }
@@ -116,9 +132,10 @@ func Load(getenv Getenv) (Config, error) {
 		PostgresBinDir:          strings.TrimSpace(getenv("VARYAONE_POSTGRES_BIN")),
 		PulseEndpoint:           strings.TrimRight(strings.TrimSpace(getenv("VARYAONE_PULSE_ENDPOINT")), "/"),
 		PulseIngestKey:          strings.TrimSpace(getenv("VARYAONE_PULSE_INGEST_KEY")),
-		PulseEnabled:            strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_PULSE_ENABLED")), "true"),
 		PulseInstallPing:        !strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_PULSE_INSTALL_PING")), "false"),
 		UpdateAgentToken:        strings.TrimSpace(getenv("VARYAONE_UPDATE_AGENT_TOKEN")),
+		UpdateCatalogURLs:       splitList(getenv("VARYAONE_UPDATE_CATALOG_URL")),
+		UpdateArtifactPrefix:    strings.TrimSpace(getenv("VARYAONE_UPDATE_ARTIFACT_PREFIX")),
 	}
 	masterKeyValue := strings.TrimSpace(getenv("VARYAONE_MASTER_KEY"))
 	if masterKeyValue == "" {
@@ -147,7 +164,7 @@ func Load(getenv Getenv) (Config, error) {
 	default:
 		return Config{}, fmt.Errorf("VARYAONE_LOG_LEVEL must be one of debug, info, warn, error")
 	}
-	if cfg.PulseEnabled || cfg.PulseEndpoint != "" || cfg.PulseIngestKey != "" {
+	if cfg.PulseEndpoint != "" || cfg.PulseIngestKey != "" {
 		if cfg.PulseEndpoint == "" || cfg.PulseIngestKey == "" {
 			return Config{}, errors.New("VARYAONE_PULSE_ENDPOINT and VARYAONE_PULSE_INGEST_KEY must be set together")
 		}
@@ -156,7 +173,30 @@ func Load(getenv Getenv) (Config, error) {
 			return Config{}, errors.New("VARYAONE_PULSE_ENDPOINT must be a valid https URL")
 		}
 	}
+	for _, raw := range cfg.UpdateCatalogURLs {
+		catalogURL, cerr := url.Parse(raw)
+		if cerr != nil || catalogURL.Scheme != "https" || catalogURL.Host == "" {
+			return Config{}, fmt.Errorf("VARYAONE_UPDATE_CATALOG_URL entry %q must be a valid https URL", raw)
+		}
+	}
+	if cfg.UpdateArtifactPrefix != "" {
+		prefixURL, perr := url.Parse(cfg.UpdateArtifactPrefix)
+		if perr != nil || prefixURL.Scheme != "https" || prefixURL.Host == "" {
+			return Config{}, errors.New("VARYAONE_UPDATE_ARTIFACT_PREFIX must be a valid https URL")
+		}
+	}
 	return cfg, nil
+}
+
+// splitList parses a comma-separated env value into a trimmed, non-empty slice.
+func splitList(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func valueOr(value, fallback string) string {

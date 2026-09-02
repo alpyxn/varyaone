@@ -32,26 +32,25 @@ func TestUpdateLifecycleIntegration(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	// Fake collector: v1.5.0 is the latest; asking as v0.0.0 returns its notes.
+	// Fake catalog: v1.5.0 is the latest on the stable channel.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("authorization") != "Bearer k" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
+		w.Header().Set("content-type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"channel":          "stable",
-			"latest_version":   "v1.5.0",
-			"update_available": true,
-			"mandatory":        false,
-			"notes_md":         "## v1.5.0\n- yeni",
-			"published_at":     "2026-09-01T00:00:00Z",
+			"schema_version": 1,
+			"channels": map[string]any{
+				"stable": map[string]any{
+					"version":      "v1.5.0",
+					"mandatory":    false,
+					"notes_md":     "## v1.5.0\n- yeni",
+					"published_at": "2026-09-01T00:00:00Z",
+				},
+			},
 		})
 	}))
 	defer server.Close()
 
 	svc := NewService(pool, config.Config{Release: "v1.4.0"})
-	svc.endpoint = server.URL
-	svc.key = "k"
+	svc.catalogURLs = []string{server.URL}
 
 	// 1. Check populates latest.
 	if err := svc.CheckDue(ctx); err != nil {
@@ -156,8 +155,7 @@ func TestReconcileRecoversCrashedAgent(t *testing.T) {
 	}
 
 	svc := NewService(pool, config.Config{Release: "v2.0.0"})
-	svc.endpoint = "http://127.0.0.1:0" // unreachable; reconcile must not need it
-	svc.key = "k"
+	svc.catalogURLs = []string{"http://127.0.0.1:0"} // unreachable; reconcile must not need it
 
 	// Simulate an apply that got as far as in_progress toward v2.0.0 and then
 	// the agent died — but the process is now already on v2.0.0.
@@ -172,6 +170,168 @@ func TestReconcileRecoversCrashedAgent(t *testing.T) {
 	}
 	if st, _ := svc.Status(ctx); st.State != StateDone {
 		t.Fatalf("state = %q, want done", st.State)
+	}
+}
+
+// TestCheckDueBackoffOnRepeatedFailure verifies H3: a catalog that keeps
+// failing backs off (rather than being re-hit on every tick) and never
+// disturbs a previously known-good update.latest.
+func TestCheckDueBackoffOnRepeatedFailure(t *testing.T) {
+	databaseURL := os.Getenv("VARYAONE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("VARYAONE_TEST_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool := updateTestPool(t, ctx, databaseURL)
+	if err := migrations.New(pool).Up(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": 1,
+			"channels": map[string]any{
+				"stable": map[string]any{"version": "v1.0.0"},
+			},
+		})
+	}))
+	defer good.Close()
+
+	svc := NewService(pool, config.Config{Release: "v0.9.0"})
+	svc.catalogURLs = []string{good.URL}
+	clock := time.Now()
+	svc.now = func() time.Time { return clock }
+
+	// 1. A good check populates latest and clears the interval.
+	if err := svc.CheckDue(ctx); err != nil {
+		t.Fatalf("CheckDue: %v", err)
+	}
+	st, err := svc.Status(ctx)
+	if err != nil || st.Latest == nil || st.Latest.Version != "v1.0.0" {
+		t.Fatalf("Status after good check = %+v err=%v", st, err)
+	}
+
+	// 2. Point at an always-failing source; the next N due checks should
+	// increase the check_failures counter and never overwrite update.latest.
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer bad.Close()
+	svc.catalogURLs = []string{bad.URL}
+
+	for i := 0; i < 3; i++ {
+		clock = clock.Add(maxCheckInterval + time.Minute) // always past due regardless of backoff so far
+		if err := svc.CheckDue(ctx); err == nil {
+			t.Fatalf("CheckDue #%d: expected error from the failing catalog", i)
+		}
+	}
+
+	meta, err := svc.readAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failures := meta.int(keyCheckFailures); failures != 3 {
+		t.Fatalf("check_failures = %d, want 3", failures)
+	}
+	st, err = svc.Status(ctx)
+	if err != nil || st.Latest == nil || st.Latest.Version != "v1.0.0" {
+		t.Fatalf("update.latest was disturbed by a failing catalog: %+v err=%v", st, err)
+	}
+
+	// 3. A due check right after a failure, before the backed-off interval
+	// elapses, must be a no-op (no new network call — the failing source would
+	// error if hit, so a clean nil return proves the skip).
+	clock = clock.Add(time.Second)
+	if err := svc.CheckDue(ctx); err != nil {
+		t.Fatalf("CheckDue should have been skipped by backoff, got: %v", err)
+	}
+	meta, _ = svc.readAll(ctx)
+	if failures := meta.int(keyCheckFailures); failures != 3 {
+		t.Fatalf("check_failures changed during a backed-off tick: %d", failures)
+	}
+
+	// 4. Recovery resets the failure counter.
+	svc.catalogURLs = []string{good.URL}
+	clock = clock.Add(maxCheckInterval + time.Minute)
+	if err := svc.CheckDue(ctx); err != nil {
+		t.Fatalf("CheckDue on recovery: %v", err)
+	}
+	meta, _ = svc.readAll(ctx)
+	if failures := meta.int(keyCheckFailures); failures != 0 {
+		t.Fatalf("check_failures = %d after recovery, want 0", failures)
+	}
+}
+
+// TestCheckDueYankedCancelsQueuedApply verifies H4: withdrawing a queued (but
+// not yet started) release via the catalog's "yanked" list cancels it, while
+// an apply already in_progress is left untouched.
+func TestCheckDueYankedCancelsQueuedApply(t *testing.T) {
+	databaseURL := os.Getenv("VARYAONE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("VARYAONE_TEST_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	pool := updateTestPool(t, ctx, databaseURL)
+	if err := migrations.New(pool).Up(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	catalogBody := `{"schema_version": 1, "channels": {"stable": {"version": "v1.5.0"}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(catalogBody))
+	}))
+	defer srv.Close()
+
+	svc := NewService(pool, config.Config{Release: "v1.4.0"})
+	svc.catalogURLs = []string{srv.URL}
+
+	if err := svc.CheckDue(ctx); err != nil {
+		t.Fatalf("CheckDue: %v", err)
+	}
+	if err := svc.RequestApply(ctx); err != nil {
+		t.Fatalf("RequestApply: %v", err)
+	}
+	if st, _ := svc.Status(ctx); st.State != StateApplyRequested {
+		t.Fatalf("state = %q, want apply_requested", st.State)
+	}
+
+	// Withdraw v1.5.0.
+	catalogBody = `{"schema_version": 1, "channels": {"stable": {"version": "v1.5.0"}}, "yanked": ["v1.5.0"]}`
+	svc.setRaw(ctx, keyCheckedAt, "null") // force due again
+	if err := svc.CheckDue(ctx); err != nil {
+		t.Fatalf("CheckDue after yank: %v", err)
+	}
+	st, err := svc.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.State != StateIdle {
+		t.Fatalf("state = %q, want idle after the queued release was yanked", st.State)
+	}
+
+	// An apply already in_progress must not be touched by a yank.
+	if err := svc.setRaw(ctx, keyState, quote(StateInProgress)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.setRaw(ctx, keyTarget, quote("v1.5.0")); err != nil {
+		t.Fatal(err)
+	}
+	svc.setRaw(ctx, keyCheckedAt, "null")
+	if err := svc.CheckDue(ctx); err != nil {
+		t.Fatalf("CheckDue with in_progress apply: %v", err)
+	}
+	meta, err := svc.readAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.text(keyState) != StateInProgress {
+		t.Fatalf("in_progress apply was disturbed by a yank: state = %q", meta.text(keyState))
 	}
 }
 

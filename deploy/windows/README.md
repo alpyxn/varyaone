@@ -13,7 +13,8 @@ istemci uygulamasından erişir. Docker gerekmez.
 | mDNS yayını (`_varyaone._tcp`) | `internal/platform/desktop/mdns.go` | ✅ hazır |
 | Windows updater (`varyaone update-apply`) | `internal/platform/desktop/updater.go` | ✅ hazır (uçtan uca test bekliyor) |
 | Updater tetikleyici (Linux systemd ajanı yerine) | `supervisor.go` `runUpdateApplier` + `spawn_windows.go` | ✅ hazır (uçtan uca test bekliyor) |
-| Pulse yapılandırması (masaüstü varsayılanı) | `settings.go` + `supervisor.go` `config()` | ✅ resmi uç varsayılan, `settings.env` ile geçersiz kılınır |
+| Pulse yapılandırması (kurulum sayacı + geri bildirim) | `settings.go` + `supervisor.go` `config()` | ✅ resmi uç varsayılan, `settings.env` ile geçersiz kılınır — kullanım telemetrisi yok |
+| Güncelleme kataloğu (masaüstü varsayılanı) | `settings.go` + `internal/update/catalog.go` | ✅ resmi GitHub Releases kataloğu varsayılan, pulse'tan bağımsız (bkz. "Updater akışı") |
 | VC++ çalışma zamanı (gömülü PG için şart) | `fetch-tools.ps1` indirir, `installer.iss` `[Code]` sessiz kurar | ✅ yoksa `initdb` `0xC0000135` verir |
 | WebView2 runtime (istemci için şart) | `fetch-tools.ps1` tam x64 Evergreen standalone paketi indirir, installer çevrimdışı kurar | ✅ internet gerektirmez |
 | WebP codec | saf Go codec; Windows binary `CGO_ENABLED=0` kalabilir | ✅ başlangıçta native DLL gerektirmez |
@@ -21,7 +22,7 @@ istemci uygulamasından erişir. Docker gerekmez.
 | Port çakışması ön kontrolü | `supervisor.go` `checkHTTPPortFree` | ✅ "8080 kullanımda" net mesajı |
 | Kod imzalama (SmartScreen) | `installer.iss` SignTool iskeleti | ⏳ sertifika gerek (bkz. aşağı) |
 | SPA static build (`VARYAONE_ADAPTER=static`) | `web/svelte.config.js` | ✅ hazır |
-| pulse: Windows artefakt alanları | `varya-pulse` migration 0004 + `/release/v1/latest` | ✅ hazır |
+| Windows artefakt alanları (`latest.json`) | `.github/workflows/desktop-windows.yml` + `release/channel.json` | ✅ hazır — her tag'de otomatik üretilip release'e eklenir |
 | Ağ modu (`varyaone netmode <local\|lan>`) | `internal/platform/desktop/netmode.go` | ✅ hazır |
 | İstemci + kontrol paneli (WebView2, `--panel`) | `cmd/varyaone-client` | ✅ hazır (uçtan uca test bekliyor) |
 | Inno Setup installer (sihirbaz + servis kaydı + kaldırıcı) | `deploy/windows/installer.iss` | ✅ hazır |
@@ -66,14 +67,13 @@ pwsh deploy/windows/fetch-tools.ps1
 deploy/windows/build-bundle.sh v0.3.0
 #    -> dist/windows/VaryaOne-Setup-0.3.0.exe   (çift tıkla kurulum sihirbazı)
 #    -> dist/windows/varyaone-v0.3.0-windows-amd64.zip  (updater artefaktı)
-
-# 3. Release'i pulse'a kaydet (updater bunu görür):
-curl -X POST https://varya-pulse.varyaone.workers.dev/admin/v1/releases \
-  -H "authorization: Bearer $PULSE_ADMIN_TOKEN" \
-  -d '{"version":"v0.3.0","channel":"stable",
-       "win_artifact_url":"https://github.com/alpyxn/varyaone/releases/download/v0.3.0/varyaone-v0.3.0-windows-amd64.zip",
-       "win_artifact_sha256":"<zip.sha256 içeriği>"}'
 ```
+
+Elle akışta 3. adım yoktur: `.github/workflows/desktop-windows.yml` bir `v*`
+tag'i push'landığında `dist/windows/latest.json`'ı otomatik üretip release'e
+ekler ve release'i draft olarak açıp her asset yüklendikten sonra yayınlar
+(bkz. "Updater akışı"). Yerelde elle release açıyorsan `latest.json`'ı da aynı
+şemayla ekle — bkz. `internal/update/catalog.go` (`catalogDoc`).
 
 `pgsql/` yoksa betik eksik bir zip üretmez, hata ile durur. CI,
 `VARYAONE_REQUIRE_INSTALLER=1` kullandığı için Inno Setup veya installer
@@ -122,11 +122,34 @@ Tek `varyaone-client.exe` (WebView2 penceresi, saf Go — `jchv/go-webview2`):
 ## Updater akışı (web ile aynı durum makinesi)
 
 `internal/update` durum makinesi ve `/internal/update/*` uçları değişmedi. Fark
-yalnızca taşıyıcıda:
+yalnızca taşıyıcıda ve kaynakta:
 
-Pulse toplayıcısı **varsayılan olarak** resmi uç + paylaşımlı anahtara ayarlıdır
-(compose.yaml ile aynı), yani düz bir kurulum ekstra ayar olmadan yeni sürümleri
-görür. Kendi kataloğunu kullanmak için `%ProgramData%\VaryaOne\settings.env`:
+Güncelleme kontrolü **pulse'tan bağımsızdır** — `internal/update` sürüm
+kataloğunu `varya-pulse` Cloudflare Worker'ından değil, doğrudan her GitHub
+Release'e eklenen genel `latest.json` asset'inden okur
+(`https://github.com/alpyxn/varyaone/releases/latest/download/latest.json`,
+`internal/update/catalog.go`). Ne bir anahtar ne de rate limit gerekir; pulse
+ucu tamamen boşaltılsa bile güncelleme kontrolü çalışmaya devam eder. Kendi
+kataloğunu kullanmak için
+`%ProgramData%\VaryaOne\settings.env`:
+
+```
+VARYAONE_UPDATE_CATALOG_URL=https://ornek.com/latest.json
+# birden fazla kaynak virgülle ayrılır, sırayla denenir:
+# VARYAONE_UPDATE_CATALOG_URL=https://a.com/latest.json,https://b.com/latest.json
+# fork/self-host senaryosunda artefakt indirme adresini de sınırla:
+# VARYAONE_UPDATE_ARTIFACT_PREFIX=https://github.com/kendi-hesabin/varyaone/releases/download/
+```
+
+**Kill switch:** bozuk bir sürüm çıkarsa, aynı release'e düzeltilmiş bir
+`latest.json` yükle — ya `stable.version`'ı önceki sağlam sürüme çevir, ya da
+bozuk sürümü `"yanked": ["v0.3.0"]` listesine ekle (sıraya alınmış ama henüz
+başlamamış apply'ları iptal eder). Tag/indirme linklerine dokunmana gerek yok.
+
+Pulse toplayıcısı (yalnızca kurulum sayacı + kullanıcının gönderdiği geri
+bildirim; güncellemeyle ilgisiz, **kullanım telemetrisi toplanmaz**)
+**varsayılan olarak** resmi uç + paylaşımlı anahtara ayarlıdır (compose.yaml
+ile aynı). Kendi toplayıcını kullanmak için aynı `settings.env`:
 
 ```
 VARYAONE_PULSE_ENDPOINT=https://kendi-worker.example.workers.dev
@@ -160,7 +183,7 @@ yeni majörde `initdb` → `swap` öncesi alınan `.varya` dökümünü içine g
 (tam pre-update hali) geri konur, eski binary'ler `Home\rollback\`'ten döner.
 
 Tetikleyici, çalışan binary'ler ile veri dizininin majör karşılaştırmasıdır;
-pulse'taki `pg_major` alanı yalnızca bilgilendirme/panel içindir.
+`latest.json`'daki `pg_major` alanı yalnızca bilgilendirme içindir.
 
 ## Kod imzalama (SmartScreen / Defender)
 
@@ -195,6 +218,5 @@ aynı desen). `initdb` doğrudan çağrılır ve LocalSystem'de sorunsuz çalı�
   (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`); gerekiyorsa
   `CREATE_BREAKAWAY_FROM_JOB` ekle. Sürekli çöken bir güncelleme 15 dk'da bir
   yeniden denenir (sıkı döngü değil ama Linux ajanındaki gibi bir "pes et" sayacı yok).
-- CI'da release'i pulse admin ucuna otomatik kaydet.
 - Kod imzalama sertifikası al, `build-bundle.sh` + `installer.iss` SignTool'u aç.
 - 8080 dolu ise otomatik alternatif port dene (şu an sadece net hata veriyor).

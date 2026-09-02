@@ -119,3 +119,58 @@ func TestLoadRequiresA32ByteMasterKey(t *testing.T) {
 		t.Fatal("expected invalid master key to be rejected")
 	}
 }
+
+const requiredBase = "VARYAONE_DATABASE_URL"
+
+func baseValues() map[string]string {
+	return map[string]string{
+		requiredBase:          "postgres://user:secret@db:5432/varyaone",
+		"VARYAONE_MASTER_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+	}
+}
+
+func TestLoadUpdateCatalogURLsUnsetByDefault(t *testing.T) {
+	values := baseValues()
+	cfg, err := Load(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.UpdateCatalogURLs) != 0 || cfg.UpdateConfigured() {
+		t.Fatalf("expected no default catalog URLs, got %#v", cfg.UpdateCatalogURLs)
+	}
+	if cfg.UpdateArtifactPrefix != "" {
+		t.Fatalf("expected no default artifact prefix, got %q", cfg.UpdateArtifactPrefix)
+	}
+}
+
+func TestLoadUpdateCatalogURLsCommaSeparated(t *testing.T) {
+	values := baseValues()
+	values["VARYAONE_UPDATE_CATALOG_URL"] = "https://a.example/latest.json, https://b.example/latest.json"
+	cfg, err := Load(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://a.example/latest.json", "https://b.example/latest.json"}
+	if len(cfg.UpdateCatalogURLs) != 2 || cfg.UpdateCatalogURLs[0] != want[0] || cfg.UpdateCatalogURLs[1] != want[1] {
+		t.Fatalf("UpdateCatalogURLs = %#v, want %#v", cfg.UpdateCatalogURLs, want)
+	}
+	if !cfg.UpdateConfigured() {
+		t.Fatal("expected UpdateConfigured() true with catalog URLs set")
+	}
+}
+
+func TestLoadRejectsNonHTTPSUpdateCatalogURL(t *testing.T) {
+	values := baseValues()
+	values["VARYAONE_UPDATE_CATALOG_URL"] = "http://a.example/latest.json"
+	if _, err := Load(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("expected non-https catalog URL to be rejected")
+	}
+}
+
+func TestLoadRejectsNonHTTPSUpdateArtifactPrefix(t *testing.T) {
+	values := baseValues()
+	values["VARYAONE_UPDATE_ARTIFACT_PREFIX"] = "http://github.com/alpyxn/varyaone/releases/download/"
+	if _, err := Load(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("expected non-https artifact prefix to be rejected")
+	}
+}

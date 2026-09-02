@@ -3,54 +3,47 @@ package pulse
 import (
 	"encoding/json"
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 )
 
-// countQueryShape asserts a metric query can only ever return an opaque
-// company_id and a row count -- never a name, tax number or other identifier.
-var countQueryShape = regexp.MustCompile(
-	`^SELECT company_id::text, count\(\*\) FROM [a-z_]+( WHERE is_active)? GROUP BY 1$`,
-)
-
-func TestMetricQueriesSelectOnlyCounts(t *testing.T) {
-	for metric, query := range metricQueries {
-		if !countQueryShape.MatchString(query) {
-			t.Errorf("metric %q query is not a plain per-company count: %q", metric, query)
-		}
-	}
-}
-
-func TestDocumentKindsQueryStaysAnonymous(t *testing.T) {
-	// The only non-count column selected is dt.kind, which is a fixed enum
-	// (QUOTE/ORDER/DELIVERY/INVOICE), not free-form text.
+// TestPulseSourceReferencesNoIdentifyingColumns is the privacy guard: this
+// package may only ever read the two opaque keys it needs (install id, setup
+// timestamp). If someone reintroduces a query touching an identifying column,
+// this fails.
+func TestPulseSourceReferencesNoIdentifyingColumns(t *testing.T) {
 	code := stripComments(readSource(t))
-	if !strings.Contains(code, "SELECT d.company_id::text, dt.kind, count(*)") {
-		t.Fatal("documentKinds query shape changed; re-audit for identifying columns")
-	}
-	for _, banned := range []string{"legal_name", "trade_name", "display_name", "tax_number", "tax_office", "first_name", "last_name", "work_email", "document_no"} {
+	for _, banned := range []string{
+		"legal_name", "trade_name", "display_name", "tax_number", "tax_office",
+		"first_name", "last_name", "work_email", "document_no", "email",
+	} {
 		if strings.Contains(code, banned) {
 			t.Errorf("pulse.go code references identifying column %q", banned)
 		}
 	}
 }
 
-func TestReportMarshalsWithoutIdentifyingFields(t *testing.T) {
-	report := Report{
-		SchemaVersion: schemaVersion,
-		InstallID:     "11111111-1111-4111-8111-111111111111",
-		CapturedAt:    "2026-09-01T10:00:00Z",
-		AppVersion:    "1.2.3",
-		PGVersion:     "16.3",
-		Companies: []CompanyReport{{
-			CompanyID:    "22222222-2222-4222-8222-222222222222",
-			BaseCurrency: "TRY",
-			Timezone:     "Europe/Istanbul",
-			Metrics:      map[string]int64{"parties_total": 12, "sales_invoices": 40},
-		}},
+// TestNoUsageTelemetry pins the decision that this package collects no usage
+// statistics. Reintroducing a metrics snapshot means reopening the privacy
+// review, not quietly adding a query here.
+func TestNoUsageTelemetry(t *testing.T) {
+	code := stripComments(readSource(t))
+	for _, banned := range []string{
+		"count(*)", "metricQueries", "Snapshot", "documentKinds", "/pulse/v1/report",
+	} {
+		if strings.Contains(code, banned) {
+			t.Errorf("pulse.go reintroduces usage telemetry (%q)", banned)
+		}
 	}
-	blob, err := json.Marshal(report)
+}
+
+func TestInstallPayloadCarriesOnlyOpaqueFields(t *testing.T) {
+	payload := map[string]any{
+		"install_id":  "11111111-1111-4111-8111-111111111111",
+		"app_version": "1.2.3",
+		"setup_at":    "2026-09-01T10:00:00Z",
+	}
+	blob, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,22 +51,10 @@ func TestReportMarshalsWithoutIdentifyingFields(t *testing.T) {
 	if err := json.Unmarshal(blob, &generic); err != nil {
 		t.Fatal(err)
 	}
-	allowedTop := map[string]bool{
-		"schema_version": true, "install_id": true, "captured_at": true,
-		"app_version": true, "pg_version": true, "companies": true,
-	}
+	allowed := map[string]bool{"install_id": true, "app_version": true, "setup_at": true}
 	for k := range generic {
-		if !allowedTop[k] {
-			t.Errorf("unexpected top-level field %q in report payload", k)
-		}
-	}
-	company := generic["companies"].([]any)[0].(map[string]any)
-	allowedCompany := map[string]bool{
-		"company_id": true, "base_currency": true, "timezone": true, "metrics": true,
-	}
-	for k := range company {
-		if !allowedCompany[k] {
-			t.Errorf("unexpected company field %q in report payload", k)
+		if !allowed[k] {
+			t.Errorf("unexpected field %q in install payload", k)
 		}
 	}
 }

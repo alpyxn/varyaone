@@ -139,12 +139,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawP
 	default:
 		backupOptions = append(backupOptions, httpapi.WithSystemBackup(backupEngine))
 	}
+	// Pulse and system-update read cross-company/system state; they use the raw
+	// pool so a request's company scope never narrows them. The two are
+	// independent: system-update reads a public GitHub Releases catalog, not
+	// the pulse collector, so it stays mounted even with pulse disabled.
 	if cfg.PulseConfigured() {
-		// Pulse and system-update read cross-company/system state; they use the
-		// raw pool so a request's company scope never narrows them.
 		backupOptions = append(backupOptions, httpapi.WithPulse(pulse.NewService(rawPool, cfg)))
-		backupOptions = append(backupOptions, httpapi.WithSystemUpdate(update.NewService(rawPool, cfg), cfg.UpdateAgentToken))
 	}
+	backupOptions = append(backupOptions, httpapi.WithSystemUpdate(update.NewService(rawPool, cfg), cfg.UpdateAgentToken))
 
 	routerOptions := append([]httpapi.RouterOption{httpapi.WithIdentity(identityService, cfg.CookiesSecure()), httpapi.WithParty(partyService), httpapi.WithProducts(productService), httpapi.WithPricing(pricingService), httpapi.WithExchange(exchangeService), httpapi.WithTaxes(taxService), httpapi.WithPreferences(preferenceService), httpapi.WithDashboard(dashboardService), httpapi.WithAgenda(agendaService), httpapi.WithFinance(financeService), httpapi.WithInventory(inventoryService), httpapi.WithSales(salesService), httpapi.WithPurchasing(purchasingService), httpapi.WithMedia(mediaService), httpapi.WithSearch(httpapi.NewSearchService(pool)), httpapi.WithDataExchange(dataExchangeService), httpapi.WithReporting(reportingService), httpapi.WithEmailSettings(emailSettingsService), httpapi.WithHREmployee(hrEmployeeService), httpapi.WithHRAdvance(hrAdvanceService), httpapi.WithFixedAsset(fixedAssetService), httpapi.WithHREmployment(hrEmploymentService), httpapi.WithHRDocument(hrDocumentService), httpapi.WithHRSchedule(hrScheduleService), httpapi.WithHRLeave(hrLeaveService), httpapi.WithHRCalendar(hrCalendarService), httpapi.WithHRTimesheet(hrTimesheetService), httpapi.WithPayrollLegislation(payrollLegislationService), httpapi.WithLegislationRepository(legislationRepository), httpapi.WithPayrollRun(payrollRunService), httpapi.WithPayrollPayment(payrollPaymentService), httpapi.WithPayrollDelivery(payrollDeliveryService), httpapi.WithEmail(emailTemplateService, emailComposeService), httpapi.WithCompanyScope(rawPool)}, backupOptions...)
 	routerOptions = append(routerOptions, extraRouterOptions...)

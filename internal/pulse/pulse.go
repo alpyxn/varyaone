@@ -1,11 +1,17 @@
-// Package pulse gathers an anonymous usage summary ("Nabız") from the local
-// database and ships it to an external varya-pulse collector.
+// Package pulse reports two things, and only two things, to the external
+// varya-pulse collector: a one-off anonymous install ping and user-submitted
+// feedback.
 //
-// Privacy contract: only integer counts plus opaque UUIDs, the app/PostgreSQL
-// version and non-identifying locale fields (base currency, timezone) ever leave
-// this process. No company name, tax number, address, e-mail, person name,
-// document number or monetary amount is collected. See internal/pulse/pulse_test.go
-// for the guard test.
+// Privacy contract: the install ping carries an opaque install UUID, the app
+// version and the setup timestamp — nothing else. Feedback carries what the
+// user typed plus an opaque company UUID. No company name, tax number,
+// address, e-mail, person name, document number, monetary amount or usage
+// statistic ever leaves this process. See internal/pulse/pulse_test.go for the
+// guard test.
+//
+// There is deliberately no usage telemetry here: the daily per-company metrics
+// summary that used to live in this package was removed, along with the
+// collector's /pulse/v1/report endpoint.
 package pulse
 
 import (
@@ -24,14 +30,10 @@ import (
 )
 
 const (
-	schemaVersion   = 1
-	minSendInterval = 20 * time.Hour
-	sendTimeout     = 10 * time.Second
+	sendTimeout = 10 * time.Second
 
 	installIDKey        = "pulse.install_id"
 	installAnnouncedKey = "pulse.install_announced"
-	lastSentKey         = "pulse.last_sent_at"
-	reportRelPath       = "/pulse/v1/report"
 	feedbackRelPath     = "/pulse/v1/feedback"
 	installRelPath      = "/pulse/v1/install"
 )
@@ -46,34 +48,14 @@ type FeedbackInput struct {
 	CompanyID string
 }
 
-// metricQueries maps an anonymous metric name to the count query that produces
-// it. Every query MUST select only (company_id::text, count(*)) so that no
-// identifying column can leak. The guard test enforces this shape.
-var metricQueries = map[string]string{
-	"parties_total":     `SELECT company_id::text, count(*) FROM parties GROUP BY 1`,
-	"parties_active":    `SELECT company_id::text, count(*) FROM parties WHERE is_active GROUP BY 1`,
-	"sales_quotes":      `SELECT company_id::text, count(*) FROM sales_quotes GROUP BY 1`,
-	"sales_orders":      `SELECT company_id::text, count(*) FROM sales_orders GROUP BY 1`,
-	"sales_dispatches":  `SELECT company_id::text, count(*) FROM sales_dispatches GROUP BY 1`,
-	"sales_invoices":    `SELECT company_id::text, count(*) FROM sales_invoices GROUP BY 1`,
-	"sales_returns":     `SELECT company_id::text, count(*) FROM sales_returns GROUP BY 1`,
-	"purchase_orders":   `SELECT company_id::text, count(*) FROM purchase_orders GROUP BY 1`,
-	"purchase_invoices": `SELECT company_id::text, count(*) FROM purchase_invoices GROUP BY 1`,
-	"purchase_returns":  `SELECT company_id::text, count(*) FROM purchase_returns GROUP BY 1`,
-	"products":          `SELECT company_id::text, count(*) FROM products GROUP BY 1`,
-	"warehouses":        `SELECT company_id::text, count(*) FROM warehouses GROUP BY 1`,
-	"employees":         `SELECT company_id::text, count(*) FROM employees GROUP BY 1`,
-}
-
-// Service owns the collect + send cycle. Construct it with NewService and drive
-// it from the worker via RunDue.
+// Service owns the install ping and the feedback channel. Construct it with
+// NewService and drive the install ping from the worker via AnnounceInstall.
 type Service struct {
 	pool     database.Querier
 	client   *http.Client
 	endpoint string
 	key      string
 	release  string
-	now      func() time.Time
 }
 
 func NewService(pool database.Querier, cfg config.Config) *Service {
@@ -83,26 +65,7 @@ func NewService(pool database.Querier, cfg config.Config) *Service {
 		endpoint: strings.TrimRight(cfg.PulseEndpoint, "/"),
 		key:      cfg.PulseIngestKey,
 		release:  cfg.Release,
-		now:      time.Now,
 	}
-}
-
-// CompanyReport is the per-company slice of a snapshot.
-type CompanyReport struct {
-	CompanyID    string           `json:"company_id"`
-	BaseCurrency string           `json:"base_currency,omitempty"`
-	Timezone     string           `json:"timezone,omitempty"`
-	Metrics      map[string]int64 `json:"metrics"`
-}
-
-// Report is the full payload POSTed to the collector.
-type Report struct {
-	SchemaVersion int             `json:"schema_version"`
-	InstallID     string          `json:"install_id"`
-	CapturedAt    string          `json:"captured_at"`
-	AppVersion    string          `json:"app_version,omitempty"`
-	PGVersion     string          `json:"pg_version,omitempty"`
-	Companies     []CompanyReport `json:"companies"`
 }
 
 // AnnounceInstall registers this instance in the collector's total install
@@ -155,188 +118,6 @@ func (s *Service) AnnounceInstall(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// RunDue is the worker entry point. It is a no-op when the last successful send
-// was less than minSendInterval ago.
-func (s *Service) RunDue(ctx context.Context) error {
-	due, err := s.isDue(ctx)
-	if err != nil {
-		return err
-	}
-	if !due {
-		return nil
-	}
-	report, err := s.Snapshot(ctx)
-	if err != nil {
-		return err
-	}
-	if err := s.send(ctx, report); err != nil {
-		return err
-	}
-	return s.markSent(ctx)
-}
-
-func (s *Service) isDue(ctx context.Context) (bool, error) {
-	var raw *string
-	err := s.pool.QueryRow(ctx,
-		`SELECT value #>> '{}' FROM platform_metadata WHERE key = $1`, lastSentKey).
-		Scan(&raw)
-	if err != nil {
-		// No row yet -> never sent -> due.
-		if strings.Contains(err.Error(), "no rows") {
-			return true, nil
-		}
-		return false, err
-	}
-	if raw == nil {
-		return true, nil
-	}
-	last, perr := time.Parse(time.RFC3339, *raw)
-	if perr != nil {
-		return true, nil
-	}
-	return s.now().Sub(last) >= minSendInterval, nil
-}
-
-func (s *Service) markSent(ctx context.Context) error {
-	stamp := s.now().UTC().Format(time.RFC3339)
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO platform_metadata (key, value, updated_at)
-		 VALUES ($1, to_jsonb($2::text), now())
-		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
-		lastSentKey, stamp)
-	return err
-}
-
-// Snapshot builds the anonymous report without sending it.
-func (s *Service) Snapshot(ctx context.Context) (Report, error) {
-	installID, err := s.installID(ctx)
-	if err != nil {
-		return Report{}, err
-	}
-
-	companies, err := s.companies(ctx)
-	if err != nil {
-		return Report{}, err
-	}
-
-	usersTotal, err := s.scalar(ctx, `SELECT count(*) FROM users WHERE is_active`)
-	if err != nil {
-		return Report{}, err
-	}
-
-	byMetric := make(map[string]map[string]int64, len(metricQueries))
-	for metric, query := range metricQueries {
-		vals, cerr := s.countByCompany(ctx, query)
-		if cerr != nil {
-			return Report{}, fmt.Errorf("pulse metric %s: %w", metric, cerr)
-		}
-		byMetric[metric] = vals
-	}
-
-	docKinds, err := s.documentKinds(ctx)
-	if err != nil {
-		return Report{}, err
-	}
-
-	pgVersion, _ := s.text(ctx, `SHOW server_version`)
-
-	report := Report{
-		SchemaVersion: schemaVersion,
-		InstallID:     installID,
-		CapturedAt:    s.now().UTC().Format(time.RFC3339),
-		AppVersion:    s.release,
-		PGVersion:     pgVersion,
-	}
-
-	for _, c := range companies {
-		metrics := map[string]int64{
-			// instance-wide, repeated per company for convenience
-			"users_instance": usersTotal,
-		}
-		for metric, vals := range byMetric {
-			metrics[metric] = vals[c.id]
-		}
-		for kind, n := range docKinds[c.id] {
-			metrics["documents_"+strings.ToLower(kind)] = n
-		}
-		report.Companies = append(report.Companies, CompanyReport{
-			CompanyID:    c.id,
-			BaseCurrency: c.baseCurrency,
-			Timezone:     c.timezone,
-			Metrics:      metrics,
-		})
-	}
-
-	return report, nil
-}
-
-type companyRow struct {
-	id           string
-	baseCurrency string
-	timezone     string
-}
-
-func (s *Service) companies(ctx context.Context) ([]companyRow, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT id::text, base_currency, timezone FROM companies WHERE is_active ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []companyRow
-	for rows.Next() {
-		var c companyRow
-		if err := rows.Scan(&c.id, &c.baseCurrency, &c.timezone); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
-func (s *Service) countByCompany(ctx context.Context, query string) (map[string]int64, error) {
-	rows, err := s.pool.Query(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]int64{}
-	for rows.Next() {
-		var id string
-		var n int64
-		if err := rows.Scan(&id, &n); err != nil {
-			return nil, err
-		}
-		out[id] = n
-	}
-	return out, rows.Err()
-}
-
-func (s *Service) documentKinds(ctx context.Context) (map[string]map[string]int64, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT d.company_id::text, dt.kind, count(*)
-		  FROM documents d
-		  JOIN document_types dt ON dt.code = d.document_type_code
-		 GROUP BY 1, 2`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]map[string]int64{}
-	for rows.Next() {
-		var id, kind string
-		var n int64
-		if err := rows.Scan(&id, &kind, &n); err != nil {
-			return nil, err
-		}
-		if out[id] == nil {
-			out[id] = map[string]int64{}
-		}
-		out[id][kind] = n
-	}
-	return out, rows.Err()
-}
-
 func (s *Service) installID(ctx context.Context) (string, error) {
 	generated := uuid.NewString()
 	var stored string
@@ -349,18 +130,6 @@ func (s *Service) installID(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return stored, nil
-}
-
-func (s *Service) scalar(ctx context.Context, query string) (int64, error) {
-	var n int64
-	err := s.pool.QueryRow(ctx, query).Scan(&n)
-	return n, err
-}
-
-func (s *Service) text(ctx context.Context, query string) (string, error) {
-	var v string
-	err := s.pool.QueryRow(ctx, query).Scan(&v)
-	return v, err
 }
 
 // SendFeedback ships a single user bug report / suggestion to the collector.
@@ -378,10 +147,6 @@ func (s *Service) SendFeedback(ctx context.Context, in FeedbackInput) error {
 		"app_version": s.release,
 	}
 	return s.post(ctx, feedbackRelPath, payload)
-}
-
-func (s *Service) send(ctx context.Context, report Report) error {
-	return s.post(ctx, reportRelPath, report)
 }
 
 func (s *Service) post(ctx context.Context, relPath string, payload any) error {

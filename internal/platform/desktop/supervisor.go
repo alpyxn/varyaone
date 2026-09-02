@@ -291,10 +291,17 @@ func (s *Supervisor) config(pg *Postgres) (config.Config, error) {
 		"VARYAONE_POSTGRES_BIN":     pg.bin,
 		"VARYAONE_RELEASE":          valueOr(os.Getenv("VARYAONE_RELEASE"), readReleaseFile(s.Layout)),
 		"VARYAONE_APP_DATABASE_URL": "", // single bundled role; RLS role split is a later step
-		// Update checks: default to the official varya-pulse catalog so a plain
-		// install sees new releases without any configuration.
+		// Pulse: default to the official collector so a plain install is
+		// counted by the anonymous install ping, and so the feedback dialog
+		// works, without any configuration. There is no usage telemetry;
+		// the ping is opt-out via VARYAONE_PULSE_INSTALL_PING=false.
 		"VARYAONE_PULSE_ENDPOINT":   fileOrEnv("VARYAONE_PULSE_ENDPOINT", defaultPulseEndpoint),
 		"VARYAONE_PULSE_INGEST_KEY": fileOrEnv("VARYAONE_PULSE_INGEST_KEY", defaultPulseIngestKey),
+		// Update checks: default to the public GitHub Releases catalog so a
+		// plain install sees new releases without any configuration, and
+		// without depending on pulse being reachable or enabled.
+		"VARYAONE_UPDATE_CATALOG_URL":     fileOrEnv("VARYAONE_UPDATE_CATALOG_URL", defaultUpdateCatalogURLs),
+		"VARYAONE_UPDATE_ARTIFACT_PREFIX": fileOrEnv("VARYAONE_UPDATE_ARTIFACT_PREFIX", defaultUpdateArtifactPrefix),
 	}
 	getenv := func(key string) string {
 		if v, ok := overrides[key]; ok {

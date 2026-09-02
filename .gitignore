@@ -24,6 +24,7 @@ backups/
 docs/
 .claude/
 graphify-out/
+varya-pulse/
 
 
 # Desktop bundle: only the placeholder index.html is tracked; the real static

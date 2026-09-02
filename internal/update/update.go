@@ -2,7 +2,8 @@
 // drives the apply lifecycle.
 //
 // The ERP never touches Docker or git itself. It only:
-//   - polls the varya-pulse collector for the latest published release,
+//   - polls a public release-catalog document (latest.json, published as a
+//     GitHub Release asset — see catalog.go) for the latest published release,
 //   - records the operator's "apply now" / "remind me tomorrow" decision,
 //   - exposes a small state machine that a host-side systemd agent reads and
 //     reports progress back to.
@@ -18,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,22 +30,22 @@ import (
 )
 
 const (
-	checkInterval = 6 * time.Hour
-	snoozeWindow  = 24 * time.Hour
-	httpTimeout   = 15 * time.Second
-	channel       = "stable"
+	checkInterval    = 6 * time.Hour
+	maxCheckInterval = 24 * time.Hour
+	snoozeWindow     = 24 * time.Hour
+	httpTimeout      = 15 * time.Second
+	channel          = "stable"
 
-	latestRelPath = "/release/v1/latest"
-
-	keyLatest      = "update.latest"
-	keyState       = "update.state"
-	keyTarget      = "update.target"
-	keyTargetInfo  = "update.target_info"
-	keyProgress    = "update.progress"
-	keyResult      = "update.result"
-	keyApplied     = "update.applied"
-	keySnoozeUntil = "update.snooze_until"
-	keyCheckedAt   = "update.checked_at"
+	keyLatest        = "update.latest"
+	keyState         = "update.state"
+	keyTarget        = "update.target"
+	keyTargetInfo    = "update.target_info"
+	keyProgress      = "update.progress"
+	keyResult        = "update.result"
+	keyApplied       = "update.applied"
+	keySnoozeUntil   = "update.snooze_until"
+	keyCheckedAt     = "update.checked_at"
+	keyCheckFailures = "update.check_failures"
 )
 
 // Lifecycle states. The happy path is idle -> apply_requested -> in_progress ->
@@ -74,30 +76,31 @@ var (
 
 // Service coordinates update checks and the apply lifecycle.
 type Service struct {
-	pool     database.Querier
-	client   *http.Client
-	endpoint string
-	key      string
-	release  string
-	now      func() time.Time
+	pool           database.Querier
+	client         *http.Client
+	catalogURLs    []string
+	artifactPrefix string
+	release        string
+	now            func() time.Time
 }
 
-// NewService builds a Service from the shared config. The pulse endpoint + key
-// double as the release-catalog endpoint; Configured() reports whether checks
-// can run.
+// NewService builds a Service from the shared config. The release catalog is a
+// plain public document (see internal/update/catalog.go) — no key, no
+// dependency on the pulse collector. Configured() reports whether at least one
+// catalog URL is set, i.e. whether checks can run.
 func NewService(pool database.Querier, cfg config.Config) *Service {
 	return &Service{
-		pool:     pool,
-		client:   &http.Client{Timeout: httpTimeout},
-		endpoint: strings.TrimRight(cfg.PulseEndpoint, "/"),
-		key:      cfg.PulseIngestKey,
-		release:  cfg.Release,
-		now:      time.Now,
+		pool:           pool,
+		client:         &http.Client{Timeout: httpTimeout},
+		catalogURLs:    cfg.UpdateCatalogURLs,
+		artifactPrefix: cfg.UpdateArtifactPrefix,
+		release:        cfg.Release,
+		now:            time.Now,
 	}
 }
 
-// Configured reports whether the collector endpoint + key are set.
-func (s *Service) Configured() bool { return s.endpoint != "" && s.key != "" }
+// Configured reports whether a release catalog is configured.
+func (s *Service) Configured() bool { return len(s.catalogURLs) > 0 }
 
 // CurrentVersion is the running release string (VARYAONE_RELEASE).
 func (s *Service) CurrentVersion() string { return s.release }
@@ -438,7 +441,15 @@ func (s *Service) RecordResult(ctx context.Context, in ResultInput) error {
 /* --------------------------------------------------------------- worker --- */
 
 // CheckDue is the worker entry point. It fetches the latest release at most
-// once per checkInterval, and reconciles a stuck state left by a crashed agent.
+// once per checkInterval (backed off on repeated failure, up to
+// maxCheckInterval), and reconciles a stuck state left by a crashed agent.
+//
+// A failed fetch never touches update.latest or a queued apply target: an
+// installation that has gone offline, or whose catalog is briefly unreachable,
+// keeps showing the last release it successfully saw and keeps any
+// already-queued apply runnable. Only checked_at/check_failures advance, so
+// the next attempt is scheduled correctly and the worker never hammers a dead
+// endpoint every tick.
 func (s *Service) CheckDue(ctx context.Context) error {
 	if !s.Configured() {
 		return nil
@@ -451,14 +462,21 @@ func (s *Service) CheckDue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if last := meta.time(keyCheckedAt); last != nil && s.now().Sub(*last) < checkInterval {
+	failures := meta.int(keyCheckFailures)
+	shift := failures
+	if shift > 8 { // avoid overflowing the shift; 2^8 already exceeds the cap below
+		shift = 8
+	}
+	interval := checkInterval << shift
+	if interval > maxCheckInterval || interval <= 0 {
+		interval = maxCheckInterval
+	}
+	if last := meta.time(keyCheckedAt); last != nil && s.now().Sub(*last) < interval {
 		return nil
 	}
 
-	latest, err := s.fetchLatest(ctx)
-	if err != nil {
-		return err
-	}
+	doc, fetchErr := fetchCatalog(ctx, s.client, s.catalogURLs, s.userAgent())
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -467,13 +485,53 @@ func (s *Service) CheckDue(ctx context.Context) error {
 	if err := setRawTx(ctx, tx, keyCheckedAt, quote(s.now().UTC().Format(time.RFC3339))); err != nil {
 		return err
 	}
-	if latest != nil {
-		if err := setRawTx(ctx, tx, keyLatest, mustJSON(latest)); err != nil {
+
+	if fetchErr != nil {
+		if err := setRawTx(ctx, tx, keyCheckFailures, fmt.Sprintf("%d", failures+1)); err != nil {
 			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		return fetchErr
+	}
+	if failures != 0 {
+		if err := setRawTx(ctx, tx, keyCheckFailures, "0"); err != nil {
+			return err
+		}
+	}
+
+	if doc != nil {
+		if latest := doc.channel(channel, s.artifactPrefix); latest != nil {
+			if err := setRawTx(ctx, tx, keyLatest, mustJSON(latest)); err != nil {
+				return err
+			}
+		}
+		// A release that was queued (but not yet started) can be withdrawn by
+		// re-publishing the catalog with it listed under "yanked" — the fix for
+		// a bad release doesn't require touching the download links or the tag,
+		// just the catalog. Once an apply is in_progress it is left alone:
+		// aborting a swap mid-flight is riskier than letting it finish.
+		state := firstNonEmpty(meta.text(keyState), StateIdle)
+		target := meta.text(keyTarget)
+		if state == StateApplyRequested && target != "" && doc.isYanked(target) {
+			if err := setRawTx(ctx, tx, keyState, quote(StateIdle)); err != nil {
+				return err
+			}
+			if err := setRawTx(ctx, tx, keyTarget, "null"); err != nil {
+				return err
+			}
+			if err := setRawTx(ctx, tx, keyTargetInfo, "null"); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit(ctx)
 }
+
+// userAgent identifies this install to the catalog host; useful for
+// distinguishing update-check traffic in access logs, nothing more.
+func (s *Service) userAgent() string { return "varyaone-update/" + s.release }
 
 // reconcile recovers from an agent that died mid-apply: if the process is now
 // running the target version the apply clearly succeeded, so mark it done.
@@ -493,77 +551,19 @@ func (s *Service) reconcile(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) fetchLatest(ctx context.Context) (*LatestInfo, error) {
-	u := fmt.Sprintf("%s%s?channel=%s&current=%s", s.endpoint, latestRelPath, channel, s.release)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("authorization", "Bearer "+s.key)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("release catalog returned %s", resp.Status)
-	}
-	var body struct {
-		LatestVersion      string `json:"latest_version"`
-		NotesMD            string `json:"notes_md"`
-		Mandatory          bool   `json:"mandatory"`
-		MinVersion         string `json:"min_version"`
-		PublishedAt        string `json:"published_at"`
-		WindowsArtifactURL string `json:"windows_artifact_url"`
-		WindowsSHA256      string `json:"windows_sha256"`
-		PGMajor            int    `json:"pg_major"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, err
-	}
-	if body.LatestVersion == "" {
-		return nil, nil
-	}
-	return &LatestInfo{
-		Version:            body.LatestVersion,
-		NotesMD:            body.NotesMD,
-		Mandatory:          body.Mandatory,
-		MinVersion:         body.MinVersion,
-		PublishedAt:        body.PublishedAt,
-		WindowsArtifactURL: body.WindowsArtifactURL,
-		WindowsSHA256:      body.WindowsSHA256,
-		PGMajor:            body.PGMajor,
-	}, nil
-}
-
+// fetchNotes looks up the release notes for version (used right after an
+// apply succeeds, to show what changed). A catalog fetch failure here is not
+// fatal to the apply itself — RecordResult already succeeded by the time this
+// runs — so it silently returns "".
 func (s *Service) fetchNotes(ctx context.Context, version string) string {
-	// Ask the catalog as if we were still on the previous version so it returns
-	// this version's notes.
-	u := fmt.Sprintf("%s%s?channel=%s&current=%s", s.endpoint, latestRelPath, channel, "v0.0.0")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
+	if !s.Configured() {
 		return ""
 	}
-	req.Header.Set("authorization", "Bearer "+s.key)
-	resp, err := s.client.Do(req)
-	if err != nil {
+	doc, err := fetchCatalog(ctx, s.client, s.catalogURLs, s.userAgent())
+	if err != nil || doc == nil {
 		return ""
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	var body struct {
-		LatestVersion string `json:"latest_version"`
-		NotesMD       string `json:"notes_md"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return ""
-	}
-	if body.LatestVersion == version {
-		return body.NotesMD
-	}
-	return ""
+	return doc.notesFor(version)
 }
 
 /* -------------------------------------------------- platform_metadata --- */
@@ -593,6 +593,13 @@ func (m metaMap) time(key string) *time.Time {
 	return &t
 }
 
+// int reads a small scalar counter (e.g. keyCheckFailures). Missing or
+// unparseable reads as 0, matching the "never seen" case.
+func (m metaMap) int(key string) int {
+	n, _ := strconv.Atoi(m.text(key))
+	return n
+}
+
 func (m metaMap) latest() *LatestInfo     { return jsonInto[LatestInfo](m[keyLatest]) }
 func (m metaMap) targetInfo() *LatestInfo { return jsonInto[LatestInfo](m[keyTargetInfo]) }
 func (m metaMap) progress() *Progress     { return jsonInto[Progress](m[keyProgress]) }
@@ -613,7 +620,7 @@ func jsonInto[T any](raw string) *T {
 func (s *Service) readAll(ctx context.Context) (metaMap, error) {
 	keys := []string{
 		keyLatest, keyState, keyTarget, keyTargetInfo, keyProgress, keyResult,
-		keyApplied, keySnoozeUntil, keyCheckedAt,
+		keyApplied, keySnoozeUntil, keyCheckedAt, keyCheckFailures,
 	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT key, value::text FROM platform_metadata WHERE key = ANY($1)`, keys)

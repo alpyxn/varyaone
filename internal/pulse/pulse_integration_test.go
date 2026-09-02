@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,9 +18,10 @@ import (
 	"github.com/alpyxn/varyaone/internal/platform/migrations"
 )
 
-// TestSnapshotAndSendIntegration runs every collector query against a freshly
-// migrated schema and verifies the report is shipped exactly once per interval.
-func TestSnapshotAndSendIntegration(t *testing.T) {
+// TestAnnounceInstallAndFeedbackIntegration runs the two surviving collector
+// calls against a freshly migrated schema: the once-per-install ping and a
+// feedback submission. It also pins that nothing identifying is sent.
+func TestAnnounceInstallAndFeedbackIntegration(t *testing.T) {
 	databaseURL := os.Getenv("VARYAONE_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("VARYAONE_TEST_DATABASE_URL is not set")
@@ -40,21 +42,23 @@ func TestSnapshotAndSendIntegration(t *testing.T) {
 		t.Fatalf("seed company: %v", err)
 	}
 
-	var got Report
-	var installCalls int
+	var installCalls, feedbackCalls int
+	var installBody, feedbackBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("authorization") != "Bearer test-key" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
-		if r.URL.Path == "/pulse/v1/install" {
+		raw, _ := io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/pulse/v1/install":
 			installCalls++
-			w.WriteHeader(http.StatusAccepted)
-			return
-		}
-		if err := json.Unmarshal(body, &got); err != nil {
-			t.Errorf("collector received invalid json: %v", err)
+			_ = json.Unmarshal(raw, &installBody)
+		case "/pulse/v1/feedback":
+			feedbackCalls++
+			_ = json.Unmarshal(raw, &feedbackBody)
+		default:
+			t.Errorf("collector received unexpected path %q", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusAccepted)
 	}))
@@ -89,39 +93,29 @@ func TestSnapshotAndSendIntegration(t *testing.T) {
 	if installCalls != 1 {
 		t.Fatalf("install announced %d times, want exactly 1", installCalls)
 	}
-
-	if err := svc.RunDue(ctx); err != nil {
-		t.Fatalf("RunDue: %v", err)
-	}
-	if got.InstallID == "" || len(got.Companies) != 1 {
-		t.Fatalf("unexpected report: %+v", got)
-	}
-	metrics := got.Companies[0].Metrics
-	for want := range metricQueries {
-		if _, ok := metrics[want]; !ok {
-			t.Errorf("metric %q missing from report", want)
+	for k := range installBody {
+		switch k {
+		case "install_id", "app_version", "setup_at":
+		default:
+			t.Errorf("unexpected field %q in install payload", k)
 		}
 	}
-	if got.Companies[0].BaseCurrency != "TRY" {
-		t.Errorf("base currency = %q", got.Companies[0].BaseCurrency)
-	}
 
-	// Second run within the interval must not resend.
-	got = Report{}
-	if err := svc.RunDue(ctx); err != nil {
-		t.Fatalf("second RunDue: %v", err)
+	if err := svc.SendFeedback(ctx, FeedbackInput{
+		Category: "bug", Message: "bir sorun var", CompanyID: companyID,
+	}); err != nil {
+		t.Fatalf("SendFeedback: %v", err)
 	}
-	if got.InstallID != "" {
-		t.Errorf("report resent before interval elapsed")
+	if feedbackCalls != 1 {
+		t.Fatalf("feedback sent %d times, want 1", feedbackCalls)
 	}
-
-	// Fast-forward past the interval -> resends.
-	svc.now = func() time.Time { return time.Now().Add(minSendInterval + time.Hour) }
-	if err := svc.RunDue(ctx); err != nil {
-		t.Fatalf("third RunDue: %v", err)
+	if feedbackBody["company_id"] != companyID || feedbackBody["category"] != "bug" {
+		t.Fatalf("unexpected feedback payload: %+v", feedbackBody)
 	}
-	if got.InstallID == "" {
-		t.Errorf("report not resent after interval elapsed")
+	// The company's real name must never appear anywhere in what we sent.
+	blob, _ := json.Marshal(feedbackBody)
+	if strings.Contains(string(blob), "Gizli") {
+		t.Fatalf("feedback payload leaked the company name: %s", blob)
 	}
 }
 

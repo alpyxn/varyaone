@@ -55,7 +55,16 @@ func main() {
 	view := webview2.NewWithOptions(webview2.WebViewOptions{
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{
-			Title: title, Width: uint(w), Height: uint(h), Center: true,
+			// IconId must match the numeric RT_GROUP_ICON resource ID in
+			// winres.json (currently "#1"). Left at 0, go-webview2 tries to
+			// fall back to the stock IDI_APPLICATION icon but loads it with
+			// this exe's own module handle instead of NULL, so that load
+			// always fails and the running window ends up with no icon at
+			// all — visible as a blank/generic icon in the taskbar and
+			// Alt+Tab, even though Explorer/shortcuts show the real one
+			// (they read the exe's resources directly, not this runtime
+			// window icon).
+			Title: title, Width: uint(w), Height: uint(h), Center: true, IconId: 1,
 		},
 	})
 	if view == nil {

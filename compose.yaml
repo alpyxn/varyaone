@@ -18,15 +18,23 @@ x-backend-environment: &backend-environment
   # Nabiz: anonim kurulum sayaci varsayilan olarak ACIK gelir (opt-out).
   # Gonderilen tek sey: rastgele kurulum UUID'si + surum. Kapatmak icin:
   #   VARYAONE_PULSE_INSTALL_PING=false
+  # Kullanim telemetrisi YOKTUR: toplayiciya giden diger tek sey, kullanicinin
+  # kendi gonderdigi geri bildirimdir.
   # Ingest anahtari gizli degildir (yalnizca rastgele istek engelleme).
   VARYAONE_PULSE_ENDPOINT: ${VARYAONE_PULSE_ENDPOINT:-https://varya-pulse.varyaone.workers.dev}
   VARYAONE_PULSE_INGEST_KEY: ${VARYAONE_PULSE_INGEST_KEY:-0290a2e2fa410b7b7d4656496635a36695a84419027c134225de36b3bf67ce56}
   VARYAONE_PULSE_INSTALL_PING: ${VARYAONE_PULSE_INSTALL_PING:-true}
-  # Gunluk anonim kullanim ozeti (sirket UUID bazinda sayaclar) opt-IN'dir.
-  VARYAONE_PULSE_ENABLED: ${VARYAONE_PULSE_ENABLED:-false}
   # Host'taki systemd guncelleme aracinin /internal/update/* uclarina erisim
   # belirteci. Bos ise o uclar kapali kalir. `./deploy.sh install` uretir.
   VARYAONE_UPDATE_AGENT_TOKEN: ${VARYAONE_UPDATE_AGENT_TOKEN:-}
+  # Surum kontrolu: her GitHub Release'e eklenen genel latest.json belgesi
+  # (bkz. internal/update/catalog.go). Pulse'tan bagimsizdir — anahtar/rate
+  # limit gerekmez, pulse kapali olsa da calisir. Virgulle birden fazla kaynak
+  # verilebilir (sirayla denenir); bos birakilirsa guncelleme kontrolu kapanir.
+  VARYAONE_UPDATE_CATALOG_URL: ${VARYAONE_UPDATE_CATALOG_URL:-https://github.com/alpyxn/varyaone/releases/latest/download/latest.json,https://raw.githubusercontent.com/alpyxn/varyaone/main/release/latest.json}
+  # Kataloğun windows_artifact_url alaninin kabul edilecegi tek konum; farkli
+  # bir depoya isaret eden bir alan sessizce dusurulur (bkz. catalog.go).
+  VARYAONE_UPDATE_ARTIFACT_PREFIX: ${VARYAONE_UPDATE_ARTIFACT_PREFIX:-https://github.com/alpyxn/varyaone/releases/download/}
 
 services:
   postgres:

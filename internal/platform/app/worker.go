@@ -25,9 +25,15 @@ func RunWorker(ctx context.Context, cfg config.Config, logger *slog.Logger, pool
 	exchangeService := exchange.NewService(pool)
 	go runExchangeScheduler(ctx, logger, exchangeService)
 	if cfg.PulseConfigured() {
-		logger.Info("pulse enabled", "endpoint", cfg.PulseEndpoint, "usage_summary", cfg.PulseEnabled, "install_ping", cfg.PulseInstallPing)
+		logger.Info("pulse enabled", "endpoint", cfg.PulseEndpoint, "install_ping", cfg.PulseInstallPing)
 		go runPulseScheduler(ctx, logger, cfg, pulse.NewService(pool, cfg))
-		go runUpdateScheduler(ctx, logger, update.NewService(pool, cfg))
+	}
+	// Update checks are independent of pulse: they read a public GitHub Releases
+	// catalog document, not the pulse collector, so a self-hoster who turns the
+	// install ping off still gets update notifications.
+	if updateService := update.NewService(pool, cfg); updateService.Configured() {
+		logger.Info("update checks enabled", "catalog_urls", cfg.UpdateCatalogURLs)
+		go runUpdateScheduler(ctx, logger, updateService)
 	}
 	if err := outbox.New(pool, logger).Run(ctx); err != nil {
 		return fmt.Errorf("run outbox worker: %w", err)
@@ -36,30 +42,25 @@ func RunWorker(ctx context.Context, cfg config.Config, logger *slog.Logger, pool
 	return nil
 }
 
+// runPulseScheduler lands the one-off anonymous install ping, retrying hourly
+// until it succeeds (setup may not be finished, or the collector may be
+// unreachable) and then stopping for good. There is no recurring telemetry:
+// feedback is the only other thing this instance ever sends, and that is
+// user-initiated.
 func runPulseScheduler(ctx context.Context, logger *slog.Logger, cfg config.Config, service *pulse.Service) {
-	installDone := !cfg.PulseInstallPing
-
-	tick := func() {
-		if !installDone {
-			done, err := service.AnnounceInstall(ctx)
-			switch {
-			case err != nil && ctx.Err() == nil:
-				logger.Warn("pulse install announce failed", "error", err)
-			case done:
-				installDone = true
-			}
-		}
-		if cfg.PulseEnabled {
-			if err := service.RunDue(ctx); err != nil && ctx.Err() == nil {
-				logger.Warn("pulse usage-summary cycle failed", "error", err)
-			}
-		}
+	if !cfg.PulseInstallPing {
+		return
 	}
 
-	tick()
-	// Nothing recurring is left once the install ping has landed and the daily
-	// usage summary is off.
-	if installDone && !cfg.PulseEnabled {
+	announce := func() bool {
+		done, err := service.AnnounceInstall(ctx)
+		if err != nil && ctx.Err() == nil {
+			logger.Warn("pulse install announce failed", "error", err)
+		}
+		return done
+	}
+
+	if announce() {
 		return
 	}
 	ticker := time.NewTicker(time.Hour)
@@ -69,8 +70,7 @@ func runPulseScheduler(ctx context.Context, logger *slog.Logger, cfg config.Conf
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			tick()
-			if installDone && !cfg.PulseEnabled {
+			if announce() {
 				return
 			}
 		}
