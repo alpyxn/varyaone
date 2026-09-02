@@ -59,6 +59,27 @@ echo ">> building varyaone-client.exe (windows/amd64)"
 if [ -d "$ROOT/deploy/windows/pgsql" ]; then
   echo ">> bundling PostgreSQL"
   cp -r "$ROOT/deploy/windows/pgsql" "$STAGE/pgsql"
+
+  # Integrity gate — a truncated bundle shows up as initdb 0xC0000135 on the
+  # user's machine, so a broken artifact must never leave CI. Check by size.
+  pgbin="$STAGE/pgsql/bin"
+  filesize() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo 0; }
+  check_min() {
+    local f="$pgbin/$1" min="$2" sz
+    [ -f "$f" ] || { echo "!! FATAL: pgsql/bin/$1 missing"; exit 1; }
+    sz=$(filesize "$f")
+    [ "$sz" -ge "$min" ] || { echo "!! FATAL: pgsql/bin/$1 is $sz bytes (need >= $min) — truncated bundle"; exit 1; }
+  }
+  check_min initdb.exe   400000
+  check_min postgres.exe 8000000
+  check_min pg_ctl.exe   200000
+  check_min psql.exe     400000
+  dlls=$(find "$pgbin" -maxdepth 1 -iname '*.dll' | wc -l)
+  [ "$dlls" -ge 25 ] || { echo "!! FATAL: only $dlls DLLs in pgsql/bin (expect 30+)"; exit 1; }
+  for pat in 'libintl' 'libpq' 'libcrypto' 'libssl'; do
+    ls "$pgbin"/${pat}*.dll >/dev/null 2>&1 || { echo "!! FATAL: no ${pat}*.dll in pgsql/bin"; exit 1; }
+  done
+  echo "   pgsql/bin OK: $dlls DLLs, initdb.exe $(filesize "$pgbin/initdb.exe") bytes"
 else
   echo "!! deploy/windows/pgsql missing — run fetch-tools.ps1 first (installer will be incomplete)"
 fi

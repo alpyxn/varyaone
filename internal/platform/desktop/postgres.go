@@ -44,6 +44,11 @@ func NewPostgres(layout Layout) (*Postgres, error) {
 	} else {
 		return nil, fmt.Errorf("bundled PostgreSQL not found under %s and pg_ctl is not on PATH", bundled)
 	}
+	if bundled != "" && bin == bundled {
+		if err := verifyPGBundle(bin); err != nil {
+			return nil, err
+		}
+	}
 	port := defaultPGPort
 	if v := os.Getenv("VARYAONE_DESKTOP_PG_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -51,6 +56,43 @@ func NewPostgres(layout Layout) (*Postgres, error) {
 		}
 	}
 	return &Postgres{layout: layout, bin: bin, port: port, dbName: pgDBName, dbUser: pgDBUser}, nil
+}
+
+// verifyPGBundle catches a truncated or partially-extracted PostgreSQL bundle
+// before it turns into an opaque "initdb: exit status 0xC0000135" (a missing or
+// short DLL). A bad updater zip or a broken install lands here.
+func verifyPGBundle(bin string) error {
+	minSize := map[string]int64{
+		"initdb.exe":   400_000,
+		"postgres.exe": 8_000_000,
+		"pg_ctl.exe":   200_000,
+	}
+	for name, min := range minSize {
+		fi, err := os.Stat(filepath.Join(bin, exe(strings.TrimSuffix(name, ".exe"))))
+		if err != nil {
+			return fmt.Errorf("PostgreSQL paketi eksik: %s bulunamadı (%s) — yeniden kurun", name, bin)
+		}
+		if fi.Size() < min {
+			return fmt.Errorf("PostgreSQL paketi bozuk: %s yalnızca %d bayt (beklenen ≥ %d) — kurulum dosyası eksik indirilmiş, yeniden kurun",
+				name, fi.Size(), min)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		entries, err := os.ReadDir(bin)
+		if err != nil {
+			return fmt.Errorf("PostgreSQL bin dizini okunamadı (%s): %w", bin, err)
+		}
+		dlls := 0
+		for _, e := range entries {
+			if strings.EqualFold(filepath.Ext(e.Name()), ".dll") {
+				dlls++
+			}
+		}
+		if dlls < 25 {
+			return fmt.Errorf("PostgreSQL paketi eksik: %s içinde yalnızca %d DLL var (beklenen 30+) — yeniden kurun", bin, dlls)
+		}
+	}
+	return nil
 }
 
 func (p *Postgres) tool(name string) string { return filepath.Join(p.bin, exe(name)) }
@@ -148,12 +190,39 @@ func (p *Postgres) EnsureInitialized(ctx context.Context) error {
 		"--auth=scram-sha-256",
 		"--pwfile="+pwFile,
 		"--encoding=UTF8",
+		"--locale-provider=libc",
 		"--no-locale",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("initdb: %w: %s", err, out)
+		return fmt.Errorf("initdb: %w: %s%s", err, out, p.initdbFailureHint(err))
 	}
 	return nil
+}
+
+// initdbFailureHint adds context when initdb produced no output of its own — the
+// usual sign it could not even start (a missing DLL: 0xC0000135). It reports the
+// binary size and how many DLLs sit next to it, so a truncated bundle is obvious
+// from the log without shell access to the machine.
+func (p *Postgres) initdbFailureHint(err error) string {
+	if !strings.Contains(err.Error(), "0xc0000135") && !strings.Contains(err.Error(), "0xc000007b") {
+		return ""
+	}
+	tool := p.tool("initdb")
+	size := int64(-1)
+	if fi, statErr := os.Stat(tool); statErr == nil {
+		size = fi.Size()
+	}
+	dlls := 0
+	if entries, rdErr := os.ReadDir(p.bin); rdErr == nil {
+		for _, e := range entries {
+			if strings.EqualFold(filepath.Ext(e.Name()), ".dll") {
+				dlls++
+			}
+		}
+	}
+	return fmt.Sprintf(" [hint: initdb.exe %d bytes, %d DLLs in %s — a missing/zero-byte "+
+		"binary or <20 DLLs means the PostgreSQL bundle was extracted incompletely]",
+		size, dlls, p.bin)
 }
 
 // Start boots the cluster (idempotent) and waits until it accepts connections,
