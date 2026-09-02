@@ -8,6 +8,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	// Embeds the IANA timezone database into the binary. Windows has no system
+	// zoneinfo files anywhere Go looks (unlike Linux's /usr/share/zoneinfo), so
+	// without this, time.LoadLocation rejects every timezone name — including
+	// valid ones — on a Windows install. That surfaces as "geçersiz saat dilimi"
+	// on any company-settings save, regardless of which field actually changed.
+	_ "time/tzdata"
 
 	"github.com/alpyxn/varyaone/internal/backup"
 	"github.com/alpyxn/varyaone/internal/platform/app"
