@@ -745,7 +745,6 @@ install_domain() {
       compose ps
       echo
       echo "Varya One hazır: https://$domain"
-      [ "$staging" = "1" ] && echo "(staging sertifikası — tarayıcı güvenmez; gerçek sertifika için ./deploy.sh install'i tekrar çalıştırıp staging'e 'hayır' deyin)"
     else
       echo "Sertifika alındı ama nginx yeniden yüklenemedi; 'docker compose ... logs nginx' ile bakın." >&2
       exit 1
@@ -755,7 +754,7 @@ install_domain() {
     echo "Sertifika alınamadı. Sık nedenler:" >&2
     echo "  - $domain A/AAAA kaydı bu sunucuya işaret etmiyor" >&2
     echo "  - 80/443 portları güvenlik duvarı/başka servis tarafından kapalı" >&2
-    echo "  - Let's Encrypt oran sınırı (sihirbazda staging'i seçerek test edin)" >&2
+    echo "  - Let's Encrypt oran sınırı (aynı alan adı için haftada 5 sertifika)" >&2
     echo "Site şimdilik HTTP üzerinden çalışıyor: http://$domain" >&2
     exit 1
   fi
@@ -837,11 +836,9 @@ wizard() {
       done
       WZ_HTTP=$(ask "HTTP portu" "$(env_get VARYAONE_HTTP_PORT | grep . || echo 80)")
       WZ_HTTPS=$(ask "HTTPS portu" "$(env_get VARYAONE_HTTPS_PORT | grep . || echo 443)")
-      if ask_yesno "Önce Let's Encrypt STAGING (test) sertifikası denensin mi?" h; then
-        WZ_STAGING=1
-      else
-        WZ_STAGING=0
-      fi
+      # Her zaman gerçek Let's Encrypt sertifikası; staging tarayıcıda
+      # ERR_CERT_AUTHORITY_INVALID verdiği için sihirbazda sunulmuyor.
+      WZ_STAGING=0
 
       printf '\n  DNS kontrol ediliyor (%s)...\n' "$WZ_DOMAIN"
       if resolves_here "$WZ_DOMAIN"; then
@@ -862,7 +859,7 @@ wizard() {
       printf '    Alan adı      : %s  ->  https://%s\n' "$WZ_DOMAIN" "$WZ_DOMAIN"
       printf '    E-posta       : %s\n' "$WZ_EMAIL"
       printf '    Portlar       : HTTP %s / HTTPS %s\n' "$WZ_HTTP" "$WZ_HTTPS"
-      printf '    Sertifika     : %s\n' "$( [ "$WZ_STAGING" = 1 ] && echo 'Let'\''s Encrypt STAGING (test)' || echo 'Let'\''s Encrypt (gerçek)' )"
+      printf '    Sertifika     : Let'\''s Encrypt (gerçek)\n'
       printf '    frontend/api  : yalnızca 127.0.0.1 (dışarı kapalı)\n'
       printf '    PostgreSQL    : dışarı kapalı\n\n'
       ask_yesno "Kuruluma başlansın mı?" e || { echo "  İptal edildi." >&2; exit 1; }
