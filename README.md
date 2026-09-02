@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
-  <img src="docs/assets/logo-light.svg" alt="Varya One" width="300">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+  <img src="assets/logo-light.svg" alt="Varya One" width="300">
 </picture>
 
 ### Türkiye için. Açık kaynak. Tamamen ücretsiz.

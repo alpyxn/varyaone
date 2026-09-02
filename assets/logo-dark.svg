@@ -1,0 +1,13 @@
+<svg width="420" height="240" viewBox="0 0 420 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Varya One">
+  <g transform="translate(150 14) scale(0.6)">
+    <g fill="#C1272D">
+      <rect x="20" y="100" width="30" height="90" rx="3" transform="rotate(-26 35 190)"/>
+      <rect x="70" y="55" width="30" height="135" rx="3" transform="rotate(-12 85 190)"/>
+      <rect x="120" y="35" width="30" height="155" rx="3" transform="rotate(-4 135 190)"/>
+    </g>
+    <rect x="170" y="10" width="30" height="180" rx="3" fill="#F1EEEA"/>
+  </g>
+  <text x="210" y="214" text-anchor="middle" fill="#F1EEEA" font-family="'Segoe UI', system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif" font-size="52" letter-spacing="-0.5">
+    <tspan font-weight="800">Varya</tspan><tspan font-weight="600" dx="14" opacity="0.42">One</tspan>
+  </text>
+</svg>
