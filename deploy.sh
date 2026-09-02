@@ -635,6 +635,26 @@ wait_for_http() {
   return 1
 }
 
+# wait_for_ok <url> [tries] — nginx'ten geçen gerçek istek 2xx/3xx dönene kadar
+# bekle. wait_for_http'nin aksine 502/504/000'i başarı saymaz; kurulum
+# "hazır" demeden önce yığının gerçekten servis verdiğini doğrulamak için.
+wait_for_ok() {
+  _url=$1
+  _tries=${2:-30}
+  _i=0
+  _code=000
+  while [ "$_i" -lt "$_tries" ]; do
+    _code=$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 5 "$_url" 2>/dev/null || echo 000)
+    case "$_code" in
+      2?? | 3??) return 0 ;;
+    esac
+    _i=$((_i + 1))
+    sleep 2
+  done
+  echo "$_code"
+  return 1
+}
+
 obtain_certificate() {
   domain=$1
   email=$2
@@ -744,7 +764,17 @@ install_domain() {
       echo
       compose ps
       echo
-      echo "Varya One hazır: https://$domain"
+      echo "Site doğrulanıyor (https://$domain)..."
+      if _code=$(wait_for_ok "https://$domain" 45); then
+        echo "Varya One hazır: https://$domain"
+      else
+        echo >&2
+        echo "UYARI: sertifika ve nginx tamam ama site https://$domain üzerinden" >&2
+        echo "yanıt vermiyor (son HTTP kodu: ${_code:-000}). Genelde frontend" >&2
+        echo "konteyneri kalkmamıştır. Şununla bakın:" >&2
+        echo "  docker compose -f compose.yaml -f $DOMAIN_OVERRIDE logs --tail=60 frontend api" >&2
+        exit 1
+      fi
     else
       echo "Sertifika alındı ama nginx yeniden yüklenemedi; 'docker compose ... logs nginx' ile bakın." >&2
       exit 1
@@ -1771,8 +1801,8 @@ uninstall() {
   echo "  Bu işlem KALICI olarak şunları siler:"
   echo "    • Tüm Varya One konteynerleri ve ağları"
   echo "    • Docker volume'leri — PostgreSQL veritabanı ve yüklenen dosyalar DAHİL"
-  echo "    • Yerel derlenen image'lar (varyaone-*)"
-  echo "    • Üretilen .env (şifreleme anahtarı!), nginx yapılandırması, güncelleme günlükleri"
+  echo "    • Derlenen image'lar (varyaone-*) + çekilen nginx/certbot/postgres image'ları"
+  echo "    • Üretilen .env (+ geçici kopyaları), nginx yapılandırması, kilitler, güncelleme günlükleri"
   echo "    • systemd güncelleme aracı (varyaone-update-agent)"
   [ "$keep_backups" = 1 ] || echo "    • backups/ dizini (tüm .varya yedekleri)"
   [ "$purge" = 1 ] && echo "    • proje dizininin kendisi: $project_dir"
@@ -1802,6 +1832,12 @@ uninstall() {
     for _svc in api worker frontend migrate backend-tests; do
       $DK image rm "varyaone-${_svc}:latest" "varyaone-${_svc}:preupdate" >/dev/null 2>&1 || true
     done
+    # compose dosyalarının çektiği sabitlenmiş üçüncü taraf image'lar (nginx,
+    # certbot, postgres). Yalnızca bu yığın kullandığı için kaldırılıyor;
+    # başka bir şey referans veriyorsa `image rm` zaten sessizce başarısız olur.
+    for _img in nginx:1.27-alpine certbot/certbot:latest postgres:18.4-alpine; do
+      $DK image rm "$_img" >/dev/null 2>&1 || true
+    done
   else
     echo "  Docker erişilemiyor — konteyner/volume temizliği atlanıyor (dosyalar yine silinecek)." >&2
   fi
@@ -1820,10 +1856,15 @@ uninstall() {
 
   # 3) Üretilen dosyalar.
   echo "  Üretilen dosyalar siliniyor..."
+  # .env ve yarıda kalmış geçici kopyaları (env_set `.env.tmp.XXXXXX` üretir;
+  # bunlar şifreleme anahtarını içerebilir — mutlaka temizle).
   rm -f "$project_dir/.env" "$project_dir/.env.tmp" "$project_dir/.env.partial"
+  rm -f "$project_dir"/.env.tmp.*
   rm -f "$NGINX_CONF_DIR"/*.conf
   rm -f "$project_dir/deploy/.update-rollback"
   rm -f "$project_dir"/deploy/update-*.log
+  rm -f "$project_dir"/deploy/.deploy-self.*
+  rm -rf "$project_dir"/deploy/.lock-*
   [ "$keep_backups" = 1 ] || rm -rf "$project_dir/backups"
 
   # 4) Proje dizininin kendisi (isteğe bağlı, hiçbir iz bırakmaz).

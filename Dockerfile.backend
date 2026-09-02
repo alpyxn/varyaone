@@ -5,8 +5,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=1 go test ./... && \
-	CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o /out/varyaone ./cmd/varyaone
+# Tests run in CI (.github/workflows/ci.yml), not here: a deploy must not be
+# blocked by an unrelated/flaky test, and the image build stays fast.
+RUN CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o /out/varyaone ./cmd/varyaone
 
 FROM build AS binary
 
