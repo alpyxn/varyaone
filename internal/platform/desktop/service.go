@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/kardianos/service"
 )
@@ -16,7 +17,14 @@ func serviceConfig() *service.Config {
 		DisplayName: "Varya One",
 		Description: "Varya One ERP sunucusu (API, worker, veritabanı ve arayüz).",
 		Arguments:   []string{"stack"},
-		Option:      service.KeyValue{"DelayedAutoStart": true},
+		Option: service.KeyValue{
+			"DelayedAutoStart": true,
+			// Auto-restart on crash (e.g. a transient DB start failure): the
+			// service exits non-zero, SCM waits 15s and starts it again.
+			"OnFailure":              "restart",
+			"OnFailureDelayDuration": "15s",
+			"OnFailureResetPeriod":   86400,
+		},
 	}
 }
 
@@ -33,7 +41,12 @@ func (p *program) Start(service.Service) error {
 	go func() {
 		defer close(p.done)
 		if err := NewSupervisor(p.logger).Run(ctx); err != nil && ctx.Err() == nil {
-			p.logger.Error("stack exited with error", "error", err)
+			// The stack died on its own (initdb/migration/bind failure). Log it
+			// where it can be seen and exit non-zero so the OS service manager
+			// reports the service as stopped/failed instead of a false "running"
+			// with a dead worker inside.
+			p.logger.Error("stack exited with error — terminating service", "error", err)
+			os.Exit(1)
 		}
 	}()
 	return nil

@@ -15,7 +15,8 @@
     .card { background: #232326; }
     .pill { background: #2a2a2d; }
   }
-  h1 { font-size: 17px; margin: 0 0 4px; }
+  h1 { font-size: 17px; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+  h1 svg { width: 26px; height: 26px; display: block; flex: none; }
   h1 b { color: #c1272d; }
   .sub { opacity: .65; font-size: 12px; margin-bottom: 16px; }
   .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px;
@@ -38,7 +39,17 @@
 </style>
 </head>
 <body>
-  <h1>Varya <b>Kontrol Paneli</b></h1>
+  <h1>
+    <svg viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Varya One">
+      <g fill="#C1272D">
+        <rect x="20" y="100" width="30" height="90" rx="3" transform="rotate(-26 35 190)"/>
+        <rect x="70" y="55" width="30" height="135" rx="3" transform="rotate(-12 85 190)"/>
+        <rect x="120" y="35" width="30" height="155" rx="3" transform="rotate(-4 135 190)"/>
+      </g>
+      <rect x="170" y="10" width="30" height="180" rx="3" fill="currentColor"/>
+    </svg>
+    <span>Varya <b>Kontrol Paneli</b></span>
+  </h1>
   <div class="sub" id="ver"></div>
 
   <div class="card">
@@ -69,7 +80,8 @@
     $("ver").textContent = "Sürüm " + (s.version || "?");
     const svc = $("svc");
     if (!s.serviceInstalled) { svc.textContent = "kurulu değil"; svc.className = "pill bad"; }
-    else if (s.running) { svc.textContent = "çalışıyor"; svc.className = "pill ok"; }
+    else if (s.serving) { svc.textContent = "çalışıyor"; svc.className = "pill ok"; }
+    else if (s.running) { svc.textContent = "servis açık, sunucu yanıt vermiyor — Loglar'a bakın"; svc.className = "pill bad"; }
     else { svc.textContent = "durdu"; svc.className = "pill bad"; }
 
     const ul = $("urls"); ul.innerHTML = "";

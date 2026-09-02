@@ -29,10 +29,13 @@ import (
 func main() {
 	runtime.LockOSThread()
 
-	panel := false
+	panel, hidden := false, false
 	for _, a := range os.Args[1:] {
-		if a == "--panel" {
+		switch a {
+		case "--panel":
 			panel = true
+		case "--tray": // login autostart: control panel, start hidden in the tray
+			panel, hidden = true, true
 		}
 	}
 
@@ -60,6 +63,7 @@ func main() {
 
 	if panel {
 		view.SetHtml(panelHTML)
+		setupTray(uintptr(view.Window()), hidden)
 	} else {
 		view.SetHtml(connectHTML)
 	}
@@ -79,6 +83,7 @@ type clientConfig struct {
 type panelState struct {
 	ServiceInstalled bool     `json:"serviceInstalled"`
 	Running          bool     `json:"running"`
+	Serving          bool     `json:"serving"` // HTTP server actually answering on 127.0.0.1
 	Mode             string   `json:"mode"`
 	URLs             []string `json:"urls"`
 	Version          string   `json:"version"`
@@ -203,7 +208,7 @@ func (a *clientApp) openPanel() error {
 
 func (a *clientApp) panelState() (panelState, error) {
 	layout := desktop.DiscoverLayout()
-	installed, running := desktop.ServiceState()
+	installed, running := serviceState()
 	mode := string(layout.NetworkMode())
 
 	urls := []string{fmt.Sprintf("http://127.0.0.1:%d", desktop.DefaultHTTPPort)}
@@ -213,6 +218,7 @@ func (a *clientApp) panelState() (panelState, error) {
 	return panelState{
 		ServiceInstalled: installed,
 		Running:          running,
+		Serving:          ping(fmt.Sprintf("http://127.0.0.1:%d", desktop.DefaultHTTPPort)) == nil,
 		Mode:             mode,
 		URLs:             urls,
 		Version:          version,
@@ -234,6 +240,37 @@ func (a *clientApp) openLogs() error {
 	dir := desktop.DiscoverLayout().Logs()
 	_ = os.MkdirAll(dir, 0o755)
 	return exec.Command("explorer.exe", dir).Start()
+}
+
+// serviceState reports whether the "VaryaOne" service is registered and running.
+//
+// It queries the SCM directly asking only for SC_MANAGER_CONNECT +
+// SERVICE_QUERY_STATUS, both of which a standard (non-elevated) user holds. The
+// kardianos/service Status() call opens the service with SERVICE_START|STOP too,
+// which a standard user lacks, so it fails with ERROR_ACCESS_DENIED and the
+// panel wrongly shows the service as "not installed" when run without UAC.
+func serviceState() (installed, running bool) {
+	scm, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return false, false
+	}
+	defer windows.CloseServiceHandle(scm)
+
+	name, _ := windows.UTF16PtrFromString("VaryaOne")
+	h, err := windows.OpenService(scm, name, windows.SERVICE_QUERY_STATUS)
+	if err != nil {
+		// Only ERROR_SERVICE_DOES_NOT_EXIST means "not installed"; any other
+		// error (e.g. access denied) leaves us unsure, so assume installed.
+		return err != windows.ERROR_SERVICE_DOES_NOT_EXIST, false
+	}
+	defer windows.CloseServiceHandle(h)
+
+	var st windows.SERVICE_STATUS
+	if err := windows.QueryServiceStatus(h, &st); err != nil {
+		return true, false
+	}
+	return true, st.CurrentState == windows.SERVICE_RUNNING ||
+		st.CurrentState == windows.SERVICE_START_PENDING
 }
 
 /* ---------------------------------------------------------------- helpers -- */

@@ -12,6 +12,8 @@ istemci uygulamasından erişir. Docker gerekmez.
 | Gömülü PostgreSQL yönetimi (`initdb`/`pg_ctl`) | `internal/platform/desktop/postgres.go` | ✅ hazır (pgsql/ paketlenmeli) |
 | mDNS yayını (`_varyaone._tcp`) | `internal/platform/desktop/mdns.go` | ✅ hazır |
 | Windows updater (`varyaone update-apply`) | `internal/platform/desktop/updater.go` | ✅ hazır (uçtan uca test bekliyor) |
+| Updater tetikleyici (Linux systemd ajanı yerine) | `supervisor.go` `runUpdateApplier` + `spawn_windows.go` | ✅ hazır (uçtan uca test bekliyor) |
+| Pulse yapılandırması (masaüstü varsayılanı) | `settings.go` + `supervisor.go` `config()` | ✅ resmi uç varsayılan, `settings.env` ile geçersiz kılınır |
 | SPA static build (`VARYAONE_ADAPTER=static`) | `web/svelte.config.js` | ✅ hazır |
 | pulse: Windows artefakt alanları | `varya-pulse` migration 0004 + `/release/v1/latest` | ✅ hazır |
 | Ağ modu (`varyaone netmode <local\|lan>`) | `internal/platform/desktop/netmode.go` | ✅ hazır |
@@ -108,9 +110,20 @@ Tek `varyaone-client.exe` (WebView2 penceresi, saf Go — `jchv/go-webview2`):
 `internal/update` durum makinesi ve `/internal/update/*` uçları değişmedi. Fark
 yalnızca taşıyıcıda:
 
+Pulse toplayıcısı **varsayılan olarak** resmi uç + paylaşımlı anahtara ayarlıdır
+(compose.yaml ile aynı), yani düz bir kurulum ekstra ayar olmadan yeni sürümleri
+görür. Kendi kataloğunu kullanmak için `%ProgramData%\VaryaOne\settings.env`:
+
+```
+VARYAONE_PULSE_ENDPOINT=https://kendi-worker.example.workers.dev
+VARYAONE_PULSE_INGEST_KEY=kendi-anahtarin
+# kurulum ping'ini kapatmak istersen:
+# VARYAONE_PULSE_INSTALL_PING=false
+```
+
 | Web (Linux) | Windows masaüstü |
 |---|---|
-| `deploy/varyaone-update-agent.sh` (systemd) `/internal/update/next` yoklar | Kontrol paneli aynı ucu yoklar → `varyaone update-apply --target <v>` |
+| `deploy/varyaone-update-agent.sh` (systemd) `/internal/update/next` yoklar | `varyaone stack` içindeki döngü (`runUpdateApplier`, 2 dk) DB'den kuyruğu okur → `varyaone update-apply --target <v>`'yi **ayrık süreç** olarak başlatır (servisi durdurup yeniden başlatacağı için çocuk süreç olamaz) |
 | `deploy.sh update`: git checkout + `docker compose build` | zip indir + SHA-256 doğrula + dosya değiştir |
 | PG majör: yeni imajın sürümlü PGDATA'sına initdb + `.varya` restore (eski dizin volume'de kalır) | eski `pgdata` arşivle + yeni majör initdb + `.varya` restore |
 | rollback: `git checkout <prev>` + `backup restore` | `Home\rollback\` geri kopyala + `backup restore` |
@@ -133,8 +146,9 @@ pulse'taki `pg_major` alanı yalnızca bilgilendirme/panel içindir.
 ## Sonraki adımlar
 
 - Kontrol panelini genişlet: yedek al/geri yükle, güncelleme ilerlemesini
-  `update.Service.Status()`'tan canlı göster, `/internal/update/next` yoklaması
-  (shell güncelleme ajanının Windows eşdeğeri).
-- `varyaone-client.exe` için sürekli sistem tepsisi ikonu (şu an pencere kapanınca
-  uygulama çıkar).
+  `update.Service.Status()`'tan canlı göster.
+- Ayrık updater sürecinin servis durdurulunca sağ kaldığını VM'de doğrula
+  (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`); gerekiyorsa
+  `CREATE_BREAKAWAY_FROM_JOB` ekle. Sürekli çöken bir güncelleme 15 dk'da bir
+  yeniden denenir (sıkı döngü değil ama Linux ajanındaki gibi bir "pes et" sayacı yok).
 - CI'da release'i pulse admin ucuna otomatik kaydet.

@@ -33,7 +33,7 @@ func run() error {
 	// so they run before the shared config/database bootstrap below.
 	switch os.Args[1] {
 	case "stack":
-		return desktop.RunAsService(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+		return desktop.RunAsService(desktop.NewStackLogger())
 	case "service":
 		if len(os.Args) != 3 {
 			return errors.New("usage: varyaone service <install|uninstall|start|stop|restart|status>")
@@ -50,7 +50,7 @@ func run() error {
 		// hanging forever (download and health-check both honour the context).
 		applyCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return desktop.NewUpdater(slog.New(slog.NewJSONHandler(os.Stdout, nil))).
+		return desktop.NewUpdater(desktop.NewUpdateLogger()).
 			Apply(applyCtx, target)
 	case "netmode":
 		if len(os.Args) != 3 {

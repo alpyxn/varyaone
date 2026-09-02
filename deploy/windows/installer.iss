@@ -35,6 +35,9 @@ SetupIconFile={#SourcePath}appicon.ico
 UninstallDisplayIcon={app}\appicon.ico
 UninstallDisplayName={#MyAppName}
 WizardStyle=modern
+; Kurulum arayuzu dogrudan Turkce acilir, dil secme penceresi gosterilmez.
+ShowLanguageDialog=no
+LanguageDetectionMethod=none
 Compression=lzma2/max
 SolidCompression=yes
 
@@ -44,6 +47,7 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+Name: "autostartpanel"; Description: "Varya Kontrol Paneli Windows acilisinda sistem tepsisinde baslasin"; GroupDescription: "Baslangic"
 Name: "lanaccess"; Description: "Agdaki diger bilgisayarlar bu sunucuya erisebilsin (Ag modu)"; GroupDescription: "Ag modu"
 
 [Files]
@@ -58,6 +62,8 @@ Name: "{autodesktop}\Varya Kontrol Paneli"; Filename: "{app}\{#ClientExe}"; Para
 Name: "{group}\Varya One";                  Filename: "{app}\{#ClientExe}"; IconFilename: "{app}\appicon.ico"
 Name: "{group}\Varya Kontrol Paneli";       Filename: "{app}\{#ClientExe}"; Parameters: "--panel"; IconFilename: "{app}\panelicon.ico"
 Name: "{group}\Varya One Kaldir";           Filename: "{uninstallexe}"
+; Windows acilisinda kontrol panelini sistem tepsisinde (gizli) baslat.
+Name: "{commonstartup}\Varya Kontrol Paneli"; Filename: "{app}\{#ClientExe}"; Parameters: "--tray"; IconFilename: "{app}\panelicon.ico"; Tasks: autostartpanel
 
 [Run]
 ; Kurulu bir onceki surumu birak (yeniden kurulumda zararsizca hata verir, yok sayilir).
