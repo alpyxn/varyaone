@@ -38,18 +38,22 @@ jobs:
       - name: Resolve version
         id: v
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME:-${{ inputs.version }}}" >> "$GITHUB_OUTPUT"
+        # On a tag push github.ref_name is the tag; on manual dispatch it is the
+        # branch, so prefer the explicit input there.
+        run: echo "version=${{ inputs.version || github.ref_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Fetch bundled PostgreSQL
         run: pwsh deploy/windows/fetch-tools.ps1
 
-      - name: Install Inno Setup
+      - name: Install Inno Setup + zip
         run: |
-          choco install innosetup --no-progress -y
+          choco install innosetup zip --no-progress -y
           echo "C:\Program Files (x86)\Inno Setup 6" >> "$env:GITHUB_PATH"
 
       - name: Install go-winres (refresh client exe icon)
-        run: go install github.com/tc-hib/go-winres@latest
+        run: |
+          go install github.com/tc-hib/go-winres@latest
+          echo "$(go env GOPATH)\bin" >> "$env:GITHUB_PATH"
 
       - name: Build bundle
         shell: bash
