@@ -600,6 +600,13 @@ server {
     proxy_read_timeout 600s;
     proxy_send_timeout 600s;
 
+    # SvelteKit/adapter-node yanit basliklari (CSP + Set-Cookie) nginx'in
+    # varsayilan 4k/8k proxy buffer'ini asabiliyor -> "upstream sent too big
+    # header" -> 502. Buffer'lari genislet.
+    proxy_buffer_size 16k;
+    proxy_buffers 8 16k;
+    proxy_busy_buffers_size 32k;
+
     # Docker'in gomulu DNS'i. proxy_pass'te degisken kullanildigi icin nginx
     # `frontend` adini her istekte yeniden cozer; boylece frontend konteyneri
     # yeniden olusturulup yeni bir IP alsa bile 502 vermez.
