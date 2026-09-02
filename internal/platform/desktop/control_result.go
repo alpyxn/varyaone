@@ -2,6 +2,8 @@ package desktop
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,4 +90,26 @@ func StackLogTail(maxBytes int) string {
 		}
 	}
 	return strings.TrimSpace(string(payload))
+}
+
+// StackFailure turns "the stack is not serving" into the actual reason, by
+// pulling the last logged error out of stack.log. Without it every startup
+// problem — a port clash, a broken PostgreSQL bundle, a failed migration —
+// reaches the installer and the control panel as the same bare timeout.
+func StackFailure(prefix string) error {
+	tail := StackLogTail(8 << 10)
+	if tail == "" {
+		return errors.New(prefix + "; stack.log henüz bir hata içermiyor")
+	}
+	lines := strings.Split(tail, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var entry struct {
+			Message string `json:"msg"`
+			Error   string `json:"error"`
+		}
+		if json.Unmarshal([]byte(lines[i]), &entry) == nil && entry.Error != "" {
+			return fmt.Errorf("%s: %s", prefix, entry.Error)
+		}
+	}
+	return fmt.Errorf("%s; ayrıntı için stack.log dosyasına bakın", prefix)
 }

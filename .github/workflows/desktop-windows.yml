@@ -21,6 +21,9 @@ permissions:
 jobs:
   bundle:
     runs-on: windows-2025
+    # A hang in the bundled stack must fail the run, not sit on a runner for
+    # hours. The bundle build itself is ~15 min including the PostgreSQL fetch.
+    timeout-minutes: 45
     env:
       BUNDLED_PG_VERSION: 18.4-1
     steps:
@@ -96,11 +99,16 @@ jobs:
           New-Item -ItemType Directory -Path $smokeHome | Out-Null
           $env:VARYAONE_DESKTOP_HOME = $smokeHome
           $env:VARYAONE_HTTP_PORT = "18080"
+          $stdout = Join-Path $env:RUNNER_TEMP "varyaone-stack-stdout.log"
+          $stderr = Join-Path $env:RUNNER_TEMP "varyaone-stack-stderr.log"
           $process = $null
           try {
             $process = Start-Process (Join-Path $stage "varyaone.exe") `
-              -ArgumentList "stack" -WindowStyle Hidden -PassThru
-            $deadline = (Get-Date).AddMinutes(2)
+              -ArgumentList "stack" -WindowStyle Hidden -PassThru `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            # initdb plus the squashed baseline migration on a cold runner disk;
+            # sized like the real first boot, not like a warm restart.
+            $deadline = (Get-Date).AddMinutes(5)
             $ready = $false
             while ((Get-Date) -lt $deadline) {
               $process.Refresh()
@@ -116,12 +124,19 @@ jobs:
               } catch { }
               Start-Sleep -Milliseconds 500
             }
-            if (-not $ready) { throw "packaged stack did not become ready within two minutes" }
+            if (-not $ready) { throw "packaged stack did not become ready within five minutes" }
           } catch {
-            $stackLog = Join-Path $smokeHome "logs/stack.log"
-            $postgresLog = Join-Path $smokeHome "logs/postgres.log"
-            if (Test-Path $stackLog) { Get-Content $stackLog -Tail 100 }
-            if (Test-Path $postgresLog) { Get-Content $postgresLog -Tail 100 }
+            # A stack that hangs before it logs anything is undiagnosable, so dump
+            # every stream it could have written to, each clearly labelled.
+            foreach ($log in @(
+              (Join-Path $smokeHome "logs/stack.log"),
+              (Join-Path $smokeHome "logs/postgres.log"),
+              (Join-Path $smokeHome "logs/pg_ctl.log"),
+              $stdout, $stderr
+            )) {
+              Write-Host "----- $log -----"
+              if (Test-Path $log) { Get-Content $log -Tail 200 } else { Write-Host "(missing)" }
+            }
             throw
           } finally {
             if ($process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force }
@@ -130,6 +145,11 @@ jobs:
             if ((Test-Path (Join-Path $pgData "PG_VERSION")) -and (Test-Path $pgCtl)) {
               & $pgCtl stop -w -m fast "--pgdata=$pgData"
             }
+            # Stop-Process kills only the stack; a postmaster that pg_ctl could
+            # not reach would still hold its port when the installer test runs.
+            Get-Process postgres -ErrorAction SilentlyContinue |
+              Where-Object { $_.Path -and $_.Path.StartsWith($stage) } |
+              Stop-Process -Force -ErrorAction SilentlyContinue
           }
 
       - name: Smoke-test installer and Windows service lifecycle
@@ -157,12 +177,28 @@ jobs:
             if ($service.Status -ne "Running") {
               throw "SCM reports VaryaOne as $($service.Status)"
             }
+
+            # Every reboot and every update goes through a stop/start cycle, so
+            # a stack that only survives its first boot is not shippable. This
+            # also exercises the bundled cluster's shutdown and restart.
+            & $serverExe service restart
+            if ($LASTEXITCODE -ne 0) { throw "service restart failed" }
+            & $serverExe service wait-ready
+            if ($LASTEXITCODE -ne 0) { throw "service did not become ready after restart" }
+            $service = Get-Service -Name VaryaOne -ErrorAction Stop
+            if ($service.Status -ne "Running") {
+              throw "after restart SCM reports VaryaOne as $($service.Status)"
+            }
           } catch {
             if (Test-Path $setupLog) { Get-Content $setupLog -Tail 200 }
-            $stackLog = Join-Path $serviceHome "logs/stack.log"
-            $postgresLog = Join-Path $serviceHome "logs/postgres.log"
-            if (Test-Path $stackLog) { Get-Content $stackLog -Tail 100 }
-            if (Test-Path $postgresLog) { Get-Content $postgresLog -Tail 100 }
+            foreach ($log in @(
+              (Join-Path $serviceHome "logs/stack.log"),
+              (Join-Path $serviceHome "logs/postgres.log"),
+              (Join-Path $serviceHome "logs/pg_ctl.log")
+            )) {
+              Write-Host "----- $log -----"
+              if (Test-Path $log) { Get-Content $log -Tail 200 } else { Write-Host "(missing)" }
+            }
             throw
           } finally {
             if (Test-Path $uninstaller) {

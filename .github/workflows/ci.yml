@@ -114,6 +114,28 @@ jobs:
       - run: docker run --rm -v "$PWD:/src" -w /src sqlc/sqlc:1.30.0 generate
       - run: git diff --exit-code
 
+  # The Windows desktop runtime (service control, tray, WebView2 client, the
+  # spawn/diskfree shims) lives behind //go:build windows, so the Linux job above
+  # never compiles it. Without this, a Windows-only break is invisible until the
+  # release tag builds the bundle — the most expensive possible moment to find it.
+  windows-desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cross-compile the Windows desktop binaries
+        env:
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          go build ./cmd/... ./internal/...
+          go vet ./cmd/... ./internal/platform/...
+      - name: Desktop unit tests
+        run: go test ./internal/platform/desktop/...
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

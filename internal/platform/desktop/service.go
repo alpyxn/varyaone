@@ -109,13 +109,49 @@ func Control(action string) (resultErr error) {
 	if action == "wait-ready" {
 		ctx, cancel := context.WithTimeout(context.Background(), serviceReadyTimeout)
 		defer cancel()
-		return WaitForReady(ctx, HTTPPort())
+		return waitForServiceReady(ctx)
 	}
 	switch action {
 	case "start", "stop", "restart":
 		return controlManagedService(svc, action)
 	default:
 		return service.Control(svc, action)
+	}
+}
+
+// waitForServiceReady is `service wait-ready`: it waits for the HTTP readiness
+// endpoint, but gives up early when the service is no longer running.
+//
+// The installer and the control panel both block on this. A stack that dies on
+// startup (busy port, broken PostgreSQL bundle, failed migration) is restarted
+// by the SCM recovery action every 15 seconds, so waiting for the endpoint alone
+// would burn the whole timeout and then report only that it timed out. Watching
+// the service state instead surfaces the real error from stack.log in seconds.
+func waitForServiceReady(ctx context.Context) error {
+	ready := make(chan error, 1)
+	readyCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() { ready <- WaitForReady(readyCtx, HTTPPort()) }()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	// One stopped observation can be the gap between a crash and the SCM restart
+	// during an otherwise-recoverable boot; two in a row is a dead stack.
+	stopped := 0
+	for {
+		select {
+		case err := <-ready:
+			return err
+		case <-ticker.C:
+			installed, running := ServiceState()
+			if !installed || running {
+				stopped = 0
+				continue
+			}
+			if stopped++; stopped >= 2 {
+				return StackFailure("Varya One servisi başladıktan sonra durdu")
+			}
+		}
 	}
 }
 

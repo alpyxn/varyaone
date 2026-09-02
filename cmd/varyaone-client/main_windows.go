@@ -305,7 +305,7 @@ func (a *clientApp) applyMode(token, mode string) error {
 	if !wasRunning {
 		return nil
 	}
-	return a.waitUntilReady(2 * time.Minute)
+	return a.waitUntilReady(restartReadyWait)
 }
 
 func (a *clientApp) restartService(token string) error {
@@ -321,7 +321,7 @@ func (a *clientApp) restartService(token string) error {
 	case !service.installed:
 		action = "ensure"
 	case service.status == "start_pending":
-		return a.waitUntilReady(2 * time.Minute)
+		return a.waitUntilReady(coldReadyWait)
 	case service.status == "stop_pending":
 		if err := waitUntilServiceStopped(30 * time.Second); err != nil {
 			return err
@@ -333,7 +333,11 @@ func (a *clientApp) restartService(token string) error {
 	if err := runElevated(siblingExe("varyaone.exe"), "service", action); err != nil {
 		return err
 	}
-	return a.waitUntilReady(2 * time.Minute)
+	// "ensure" installs a never-yet-started service, so it can be a cold boot.
+	if action == "ensure" {
+		return a.waitUntilReady(coldReadyWait)
+	}
+	return a.waitUntilReady(restartReadyWait)
 }
 
 func waitUntilServiceStopped(timeout time.Duration) error {
@@ -360,7 +364,7 @@ func (a *clientApp) repairService(token string) error {
 	if err := runElevated(siblingExe("varyaone.exe"), "service", "repair"); err != nil {
 		return err
 	}
-	return a.waitUntilReady(2 * time.Minute)
+	return a.waitUntilReady(coldReadyWait)
 }
 
 func (a *clientApp) openLogs(token string) error {
@@ -426,6 +430,14 @@ func queryServiceState() windowsServiceState {
 	}
 }
 
+// restartReadyWait covers a restart of an already-initialized install.
+// coldReadyWait additionally covers a first boot: initdb plus the squashed
+// baseline migration, with Defender scanning every file the installer wrote.
+const (
+	restartReadyWait = 2 * time.Minute
+	coldReadyWait    = 6 * time.Minute
+)
+
 func (a *clientApp) waitUntilReady(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -440,32 +452,14 @@ func (a *clientApp) waitUntilReady(timeout time.Duration) error {
 			return fmt.Errorf("servis durumu okunamadı: %w", state.err)
 		}
 		if state.installed && state.status == "stopped" {
-			return stackFailure("servis başladıktan sonra durdu")
+			return desktop.StackFailure("servis başladıktan sonra durdu")
 		}
 		select {
 		case <-ctx.Done():
-			return stackFailure("sunucu iki dakika içinde hazır olmadı")
+			return desktop.StackFailure(fmt.Sprintf("sunucu %.0f dakika içinde hazır olmadı", timeout.Minutes()))
 		case <-ticker.C:
 		}
 	}
-}
-
-func stackFailure(prefix string) error {
-	tail := desktop.StackLogTail(8 << 10)
-	if tail == "" {
-		return errors.New(prefix + "; stack.log henüz bir hata içermiyor")
-	}
-	lines := strings.Split(tail, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		var entry struct {
-			Message string `json:"msg"`
-			Error   string `json:"error"`
-		}
-		if json.Unmarshal([]byte(lines[i]), &entry) == nil && entry.Error != "" {
-			return fmt.Errorf("%s: %s", prefix, entry.Error)
-		}
-	}
-	return fmt.Errorf("%s; ayrıntı için stack.log dosyasına bakın", prefix)
 }
 
 /* ---------------------------------------------------------------- helpers -- */

@@ -77,16 +77,23 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Log every long step of the boot sequence: on a first boot these are the
+	// only breadcrumbs (initdb, cluster start, migrations all take a while and a
+	// service has no console), so a stack that never reaches "ready" can be
+	// diagnosed from stack.log alone.
 	pg, err := NewPostgres(s.Layout)
 	if err != nil {
 		return err
 	}
+	s.Logger.Info("preparing database cluster", "pgdata", s.Layout.PGData(), "bin", pg.bin)
 	if err := pg.EnsureInitialized(ctx); err != nil {
 		return fmt.Errorf("initialize database cluster: %w", err)
 	}
+	s.Logger.Info("starting database cluster", "port", pg.port)
 	if err := pg.Start(ctx); err != nil {
 		return fmt.Errorf("start database cluster: %w", err)
 	}
+	s.Logger.Info("database cluster ready")
 	// Best-effort clean shutdown of the cluster when the stack exits.
 	defer func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -108,9 +115,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	defer pool.Close()
 
 	runner := migrations.New(pool)
+	s.Logger.Info("applying migrations")
 	if err := runner.Up(ctx); err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
+	s.Logger.Info("migrations applied")
 
 	group, groupCtx := errgroup.WithContext(ctx)
 
@@ -156,16 +165,35 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	return group.Wait()
 }
 
+// httpPortWait is how long checkHTTPPortFree keeps retrying a busy port.
+const httpPortWait = 20 * time.Second
+
 // checkHTTPPortFree probes the configured bind address so a port already in use
-// surfaces as "8080 kullanımda" rather than an opaque late failure. Best-effort:
-// a transient bind between here and the real listen is acceptable.
+// surfaces as "8080 kullanımda" rather than an opaque late failure.
+//
+// It retries rather than failing on the first attempt: a restart (service
+// restart, an SCM auto-restart after a crash, the updater's stop/start) races
+// the previous process's listener, which Windows may hold for a moment after
+// the process is gone. Failing instantly there turns an ordinary restart into a
+// support call. Best-effort: a transient bind between here and the real listen
+// is still acceptable.
 func (s *Supervisor) checkHTTPPortFree() error {
 	addr := s.Layout.NetworkMode().BindHost() + ":" + strconv.Itoa(s.HTTPPort)
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("HTTP portu %d kullanımda — başka bir uygulama mı çalışıyor? (%s)", s.HTTPPort, addr)
+	deadline := time.Now().Add(httpPortWait)
+	for attempt := 0; ; attempt++ {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			return ln.Close()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("HTTP portu %d kullanımda — başka bir uygulama mı çalışıyor? (%s)", s.HTTPPort, addr)
+		}
+		if attempt == 0 {
+			s.Logger.Info("HTTP port busy, waiting for the previous listener to close",
+				"addr", addr, "timeout", httpPortWait)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	return ln.Close()
 }
 
 // updateApplierPoll is how often the stack checks for an operator-queued apply.

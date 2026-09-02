@@ -10,7 +10,12 @@ import (
 	"time"
 )
 
-const serviceReadyTimeout = 2 * time.Minute
+// serviceReadyTimeout bounds `varyaone service wait-ready`, which the installer
+// and the control panel both run. A cold first boot has to initdb a cluster and
+// apply the squashed baseline migration (hundreds of objects) while Defender
+// scans every freshly written file, so this is sized for the slowest realistic
+// machine rather than for CI.
+const serviceReadyTimeout = 6 * time.Minute
 
 // WaitForReady waits for the desktop HTTP server and its database/migrations
 // readiness check. Starting in the service manager only proves that Windows
@@ -61,9 +66,9 @@ func waitForReady(ctx context.Context, interval time.Duration, probe func(contex
 		select {
 		case <-ctx.Done():
 			if lastErr != nil {
-				return fmt.Errorf("Varya One hazır olmadı: %w (son deneme: %v)", ctx.Err(), lastErr)
+				return fmt.Errorf("sunucu hazır olmadı: %w (son deneme: %v)", ctx.Err(), lastErr)
 			}
-			return fmt.Errorf("Varya One hazır olmadı: %w", ctx.Err())
+			return fmt.Errorf("sunucu hazır olmadı: %w", ctx.Err())
 		case <-ticker.C:
 		}
 	}

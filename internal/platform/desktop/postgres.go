@@ -23,8 +23,12 @@ type Postgres struct {
 	layout Layout
 	bin    string // directory holding initdb / pg_ctl / postgres
 	port   int
-	dbName string
-	dbUser string
+	// portPinned records an explicit VARYAONE_DESKTOP_PG_PORT: a pinned port is
+	// never stepped over, so a self-hoster who chose one gets the failure rather
+	// than a cluster that quietly moved somewhere else.
+	portPinned bool
+	dbName     string
+	dbUser     string
 }
 
 const (
@@ -50,13 +54,16 @@ func NewPostgres(layout Layout) (*Postgres, error) {
 			return nil, err
 		}
 	}
-	port := defaultPGPort
+	port, pinned := defaultPGPort, false
 	if v := os.Getenv("VARYAONE_DESKTOP_PG_PORT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			port = n
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 65535 {
+			port, pinned = n, true
 		}
 	}
-	return &Postgres{layout: layout, bin: bin, port: port, dbName: pgDBName, dbUser: pgDBUser}, nil
+	return &Postgres{
+		layout: layout, bin: bin, port: port, portPinned: pinned,
+		dbName: pgDBName, dbUser: pgDBUser,
+	}, nil
 }
 
 // verifyPGBundle catches a broken or partially-extracted PostgreSQL bundle
@@ -277,10 +284,21 @@ func (p *Postgres) initdbFailureHint(err error) string {
 // Start boots the cluster (idempotent) and waits until it accepts connections,
 // then ensures the application database exists.
 func (p *Postgres) Start(ctx context.Context) error {
+	if err := p.resolvePort(); err != nil {
+		return err
+	}
 	if p.running() {
 		return p.ensureDatabase(ctx)
 	}
+	if err := os.MkdirAll(p.layout.Logs(), 0o755); err != nil {
+		return fmt.Errorf("prepare log directory: %w", err)
+	}
+	// pg_ctl only ever appends to these, so an install that runs for years would
+	// otherwise grow them without bound. The cluster is stopped here, so nothing
+	// holds the old file open.
 	logFile := filepath.Join(p.layout.Logs(), "postgres.log")
+	rollLog(logFile, clusterLogMaxBytes)
+	rollLog(filepath.Join(p.layout.Logs(), "pg_ctl.log"), clusterLogMaxBytes)
 	// The squashed baseline migration creates the whole schema in one
 	// transaction (hundreds of objects), which overflows the default
 	// max_locks_per_transaction (64) lock table on a fresh cluster.
@@ -291,13 +309,124 @@ func (p *Postgres) Start(ctx context.Context) error {
 		"--log="+logFile,
 		"--options="+opts,
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runDetachedCapture(cmd, filepath.Join(p.layout.Logs(), "pg_ctl.log")); err != nil {
 		return fmt.Errorf("pg_ctl start: %w: %s", err, out)
 	}
 	if err := p.waitReady(ctx, 60*time.Second); err != nil {
 		return err
 	}
+	// A TCP dial only proves *something* answers on the port. Confirm pg_ctl
+	// still recognises the cluster as ours before any client connects, so a
+	// foreign PostgreSQL that grabbed the port between resolvePort and now is
+	// never mistaken for the bundled one and migrated into.
+	if !p.running() {
+		return fmt.Errorf("port %d üzerinde başka bir PostgreSQL çalışıyor — Varya One kümesi başlatılamadı", p.port)
+	}
 	return p.ensureDatabase(ctx)
+}
+
+// clusterLogMaxBytes caps postgres.log / pg_ctl.log; past it a single previous
+// generation is kept as "<name>.1" and the rest discarded.
+const clusterLogMaxBytes = 32 << 20
+
+func rollLog(path string, maxBytes int64) {
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() <= maxBytes {
+		return
+	}
+	_ = os.Remove(path + ".1")
+	_ = os.Rename(path, path+".1")
+}
+
+// pgPortScanRange is how many ports past the preferred one Start will try.
+const pgPortScanRange = 64
+
+// resolvePort settles which TCP port this cluster uses, before pg_ctl runs.
+//
+// The default 5433 is a preference, not a guarantee: a leftover postmaster from
+// a hard-killed run, a second Varya One install, or an unrelated PostgreSQL can
+// already own it, and a desktop install has to come up anyway. So a cluster that
+// is already running keeps whatever port its postmaster.pid records (that is the
+// port its clients must use), and otherwise a busy port is stepped over until a
+// free one is found. An explicitly pinned VARYAONE_DESKTOP_PG_PORT is never
+// moved — that operator wants the failure, not a silent relocation.
+func (p *Postgres) resolvePort() error {
+	if port, ok := p.runningPort(); ok {
+		p.port = port
+		return nil
+	}
+	if p.portPinned || !tcpPortBusy(p.port) {
+		return nil
+	}
+	for candidate := p.port + 1; candidate < p.port+pgPortScanRange; candidate++ {
+		if candidate > 65535 {
+			break
+		}
+		if !tcpPortBusy(candidate) {
+			p.port = candidate
+			return nil
+		}
+	}
+	return fmt.Errorf("kullanılabilir veritabanı portu bulunamadı (%d-%d denendi)",
+		p.port, p.port+pgPortScanRange-1)
+}
+
+// runningPort returns the port a live cluster in our data directory is listening
+// on, read from line 4 of postmaster.pid. A stale pid file left by a crash is
+// ignored: pg_ctl status is what decides whether the cluster is actually up.
+func (p *Postgres) runningPort() (int, bool) {
+	if !p.running() {
+		return 0, false
+	}
+	b, err := os.ReadFile(filepath.Join(p.layout.PGData(), "postmaster.pid"))
+	if err != nil {
+		return 0, false
+	}
+	lines := strings.Split(string(b), "\n")
+	if len(lines) < 4 {
+		return 0, false
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(lines[3]))
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, false
+	}
+	return port, true
+}
+
+// tcpPortBusy reports whether anything already holds the loopback port.
+func tcpPortBusy(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return true
+	}
+	_ = ln.Close()
+	return false
+}
+
+// runDetachedCapture runs a command that leaves a long-lived process behind and
+// returns whatever it printed, captured through capturePath instead of a pipe.
+//
+// exec.Cmd's CombinedOutput() plumbs stdout/stderr through an anonymous pipe and
+// waits for that pipe to reach EOF. On Windows `pg_ctl start` launches the
+// postmaster under a cmd.exe that outlives pg_ctl and inherits its handles, so
+// the write end of that pipe stays open for the whole life of the cluster and
+// CombinedOutput() blocks until PostgreSQL shuts down — the desktop stack hangs
+// forever on the boot that starts the cluster. Handing the child a plain file
+// instead means no pipe and no reader goroutine, so Wait returns as soon as
+// pg_ctl itself exits.
+func runDetachedCapture(cmd *exec.Cmd, capturePath string) ([]byte, error) {
+	f, err := os.OpenFile(capturePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		// Without a capture file the command still has to run; give up the
+		// output rather than the cluster.
+		cmd.Stdout, cmd.Stderr = nil, nil
+		return nil, cmd.Run()
+	}
+	cmd.Stdout, cmd.Stderr = f, f
+	runErr := cmd.Run()
+	_ = f.Close()
+	out, _ := os.ReadFile(capturePath)
+	return out, runErr
 }
 
 // Stop shuts the cluster down (fast mode). Safe to call when already stopped.
