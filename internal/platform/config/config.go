@@ -64,7 +64,26 @@ type Config struct {
 	// https URL accepted) — only meaningful together with a non-default
 	// UpdateCatalogURLs pointed at a fork/self-host.
 	UpdateArtifactPrefix string
+	// DemoMode turns this installation into the public showcase deployment: the
+	// demo endpoints are mounted, the demo company may be seeded and purged, and
+	// the outward-facing operations are refused. It defaults to false and must
+	// never be enabled on an installation holding real data.
+	DemoMode bool
+	// DemoEmail and DemoPassword are the credentials of the single shared demo
+	// user. They are not secrets - anyone may sign in to the demo - but they are
+	// configurable so a deployment can pick its own.
+	DemoEmail    string
+	DemoPassword string
+	// DemoResetInterval is how often the demo company is purged and reseeded.
+	// Everyone shares one company, so this is the main defence against a visitor
+	// leaving the data in a mess for the next one. Zero disables the timer and
+	// leaves resetting to the CLI.
+	DemoResetInterval time.Duration
 }
+
+// DemoConfigured reports whether this process is running as the demo
+// deployment.
+func (c Config) DemoConfigured() bool { return c.DemoMode }
 
 // UpdateConfigured reports whether a release catalog is available, i.e. whether
 // update checks can run.
@@ -136,6 +155,17 @@ func Load(getenv Getenv) (Config, error) {
 		UpdateAgentToken:        strings.TrimSpace(getenv("VARYAONE_UPDATE_AGENT_TOKEN")),
 		UpdateCatalogURLs:       splitList(getenv("VARYAONE_UPDATE_CATALOG_URL")),
 		UpdateArtifactPrefix:    strings.TrimSpace(getenv("VARYAONE_UPDATE_ARTIFACT_PREFIX")),
+		DemoMode:                strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_DEMO_MODE")), "true"),
+		DemoEmail:               valueOr(getenv("VARYAONE_DEMO_EMAIL"), "demo@varyaone.com"),
+		DemoPassword:            valueOr(getenv("VARYAONE_DEMO_PASSWORD"), "varyaone-demo-2026"),
+		DemoResetInterval:       2 * time.Hour,
+	}
+	if raw := strings.TrimSpace(getenv("VARYAONE_DEMO_RESET_INTERVAL")); raw != "" {
+		interval, parseErr := time.ParseDuration(raw)
+		if parseErr != nil || interval < 0 {
+			return Config{}, errors.New("VARYAONE_DEMO_RESET_INTERVAL must be a duration such as 2h (0 disables)")
+		}
+		cfg.DemoResetInterval = interval
 	}
 	masterKeyValue := strings.TrimSpace(getenv("VARYAONE_MASTER_KEY"))
 	if masterKeyValue == "" {

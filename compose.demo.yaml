@@ -1,0 +1,36 @@
+# Herkese acik tanitim (demo) katmani.
+#
+# Bu dosya tek basina kullanilmaz; her zaman compose.yaml ile birlikte:
+#   docker compose -p varyaone-demo -f compose.yaml -f compose.demo.yaml up -d
+#
+# UYARI: bu katman `demo` modunu acar. Demo modunda paylasilan tek ornek firma
+# duzenli araliklarla SILINIP yeniden kurulur (bkz. internal/demo). Bu yuzden
+# demo, gercek veri tutan kurulumla ayni veritabanini ASLA paylasmamalidir:
+# her zaman ayri bir compose projesi (-p varyaone-demo), ayri volume ve ayri
+# alt alan adi ile calistirin.
+#
+# Nasil calisir:
+#   * worker acilista ornek firmayi kurar ve VARYAONE_DEMO_RESET_INTERVAL
+#     araliginda (varsayilan 2 saat) sifirlar;
+#   * ziyaretci giris ekranindaki "Demoyu incele" ile parolasiz oturum acar;
+#   * disari dokunan ve demoyu herkes icin bozan islemler (yedek/geri yukleme,
+#     firma silme, kullanici & rol yonetimi, API belirteci, e-posta gonderimi)
+#     sunucu tarafinda reddedilir.
+
+# YAML capalari dosyalar arasinda tasinmaz; bu yuzden asagida yalnizca demo'ya
+# ozgu degiskenler tanimlanir - compose bunlari compose.yaml'daki ortak
+# ortam blogunun uzerine ekler.
+x-demo-environment: &demo-environment
+  VARYAONE_DEMO_MODE: "true"
+  VARYAONE_DEMO_EMAIL: ${VARYAONE_DEMO_EMAIL:-demo@varyaone.com}
+  VARYAONE_DEMO_PASSWORD: ${VARYAONE_DEMO_PASSWORD:-varyaone-demo-2026}
+  VARYAONE_DEMO_RESET_INTERVAL: ${VARYAONE_DEMO_RESET_INTERVAL:-2h}
+
+services:
+  api:
+    environment:
+      <<: *demo-environment
+
+  worker:
+    environment:
+      <<: *demo-environment

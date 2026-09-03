@@ -346,6 +346,11 @@ func (s *Service) Setup(ctx context.Context, input SetupInput, meta RequestMeta)
 }
 
 type companyProvisionInput struct {
+	// CompanyID pins the new company's identifier instead of generating one. It
+	// is used only by the demo tooling, which must recreate the same company
+	// after every reseed so links into the demo survive; every other caller
+	// leaves it empty and gets a fresh identifier.
+	CompanyID      string
 	LegalName      string
 	TradeName      string
 	EntityType     string
@@ -378,6 +383,9 @@ func provisionCompany(ctx context.Context, tx pgx.Tx, userID string, in companyP
 		WarehouseID:        ids[2],
 		TransitWarehouseID: ids[3],
 		RoleID:             ids[4],
+	}
+	if strings.TrimSpace(in.CompanyID) != "" {
+		res.CompanyID = strings.TrimSpace(in.CompanyID)
 	}
 	// The database guard only permits the system transit warehouse row while this
 	// setting is on. Keeping it local to the serializable transaction prevents a
@@ -473,7 +481,14 @@ func (s *Service) CreateCompany(ctx context.Context, session Session, input Crea
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	prov, err := provisionCompany(ctx, tx, session.User.ID, companyProvisionInput(input))
+	prov, err := provisionCompany(ctx, tx, session.User.ID, companyProvisionInput{
+		LegalName:      input.LegalName,
+		TradeName:      input.TradeName,
+		EntityType:     input.EntityType,
+		TaxNumber:      input.TaxNumber,
+		SectorPackages: input.SectorPackages,
+		Modules:        input.Modules,
+	})
 	if err != nil {
 		return Session{}, err
 	}

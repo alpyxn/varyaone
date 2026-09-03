@@ -4,6 +4,7 @@
   import { api, type APIError, type Company, type Session } from '$lib/api';
   import { FileDrop } from '$lib/components/varya/file-drop';
   import { ConfirmDialog } from '$lib/components/varya/confirm-dialog';
+  import DemoResetAction from '$lib/components/varya/demo/DemoResetAction.svelte';
 
   let session = $state<Session | null>(null);
   let company = $state<Company | null>(null);
@@ -161,6 +162,8 @@
     </div>
   {/if}
 {/if}
+
+<DemoResetAction />
 
 {#if company}
   <ConfirmDialog

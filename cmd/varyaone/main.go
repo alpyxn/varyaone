@@ -16,11 +16,13 @@ import (
 	_ "time/tzdata"
 
 	"github.com/alpyxn/varyaone/internal/backup"
+	"github.com/alpyxn/varyaone/internal/demo"
 	"github.com/alpyxn/varyaone/internal/platform/app"
 	"github.com/alpyxn/varyaone/internal/platform/config"
 	"github.com/alpyxn/varyaone/internal/platform/database"
 	"github.com/alpyxn/varyaone/internal/platform/desktop"
 	"github.com/alpyxn/varyaone/internal/platform/migrations"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
@@ -104,6 +106,11 @@ func run() error {
 		return app.RunServer(ctx, cfg, logger, servingPool, runner)
 	case "worker":
 		return app.RunWorker(ctx, cfg, logger, servingPool, runner)
+	case "demo":
+		if len(os.Args) != 3 {
+			return errors.New("usage: varyaone demo <seed|reset>")
+		}
+		return runDemo(ctx, cfg, logger, pool, os.Args[2])
 	case "migrate":
 		if len(os.Args) != 3 {
 			return errors.New("usage: varyaone migrate <up|status>")
@@ -130,7 +137,32 @@ func run() error {
 }
 
 func usageError() error {
-	return errors.New("usage: varyaone <server|worker|stack|service <ensure|repair|install|uninstall|start|stop|restart|status|wait-ready>|netmode <local|lan>|update-apply [--target v]|migrate up|migrate status|backup create <file>|backup restore <file>|backup verify <file>>")
+	return errors.New("usage: varyaone <server|worker|stack|service <ensure|repair|install|uninstall|start|stop|restart|status|wait-ready>|netmode <local|lan>|update-apply [--target v]|migrate up|migrate status|demo seed|demo reset|backup create <file>|backup restore <file>|backup verify <file>>")
+}
+
+// runDemo builds or rebuilds the shared showcase company. It refuses to run
+// unless the installation is explicitly configured as the demo deployment:
+// "reset" purges a company, and that must never be reachable by mistake on an
+// installation holding real data.
+func runDemo(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool, command string) error {
+	if !cfg.DemoConfigured() {
+		return errors.New("demo commands require VARYAONE_DEMO_MODE=true; refusing to run on a normal installation")
+	}
+	runner := demo.New(pool, demo.Options{
+		MaintenanceDSN: cfg.DatabaseURL,
+		MasterKey:      cfg.MasterKey,
+		Email:          cfg.DemoEmail,
+		Password:       cfg.DemoPassword,
+		Logger:         logger,
+	})
+	switch command {
+	case "seed":
+		return runner.Ensure(ctx)
+	case "reset":
+		return runner.Reset(ctx)
+	default:
+		return errors.New("usage: varyaone demo <seed|reset>")
+	}
 }
 
 func runBackup(ctx context.Context, cfg config.Config, logger *slog.Logger) error {

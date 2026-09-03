@@ -23,12 +23,15 @@ const csrfCookieName = "varyaone_csrf"
 type identityHandler struct {
 	service       *identity.Service
 	secureCookies bool
+	// demo is set only on the public showcase deployment; it gates the
+	// passwordless demo session endpoint.
+	demo *DemoRuntime
 }
 
 type sessionContextKey struct{}
 
-func mountIdentityRoutes(router chi.Router, service *identity.Service, secureCookies bool) {
-	handler := identityHandler{service: service, secureCookies: secureCookies}
+func mountIdentityRoutes(router chi.Router, service *identity.Service, secureCookies bool, demo *DemoRuntime) {
+	handler := identityHandler{service: service, secureCookies: secureCookies, demo: demo}
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Get("/setup", handler.setupStatus)
 		r.Post("/setup", handler.setup)
@@ -137,6 +140,28 @@ func (h identityHandler) login(w http.ResponseWriter, r *http.Request) {
 		h.setSessionCookies(w, session.Token, session.CSRFToken)
 		writeJSON(w, http.StatusOK, session)
 	}
+}
+
+// startDemoSession signs the visitor in to the shared showcase company without
+// asking for credentials. The route exists only when the installation is
+// configured as the demo, and the service layer refuses any company that is not
+// flagged is_demo.
+func (h identityHandler) startDemoSession(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeError(w, r, http.StatusForbidden, "CSRF_REJECTED", "İstek kaynağı doğrulanamadı.")
+		return
+	}
+	if h.demo == nil {
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "İstenen kaynak bulunamadı.")
+		return
+	}
+	session, err := h.service.StartDemoSession(r.Context(), h.demo.CompanyID, h.demo.UserID, requestMeta(r))
+	if err != nil {
+		writeError(w, r, http.StatusServiceUnavailable, "DEMO_UNAVAILABLE", "Demo şu anda hazır değil, birazdan tekrar deneyin.")
+		return
+	}
+	h.setSessionCookies(w, session.Token, session.CSRFToken)
+	writeJSON(w, http.StatusOK, session)
 }
 
 func (h identityHandler) requireSession(next http.Handler) http.Handler {

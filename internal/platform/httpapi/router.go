@@ -10,6 +10,7 @@ import (
 	"github.com/alpyxn/varyaone/internal/agenda"
 	"github.com/alpyxn/varyaone/internal/backup"
 	"github.com/alpyxn/varyaone/internal/dashboard"
+	"github.com/alpyxn/varyaone/internal/demo"
 	"github.com/alpyxn/varyaone/internal/email"
 	"github.com/alpyxn/varyaone/internal/exchange"
 	"github.com/alpyxn/varyaone/internal/finance"
@@ -113,6 +114,32 @@ type routerOptions struct {
 	spa             http.Handler
 	secureCookies   bool
 	scopePool       *pgxpool.Pool
+	// demo carries the identity of the shared showcase company when this
+	// installation runs as the public demo. It is nil for every normal
+	// installation, and the demo routes are then never mounted.
+	demo *DemoRuntime
+}
+
+// DemoRuntime gives the HTTP layer what it needs to serve the public showcase:
+// which company visitors are signed in to, and the runner that reports the
+// reset schedule and performs a rebuild.
+type DemoRuntime struct {
+	CompanyID string
+	UserID    string
+	Runner    *demo.Runner
+	// Email and Password are the shared demo account, handed to the login
+	// screen so it can present a filled-in form instead of asking a visitor for
+	// credentials they were never given. They are not secrets: demo mode
+	// already opens a session on this company without any password at all.
+	Email    string
+	Password string
+}
+
+// WithDemo mounts the demo endpoints for the public showcase deployment. Never
+// pass it on an installation holding real data: it opens a passwordless session
+// on the named company and exposes a button that wipes it.
+func WithDemo(runtime DemoRuntime) RouterOption {
+	return func(options *routerOptions) { options.demo = &runtime }
 }
 
 // WithSPA serves the embedded single-page frontend for every non-API GET/HEAD
@@ -287,9 +314,22 @@ func NewRouter(logger *slog.Logger, release string, readiness Readiness, options
 	router.Use(func(next http.Handler) http.Handler { return Recover(logger, next) })
 	router.Use(func(next http.Handler) http.Handler { return AccessLog(logger, next) })
 	router.Use(middleware.Timeout(30 * time.Second))
+	// The demo guard runs before every route: it refuses the operations the
+	// public showcase must not perform and answers "being rebuilt" during a
+	// reset. A normal installation never installs it.
+	var demoState *demoStateCache
+	if configuration.demo != nil && configuration.demo.Runner != nil {
+		// One cache shared by the guard and the endpoints, so a reset triggered
+		// through the API immediately shows up in the guard too.
+		demoState = newDemoStateCache(configuration.demo.Runner)
+		router.Use(demoGuard(demoState))
+	}
 	contract.HandlerFromMux(apiHandler{release: release, readiness: readiness}, router)
+	if demoState != nil && configuration.identity != nil {
+		mountDemoRoutes(router, configuration.identity, configuration.secureCookies, configuration.demo, demoState)
+	}
 	if configuration.identity != nil {
-		mountIdentityRoutes(router, configuration.identity, configuration.secureCookies)
+		mountIdentityRoutes(router, configuration.identity, configuration.secureCookies, configuration.demo)
 		mountModuleRoutes(router, configuration.identity)
 		if configuration.party != nil {
 			mountPartyRoutes(router, configuration.identity, configuration.party)

@@ -5,6 +5,7 @@
   import { api, type APIError, type Session } from '$lib/api';
   import { Button } from '$lib/components/ui/button';
   import AuthShell from '$lib/components/varya/auth/AuthShell.svelte';
+  import { demo } from '$lib/demo.svelte';
 
   let email = $state('');
   let password = $state('');
@@ -26,11 +27,34 @@
     location.reload();
   }
 
+  // On the public demo the visitor was never given credentials, so the form
+  // arrives filled in with the shared account and they only press the button.
+  // Anything they typed themselves wins - the demo installation still hosts
+  // ordinary accounts.
+  $effect(() => {
+    const credentials = demo.credentials;
+    if (!credentials) return;
+    if (!email) email = credentials.email;
+    if (!password) password = credentials.password;
+  });
+
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     busy = true;
     message = '';
     try {
+      // The demo's own account signs in through the passwordless endpoint. The
+      // password path would be wrong here twice over: every visitor shares one
+      // e-mail, so the login rate limiter would lock all of them out after a
+      // few stray attempts, and the form would break the moment the deployment
+      // changed its demo password. Anything the visitor typed themselves goes
+      // through the normal login.
+      if (demo.enabled && demo.isDemoAccount(email, password)) {
+        await demo.startSession();
+        await goto('/');
+        location.reload();
+        return;
+      }
       await login();
     } catch (error) {
       const failure = error as APIError;
@@ -96,7 +120,7 @@
       </label>
       <button class="auth-submit block" type="submit" disabled={busy}>
         <LogIn size={16} aria-hidden="true" />
-        {busy ? 'Kontrol ediliyor…' : 'Giriş yap'}
+        {busy ? 'Kontrol ediliyor…' : demo.enabled ? 'Demoya giriş yap' : 'Giriş yap'}
       </button>
     </form>
   </div>

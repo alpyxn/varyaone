@@ -319,36 +319,8 @@ func (s *Service) DeleteCompany(ctx context.Context, session Session, companyID,
 		return Session{}, err
 	}
 
-	// Every base table carrying a company_id column is company-scoped data that
-	// must go. Reading it from the catalogue also covers the per-document-type
-	// line tables that are created dynamically outside the migration DDL.
-	scopedTables, err := scanStrings(tx.Query(ctx, `
-		SELECT c.table_name
-		FROM information_schema.columns c
-		JOIN information_schema.tables t
-		  ON t.table_schema=c.table_schema AND t.table_name=c.table_name
-		WHERE c.table_schema='public' AND c.column_name='company_id'
-		  AND t.table_type='BASE TABLE'
-		ORDER BY c.table_name`))
-	if err != nil {
+	if err = purgeCompanyRows(ctx, tx, companyID); err != nil {
 		return Session{}, err
-	}
-
-	// replica mode disables FK enforcement and every user trigger for this
-	// transaction, so the purge below can run in a single pass in any order.
-	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
-		return Session{}, fmt.Errorf("enable maintenance mode: %w", err)
-	}
-	if _, err = tx.Exec(ctx, `UPDATE sessions SET current_company_id=NULL WHERE current_company_id=$1`, companyID); err != nil {
-		return Session{}, err
-	}
-	for _, table := range scopedTables {
-		if _, err = tx.Exec(ctx, `DELETE FROM `+pgx.Identifier{table}.Sanitize()+` WHERE company_id=$1`, companyID); err != nil {
-			return Session{}, fmt.Errorf("purge %s: %w", table, err)
-		}
-	}
-	if _, err = tx.Exec(ctx, `DELETE FROM companies WHERE id=$1`, companyID); err != nil {
-		return Session{}, fmt.Errorf("delete company: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `UPDATE sessions SET current_company_id=$1 WHERE id=$2`, fallbackID, session.ID); err != nil {
 		return Session{}, err
@@ -360,6 +332,44 @@ func (s *Service) DeleteCompany(ctx context.Context, session Session, companyID,
 		return Session{}, err
 	}
 	return s.Authenticate(ctx, session.Token)
+}
+
+// purgeCompanyRows deletes every row scoped to companyID and the company itself,
+// inside the caller's transaction on an owner/superuser connection.
+//
+// Every base table carrying a company_id column is company-scoped data that must
+// go. Reading that list from the catalogue also covers the per-document-type line
+// tables that are created dynamically outside the migration DDL.
+func purgeCompanyRows(ctx context.Context, tx pgx.Tx, companyID string) error {
+	scopedTables, err := scanStrings(tx.Query(ctx, `
+		SELECT c.table_name
+		FROM information_schema.columns c
+		JOIN information_schema.tables t
+		  ON t.table_schema=c.table_schema AND t.table_name=c.table_name
+		WHERE c.table_schema='public' AND c.column_name='company_id'
+		  AND t.table_type='BASE TABLE'
+		ORDER BY c.table_name`))
+	if err != nil {
+		return err
+	}
+
+	// replica mode disables FK enforcement and every user trigger for this
+	// transaction, so the purge below can run in a single pass in any order.
+	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		return fmt.Errorf("enable maintenance mode: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE sessions SET current_company_id=NULL WHERE current_company_id=$1`, companyID); err != nil {
+		return err
+	}
+	for _, table := range scopedTables {
+		if _, err = tx.Exec(ctx, `DELETE FROM `+pgx.Identifier{table}.Sanitize()+` WHERE company_id=$1`, companyID); err != nil {
+			return fmt.Errorf("purge %s: %w", table, err)
+		}
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM companies WHERE id=$1`, companyID); err != nil {
+		return fmt.Errorf("delete company: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) ListPermissions(ctx context.Context, session Session) ([]string, error) {

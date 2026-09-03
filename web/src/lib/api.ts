@@ -208,7 +208,23 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     init.signal?.removeEventListener('abort', abortFromCaller);
   }
   if (!response.ok) {
-    throw await responseError(response);
+    const error = await responseError(response);
+    // The public demo rebuilds itself on a timer; while that runs every API
+    // call is refused. One hook here lets the demo banner take over the screen
+    // instead of each page inventing its own error state.
+    if (error.code === 'DEMO_RESETTING') notifyDemoResetting();
+    throw error;
   }
   return (response.status === 204 ? undefined : await response.json()) as T;
+}
+
+let demoResettingHandler: (() => void) | null = null;
+
+/** Registers the handler called when the API reports the demo is rebuilding. */
+export function onDemoResetting(handler: (() => void) | null) {
+  demoResettingHandler = handler;
+}
+
+function notifyDemoResetting() {
+  demoResettingHandler?.();
 }

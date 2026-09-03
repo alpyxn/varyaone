@@ -3,9 +3,11 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { api, APIRequestError } from '$lib/api';
+  import { api, APIRequestError, type Session } from '$lib/api';
   import { AppShell } from '$lib/components/varya/app-shell';
+  import DemoResetCurtain from '$lib/components/varya/demo/DemoResetCurtain.svelte';
   import Logo from '$lib/components/varya/Logo.svelte';
+  import { demo, watchDemoResets } from '$lib/demo.svelte';
 
   let { children } = $props();
 
@@ -38,11 +40,20 @@
       }
 
       try {
-        await api('/session');
+        const session = await api<Session>('/session');
+        // A demo reset deletes the company its visitors were working in and
+        // builds a new one; their sessions survive but point at nothing. Left
+        // alone that renders an empty shell with no company selected, so put
+        // them back into the rebuilt demo instead.
+        if (demo.enabled && !session.current_company_id && (await demo.resume())) return;
         // Already signed in: skip the login screen.
         if (path === '/giris') await goto('/', { replaceState: true });
       } catch (error) {
         const status = error instanceof APIRequestError ? error.status : 0;
+        // No auto sign-in here: a visitor with no session belongs on the login
+        // screen, where the demo account is already filled in for them. Only a
+        // session left company-less by a reset (handled above) is recovered
+        // silently.
         if (!path.startsWith('/giris') && (status === 401 || status === 403 || status === 0)) {
           await goto('/giris', { replaceState: true });
         }
@@ -54,7 +65,17 @@
     }
   }
 
-  onMount(enforceAccess);
+  onMount(() => {
+    void (async () => {
+      // Ask once whether this installation is the public demo; on every normal
+      // installation the answer is no and nothing below changes. The access
+      // check waits for the answer, because on the demo an expired session is
+      // recoverable rather than a reason to show the login screen.
+      await demo.load();
+      watchDemoResets();
+      await enforceAccess();
+    })();
+  });
 </script>
 
 <svelte:head>
@@ -73,6 +94,10 @@
 {:else}
   <AppShell>{@render children()}</AppShell>
 {/if}
+
+<!-- Only the rebuild curtain is app-wide; the demo's information card lives at
+     the bottom of the company settings page. -->
+<DemoResetCurtain />
 
 <style>
   .boot-splash {
