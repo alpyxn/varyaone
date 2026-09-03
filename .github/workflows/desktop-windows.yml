@@ -250,11 +250,15 @@ jobs:
           artifact_prefix="https://github.com/${repo}/releases/download"
           sha256="$(cut -d' ' -f1 "dist/windows/varyaone-${version}-windows-amd64.zip.sha256")"
           published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # The tag's own annotation becomes the release notes. `%(contents)`
-          # on a lightweight tag (workflow_dispatch dry-runs, or a plain
-          # `git tag`) returns the commit message instead, so read the tag
-          # object explicitly and fall back to an empty - valid, if terse -
-          # notes_md when the ref is not an annotated tag.
+          # The tag's own annotation becomes the release notes. actions/checkout
+          # leaves refs/tags/<v> pointing at the commit even with fetch-tags, so
+          # the annotation is not in the work tree until it is fetched by name -
+          # without this, %(contents) yields the commit message (lightweight
+          # ref) and the release ships the wrong notes. A lightweight tag
+          # (workflow_dispatch dry-runs, or a plain `git tag`) still yields an
+          # empty - valid, if terse - notes_md.
+          git fetch --force --no-recurse-submodules origin \
+            "refs/tags/${version}:refs/tags/${version}" || true
           notes_md=""
           if [ "$(git cat-file -t "refs/tags/${version}" 2>/dev/null || true)" = "tag" ]; then
             notes_md="$(git for-each-ref "refs/tags/${version}" --format='%(contents)')"
