@@ -154,18 +154,24 @@ func (PayrollCalculator) Calculate(ctx Context) (Result, error) {
 	result.EmployeeSGK = q(mul(result.SGKBase, empSGKRate))
 	result.EmployeeUnemployment = q(mul(result.SGKBase, empUnempRate))
 
+	// The minimum-wage income-tax and stamp-tax exemptions track the employee's
+	// paid days: a half-worked month earns half the monthly exemption, exactly
+	// as it earns half the wage. dayRatio is 1 for a full month.
+	dayRatio := dayRatioOf(ctx)
+	minimumGross := q(mul(ctx.Pack.MinimumMonthlyGross, dayRatio))
+
 	result.IncomeTaxBase = q(nonNegative(incomeTaxIncluded.Sub(result.EmployeeSGK).Sub(result.EmployeeUnemployment)))
 	currentTax := progressiveDelta(ctx.PriorCumulativeTaxBase, result.IncomeTaxBase, ctx.Pack.IncomeTaxBrackets)
 	result.IncomeTaxBeforeExempt = q(currentTax)
-	minimumTaxable := q(nonNegative(ctx.Pack.MinimumMonthlyGross.Sub(
-		q(mul(ctx.Pack.MinimumMonthlyGross, ctx.ContributionScheme.EmployeeSGKRate))).Sub(
-		q(mul(ctx.Pack.MinimumMonthlyGross, ctx.ContributionScheme.EmployeeUnemploymentRate)))))
+	minimumTaxable := q(nonNegative(minimumGross.Sub(
+		q(mul(minimumGross, ctx.ContributionScheme.EmployeeSGKRate))).Sub(
+		q(mul(minimumGross, ctx.ContributionScheme.EmployeeUnemploymentRate)))))
 	minimumExemption := q(progressiveDelta(ctx.MinimumWagePriorBase, minimumTaxable, ctx.Pack.IncomeTaxBrackets))
 	result.IncomeTaxExemption = min(result.IncomeTaxBeforeExempt, minimumExemption)
 	result.IncomeTax = q(result.IncomeTaxBeforeExempt.Sub(result.IncomeTaxExemption))
 
 	result.StampTaxBeforeExempt = q(mul(stampIncluded, ctx.Pack.StampTaxRate))
-	minimumStampBase := min(baseWage, ctx.Pack.MinimumMonthlyGross)
+	minimumStampBase := min(baseWage, minimumGross)
 	result.StampTaxExemption = min(result.StampTaxBeforeExempt, q(mul(minimumStampBase, ctx.Pack.StampTaxRate)))
 	result.StampTax = q(result.StampTaxBeforeExempt.Sub(result.StampTaxExemption))
 
@@ -178,10 +184,35 @@ func (PayrollCalculator) Calculate(ctx Context) (Result, error) {
 	result.EmployerUnemployment = q(mul(result.SGKBase, erUnempRate))
 	result.EmployerContributions = q(result.EmployerSGK.Add(result.EmployerUnemployment))
 	result.EmployerCost = q(result.Gross.Add(result.EmployerContributions))
-	if difference(result.Gross.Sub(result.TotalDeductions), result.Net).Cmp(decimal("0.01")) > 0 {
+	// Reconcile the itemised component rows against the headline totals. This is
+	// the check that a rendered payslip depends on: every earning row must add up
+	// to Gross, and every deduction row plus the statutory levies to
+	// TotalDeductions.
+	earningSum, deductionSum := zero(), zero()
+	for _, component := range result.Components {
+		switch component.Kind {
+		case "EARNING":
+			earningSum = earningSum.Add(component.Amount)
+		case "DEDUCTION":
+			deductionSum = deductionSum.Add(component.Amount)
+		}
+	}
+	deductionSum = deductionSum.Add(result.EmployeeSGK).Add(result.EmployeeUnemployment).Add(result.IncomeTax).Add(result.StampTax)
+	if difference(earningSum, result.Gross).Cmp(decimal("0.01")) > 0 ||
+		difference(deductionSum, result.TotalDeductions).Cmp(decimal("0.01")) > 0 ||
+		difference(result.Gross.Sub(result.TotalDeductions), result.Net).Cmp(decimal("0.01")) > 0 {
 		return Result{}, calculationError(ErrReconciliation, "", "", "bordro bileşenleri uzlaştırılamadı")
 	}
 	return result, nil
+}
+
+// dayRatioOf is the fraction of a 30-day month the employee is paid for, capped
+// at 1. A full month, or an unprorated month with no day information, is 1.
+func dayRatioOf(ctx Context) money.Decimal {
+	if ctx.FullMonth || ctx.PaidDays.Cmp(integer(30)) >= 0 {
+		return one()
+	}
+	return div(ctx.PaidDays, integer(30), 12)
 }
 
 // Preview estimates a single, standalone month of payroll for either a target

@@ -247,6 +247,9 @@ func (s *Service) Assign(ctx context.Context, session identity.Session, assetID 
 	if err != nil {
 		return Record{}, fmt.Errorf("%w: zimmet tarihi geçersiz", identity.ErrValidation)
 	}
+	if isFuture(assignedAt) {
+		return Record{}, fmt.Errorf("%w: zimmet tarihi ileri tarihli olamaz", identity.ErrValidation)
+	}
 	if input.EmployeeID == "" {
 		return Record{}, fmt.Errorf("%w: çalışan zorunlu", identity.ErrValidation)
 	}
@@ -266,12 +269,19 @@ func (s *Service) Assign(ctx context.Context, session identity.Session, assetID 
 	if err != nil {
 		return Record{}, err
 	}
-	var employeeExists bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM employees WHERE company_id=$1 AND id=NULLIF($2,'')::uuid)`, session.CurrentCompanyID, input.EmployeeID).Scan(&employeeExists); err != nil {
+	// Custody may only be handed to someone still on the payroll: assigning to a
+	// terminated employee leaves the asset with nobody to return it.
+	var employeeStatus string
+	err = tx.QueryRow(ctx, `SELECT status FROM employees WHERE company_id=$1 AND id=NULLIF($2,'')::uuid`,
+		session.CurrentCompanyID, input.EmployeeID).Scan(&employeeStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Record{}, ErrEmployeeGone
+	}
+	if err != nil {
 		return Record{}, err
 	}
-	if !employeeExists {
-		return Record{}, ErrEmployeeGone
+	if employeeStatus != "ACTIVE" {
+		return Record{}, fmt.Errorf("%w: aktif olmayan çalışana zimmet verilemez", identity.ErrValidation)
 	}
 
 	var hasActive bool
@@ -314,6 +324,9 @@ func (s *Service) Return(ctx context.Context, session identity.Session, assetID,
 	returnedAt, err := parseTime(input.ReturnedAt)
 	if err != nil {
 		return Record{}, fmt.Errorf("%w: iade tarihi geçersiz", identity.ErrValidation)
+	}
+	if isFuture(returnedAt) {
+		return Record{}, fmt.Errorf("%w: iade tarihi ileri tarihli olamaz", identity.ErrValidation)
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -481,6 +494,12 @@ func parseTime(value string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, errors.New("invalid time")
+}
+
+// isFuture allows the rest of today (a date-only input parses to midnight UTC,
+// and a client a few hours ahead must still be able to file today's paperwork).
+func isFuture(value time.Time) bool {
+	return value.After(time.Now().UTC().Add(24 * time.Hour))
 }
 
 func returnedFlag(alreadyReturned bool) *time.Time {

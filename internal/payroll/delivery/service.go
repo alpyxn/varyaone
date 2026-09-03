@@ -273,28 +273,20 @@ func (s *Service) buildSnapshot(ctx context.Context, companyID, employeePayrollI
 		companyLegal            string
 		companyLogo             *string
 		paidDays, sgkDays       *string
-		termGross, termPeriod   *string
+		employeeSnapshot        []byte
 	)
 	err := s.pool.QueryRow(ctx, `SELECT ep.status,ep.employee_input_checksum,r.run_number,to_char(r.payment_date,'DD.MM.YYYY'),r.period_year,r.period_month,
  COALESCE(ep.gross,0)::text,COALESCE(ep.total_deductions,0)::text,COALESCE(ep.net,0)::text,
  e.employee_code,e.first_name||' '||e.last_name,e.position_title,c.legal_name,c.logo,
- ep.paid_days::text,ep.sgk_days::text,wt.gross_wage::text,wt.wage_period
+ ep.paid_days::text,ep.sgk_days::text,ep.employee_snapshot
  FROM employee_payrolls ep
  JOIN payroll_runs r ON r.company_id=ep.company_id AND r.id=ep.payroll_run_id
  JOIN employees e ON e.company_id=ep.company_id AND e.id=ep.employee_id
  JOIN companies c ON c.id=ep.company_id
- LEFT JOIN LATERAL (
-   SELECT term.gross_wage,term.wage_period
-   FROM employment_terms term
-   JOIN employments emp ON emp.company_id=term.company_id AND emp.id=term.employment_id
-   WHERE term.company_id=ep.company_id AND emp.employee_id=ep.employee_id
-     AND daterange(term.effective_from,COALESCE(term.effective_to,'infinity'::date),'[]') @> make_date(r.period_year,r.period_month,1)
-   ORDER BY term.effective_from DESC LIMIT 1
- ) wt ON true
  WHERE ep.company_id=$1 AND ep.id=NULLIF($2,'')::uuid`, companyID, employeePayrollID).
 		Scan(&status, &checksum, &runNumber, &paymentDate, &periodYear, &periodMonth,
 			&gross, &totalDeductions, &net, &empCode, &empName, &position, &companyLegal, &companyLogo,
-			&paidDays, &sgkDays, &termGross, &termPeriod)
+			&paidDays, &sgkDays, &employeeSnapshot)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return payslip.Snapshot{}, "", "", ErrPayslipNotFound
 	}
@@ -354,12 +346,19 @@ func (s *Service) buildSnapshot(ctx context.Context, companyID, employeePayrollI
 	if v := derefStr(sgkDays); v != "" {
 		work = append(work, payslip.KeyValue{Label: "SGK Prim Gün Sayısı", Value: trimZeros(v)})
 	}
+	// The contractual wage comes from the snapshot frozen at calculation time. A
+	// later raise must not rewrite a payslip that was already issued.
+	var terms struct {
+		GrossWage  string `json:"gross_wage"`
+		WagePeriod string `json:"wage_period"`
+	}
+	_ = json.Unmarshal(employeeSnapshot, &terms)
 	wageType, monthlyGross := "", ""
-	if derefStr(termPeriod) == "MONTHLY" {
+	if terms.WagePeriod == "MONTHLY" {
 		wageType = "Aylık"
 	}
-	if v := derefStr(termGross); v != "" && centsOf(v) > 0 {
-		monthlyGross = formatTRY(v)
+	if centsOf(terms.GrossWage) > 0 {
+		monthlyGross = formatTRY(terms.GrossWage)
 	}
 
 	snapshot := payslip.Snapshot{
@@ -828,14 +827,28 @@ func (s *Service) SendEmailBatch(ctx context.Context, session identity.Session, 
 	if err != nil {
 		return EmailBatchResult{}, err
 	}
+	// A resend re-sends the payslips that already went out, but it does not get
+	// to skip the recipient checks: an address that has since become invalid, or
+	// that is now shared with a second employee, must not receive a payslip.
 	preview := BuildPreview(candidates)
 	ready := map[string]bool{}
 	for _, id := range preview.Ready {
 		ready[id] = true
 	}
+	if isResend {
+		for _, id := range preview.AlreadySent {
+			ready[id] = true
+		}
+		for _, id := range append(append(append([]string{}, preview.Missing...), preview.Invalid...), preview.Duplicate...) {
+			delete(ready, id)
+		}
+		for _, id := range preview.MissingPayslip {
+			delete(ready, id)
+		}
+	}
 	sendable := []Candidate{}
 	for _, c := range candidates {
-		if ready[c.EmployeeID] || (isResend && c.AlreadySent) {
+		if ready[c.EmployeeID] {
 			sendable = append(sendable, c)
 		}
 	}
@@ -844,26 +857,25 @@ func (s *Service) SendEmailBatch(ctx context.Context, session identity.Session, 
 	}
 
 	batchID := uuid.NewString()
-	idempotencyKey := runID + ":" + time.Now().UTC().Format("20060102T150405")
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return EmailBatchResult{}, err
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	if _, err = tx.Exec(ctx, `INSERT INTO payroll_email_batches(id,company_id,payroll_run_id,idempotency_key,status,is_resend,requested_by)
+	idempotencyKey := runID + ":" + batchID
+	if _, err = s.pool.Exec(ctx, `INSERT INTO payroll_email_batches(id,company_id,payroll_run_id,idempotency_key,status,is_resend,requested_by)
  VALUES($1,$2,NULLIF($3,'')::uuid,$4,'RUNNING',$5,$6)`,
 		batchID, session.CurrentCompanyID, runID, idempotencyKey, isResend, session.User.ID); err != nil {
 		return EmailBatchResult{}, err
 	}
+
+	// Every SMTP call happens outside a transaction and each delivery is recorded
+	// on its own. Sending inside one long transaction meant a failure part-way
+	// through rolled back the record of e-mails that had physically been sent,
+	// and the next attempt mailed every payslip a second time.
 	result := EmailBatchResult{BatchID: batchID, Preview: preview}
 	for _, c := range sendable {
-		deliveryID := uuid.NewString()
 		vars := candidateVariables(c, runMeta)
 		renderedSubject := email.RenderText(subject, vars)
-		pdf, err := s.payslipBytes(ctx, session.CurrentCompanyID, c.PayslipID)
+		pdf, perr := s.payslipBytes(ctx, session.CurrentCompanyID, c.PayslipID)
 		outcome := email.PermanentFailure
 		var smtpCode int
-		if err == nil {
+		if perr == nil {
 			smtpCode, outcome = email.Send(settings, password, email.Message{
 				To:       strings.ToLower(strings.TrimSpace(c.PayrollEmail)),
 				ToName:   c.EmployeeName,
@@ -877,11 +889,13 @@ func (s *Service) SendEmailBatch(ctx context.Context, session identity.Session, 
 			})
 		}
 		status, errCode := email.DeliveryStatus(outcome)
-		if _, err = tx.Exec(ctx, `INSERT INTO payroll_email_deliveries(id,company_id,batch_id,employee_payroll_id,payslip_id,recipient_snapshot,subject_snapshot,status,attempt_count,smtp_response_code,error_code,sent_at)
+		// context.WithoutCancel: the mail is already out the door, so the record
+		// of it must be written even if the caller has gone away.
+		if _, derr := s.pool.Exec(context.WithoutCancel(ctx), `INSERT INTO payroll_email_deliveries(id,company_id,batch_id,employee_payroll_id,payslip_id,recipient_snapshot,subject_snapshot,status,attempt_count,smtp_response_code,error_code,sent_at)
  VALUES($1,$2,$3,NULLIF($4,'')::uuid,NULLIF($5,'')::uuid,$6,$7,$8,1,$9,$10,CASE WHEN $8='SENT' THEN now() ELSE NULL END)`,
-			deliveryID, session.CurrentCompanyID, batchID, c.EmployeePayrollID, c.PayslipID,
-			strings.ToLower(strings.TrimSpace(c.PayrollEmail)), renderedSubject, status, nullInt(smtpCode), nullString(errCode)); err != nil {
-			return EmailBatchResult{}, err
+			uuid.NewString(), session.CurrentCompanyID, batchID, c.EmployeePayrollID, c.PayslipID,
+			strings.ToLower(strings.TrimSpace(c.PayrollEmail)), renderedSubject, status, nullInt(smtpCode), nullString(errCode)); derr != nil {
+			return EmailBatchResult{}, derr
 		}
 		switch status {
 		case "SENT":
@@ -892,16 +906,23 @@ func (s *Service) SendEmailBatch(ctx context.Context, session identity.Session, 
 			result.Failed++
 		}
 	}
+
 	batchStatus := "COMPLETED"
 	if result.Sent == 0 {
 		batchStatus = "FAILED"
 	}
-	if _, err = tx.Exec(ctx, `UPDATE payroll_email_batches SET status=$2,completed_at=now() WHERE company_id=$1 AND id=$3`,
+	closeCtx := context.WithoutCancel(ctx)
+	tx, err := s.pool.Begin(closeCtx)
+	if err != nil {
+		return EmailBatchResult{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(closeCtx)) }()
+	if _, err = tx.Exec(closeCtx, `UPDATE payroll_email_batches SET status=$2,completed_at=now() WHERE company_id=$1 AND id=$3`,
 		session.CurrentCompanyID, batchStatus, batchID); err != nil {
 		return EmailBatchResult{}, err
 	}
-	_ = writeEvent(ctx, tx, session, meta, "PAYROLL_EMAIL_BATCH_SENT", "hr.payroll_email.sent", runID)
-	if err = tx.Commit(ctx); err != nil {
+	_ = writeEvent(closeCtx, tx, session, meta, "PAYROLL_EMAIL_BATCH_SENT", "hr.payroll_email.sent", runID)
+	if err = tx.Commit(closeCtx); err != nil {
 		return EmailBatchResult{}, err
 	}
 	result.Status = batchStatus

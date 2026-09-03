@@ -204,7 +204,7 @@ func (s *Service) Generate(ctx context.Context, session identity.Session, period
 	}
 
 	for _, emp := range employees {
-		schedule, scheduleVersionID, err := s.loadSchedule(ctx, session.CurrentCompanyID, emp.EmployeeID, monthStart)
+		schedule, scheduleVersionID, err := s.loadSchedule(ctx, session.CurrentCompanyID, emp.EmployeeID, monthStart, monthEnd)
 		if err != nil {
 			return Period{}, err
 		}
@@ -290,13 +290,21 @@ func (s *Service) UpdateDay(ctx context.Context, session identity.Session, perio
 // state the UI works with; Minutes optionally overrides the day length,
 // otherwise the work schedule (or a full 8h day) is used.
 type DayUpsertInput struct {
-	EmployeeID  string  `json:"employee_id"`
-	WorkDate    string  `json:"work_date"`
-	Kind        string  `json:"kind"`
-	Minutes     int     `json:"minutes"`
-	Explanation string  `json:"explanation"`
-	LeaveTypeID *string `json:"leave_type_id,omitempty"`
+	EmployeeID string `json:"employee_id"`
+	WorkDate   string `json:"work_date"`
+	Kind       string `json:"kind"`
+	Minutes    int    `json:"minutes"`
+	// OvertimeMinutes is optional. Omitted (nil) keeps whatever overtime the day
+	// already carries; a value replaces it. Overtime is always cleared on a day
+	// the employee was not present.
+	OvertimeMinutes *int    `json:"overtime_minutes,omitempty"`
+	Explanation     string  `json:"explanation"`
+	LeaveTypeID     *string `json:"leave_type_id,omitempty"`
 }
+
+// absentDayKinds are the states where the employee did not work, so any overtime
+// recorded on the day is meaningless and gets cleared.
+var absentDayKinds = map[string]bool{"PAID_LEAVE": true, "UNPAID_LEAVE": true, "ABSENT": true, "WEEK_REST": true}
 
 var dayKinds = map[string]bool{
 	"WORKED": true, "HALF_DAY": true, "PAID_LEAVE": true, "UNPAID_LEAVE": true,
@@ -321,7 +329,11 @@ func bucketsForKind(kind string, planned int, leaveTypeID string) DayInput {
 	case "ABSENT":
 		d.AbsenceMinutes = planned
 	case "WEEK_REST":
-		// no paid minutes on a rest day
+		// Weekly rest is a paid day for a monthly-salaried employee: it accrues
+		// salary and an SGK day, so it must carry minutes. A day left at zero
+		// across every bucket reads as "unrecorded" to payroll and silently
+		// prorates the month's wage down.
+		d.WeekRestMinutes = planned
 	}
 	if leaveDayKinds[kind] && leaveTypeID != "" {
 		d.LeaveTypeID = &leaveTypeID
@@ -360,13 +372,17 @@ func (s *Service) UpsertDay(ctx context.Context, session identity.Session, perio
 			return Period{}, fmt.Errorf("%w: izin günü için izin türü zorunlu", identity.ErrValidation)
 		}
 		var treatment string
-		err := s.pool.QueryRow(ctx, `SELECT payroll_treatment FROM leave_types WHERE company_id=$1 AND id=NULLIF($2,'')::uuid`,
-			session.CurrentCompanyID, leaveTypeID).Scan(&treatment)
+		var active bool
+		err := s.pool.QueryRow(ctx, `SELECT payroll_treatment,is_active FROM leave_types WHERE company_id=$1 AND id=NULLIF($2,'')::uuid`,
+			session.CurrentCompanyID, leaveTypeID).Scan(&treatment, &active)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Period{}, fmt.Errorf("%w: izin türü bulunamadı", identity.ErrValidation)
 		}
 		if err != nil {
 			return Period{}, err
+		}
+		if !active {
+			return Period{}, fmt.Errorf("%w: pasif izin türü puantajda kullanılamaz", identity.ErrValidation)
 		}
 		wantUnpaid := treatment == "UNPAID"
 		if wantUnpaid != (kind == "UNPAID_LEAVE") {
@@ -383,7 +399,7 @@ func (s *Service) UpsertDay(ctx context.Context, session identity.Session, perio
 			session.CurrentCompanyID, periodID, input.EmployeeID, input.WorkDate).Scan(&planned)
 	}
 	if planned <= 0 {
-		if sched, _, serr := s.loadSchedule(ctx, session.CurrentCompanyID, input.EmployeeID, date); serr == nil {
+		if sched, _, serr := s.loadSchedule(ctx, session.CurrentCompanyID, input.EmployeeID, date, date); serr == nil {
 			planned = sched[date.Weekday()].PlannedMinutes
 		}
 	}
@@ -395,22 +411,39 @@ func (s *Service) UpsertDay(ctx context.Context, session identity.Session, perio
 	}
 	d := bucketsForKind(kind, planned, leaveTypeID)
 
+	// overtime: nil keeps the stored value, a value replaces it, and a day the
+	// employee was absent for never keeps any.
+	insertOvertime, updateOvertime := "0", "timesheet_days.overtime_minutes"
+	args := []any{
+		uuid.NewString(), session.CurrentCompanyID, periodID, input.EmployeeID, input.WorkDate,
+		planned, d.WorkedMinutes, d.PaidLeaveMinutes, d.UnpaidLeaveMinutes, d.WeekRestMinutes,
+		d.PublicHolidayMinutes, d.AbsenceMinutes, strings.TrimSpace(input.Explanation), leaveTypeID,
+	}
+	switch {
+	case absentDayKinds[kind]:
+		updateOvertime = "0"
+	case input.OvertimeMinutes != nil:
+		if *input.OvertimeMinutes < 0 || *input.OvertimeMinutes > 1440 {
+			return Period{}, fmt.Errorf("%w: fazla mesai dakikası 0-1440 aralığında olmalı", identity.ErrValidation)
+		}
+		insertOvertime, updateOvertime = "$15", "$15"
+		args = append(args, *input.OvertimeMinutes)
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Period{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	if _, err = tx.Exec(ctx, `INSERT INTO timesheet_days(id,company_id,period_id,employee_id,work_date,source,
- planned_minutes,worked_minutes,paid_leave_minutes,unpaid_leave_minutes,week_rest_minutes,public_holiday_minutes,absence_minutes,explanation,leave_type_id)
- VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5::date,'MANUAL',$6,$7,$8,$9,$10,$11,$12,$13,NULLIF($14,'')::uuid)
+ planned_minutes,worked_minutes,paid_leave_minutes,unpaid_leave_minutes,week_rest_minutes,public_holiday_minutes,absence_minutes,explanation,leave_type_id,overtime_minutes)
+ VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5::date,'MANUAL',$6,$7,$8,$9,$10,$11,$12,$13,NULLIF($14,'')::uuid,`+insertOvertime+`)
  ON CONFLICT (company_id,period_id,employee_id,work_date) DO UPDATE SET source='MANUAL',
  planned_minutes=EXCLUDED.planned_minutes,worked_minutes=EXCLUDED.worked_minutes,paid_leave_minutes=EXCLUDED.paid_leave_minutes,
  unpaid_leave_minutes=EXCLUDED.unpaid_leave_minutes,week_rest_minutes=EXCLUDED.week_rest_minutes,
  public_holiday_minutes=EXCLUDED.public_holiday_minutes,absence_minutes=EXCLUDED.absence_minutes,leave_type_id=EXCLUDED.leave_type_id,
- overtime_minutes=0,explanation=EXCLUDED.explanation,updated_at=now(),version=timesheet_days.version+1`,
-		uuid.NewString(), session.CurrentCompanyID, periodID, input.EmployeeID, input.WorkDate,
-		planned, d.WorkedMinutes, d.PaidLeaveMinutes, d.UnpaidLeaveMinutes, d.WeekRestMinutes, d.PublicHolidayMinutes, d.AbsenceMinutes,
-		strings.TrimSpace(input.Explanation), leaveTypeID); err != nil {
+ overtime_minutes=`+updateOvertime+`,explanation=EXCLUDED.explanation,updated_at=now(),version=timesheet_days.version+1`,
+		args...); err != nil {
 		return Period{}, mapConstraint(err)
 	}
 	if err = writeEvent(ctx, tx, session, meta, "TIMESHEET_DAY_UPDATED", "hr.timesheet_day.updated", periodID); err != nil {
@@ -552,14 +585,34 @@ func (s *Service) loadEmployments(ctx context.Context, companyID string, monthSt
 	return spans, rows.Err()
 }
 
-func (s *Service) loadSchedule(ctx context.Context, companyID, employeeID string, monthStart time.Time) (map[time.Weekday]ScheduleDay, string, error) {
+// DefaultSchedule is the work plan used for an employee who has no schedule
+// assignment covering the period: Monday-Friday 8h, Saturday/Sunday weekly rest.
+// Generating a month with an empty schedule would leave every day at zero
+// minutes, which payroll reads as "no paid days" and pays out as zero — so a
+// missing assignment falls back here instead of producing an empty month.
+func DefaultSchedule() map[time.Weekday]ScheduleDay {
+	return map[time.Weekday]ScheduleDay{
+		time.Monday:    {PlannedMinutes: 480},
+		time.Tuesday:   {PlannedMinutes: 480},
+		time.Wednesday: {PlannedMinutes: 480},
+		time.Thursday:  {PlannedMinutes: 480},
+		time.Friday:    {PlannedMinutes: 480},
+	}
+}
+
+// loadSchedule resolves the work plan covering any part of [from,to]. It never
+// returns an empty schedule: with no assignment (or an assignment whose template
+// has no version or no days) it falls back to DefaultSchedule.
+func (s *Service) loadSchedule(ctx context.Context, companyID, employeeID string, from, to time.Time) (map[time.Weekday]ScheduleDay, string, error) {
+	fromText, toText := from.Format("2006-01-02"), to.Format("2006-01-02")
 	var templateID string
 	err := s.pool.QueryRow(ctx, `SELECT template_id::text FROM employee_schedule_assignments
  WHERE company_id=$1 AND employee_id=NULLIF($2,'')::uuid
-   AND daterange(effective_from,COALESCE(effective_to,'infinity'::date),'[]') @> $3::date LIMIT 1`,
-		companyID, employeeID, monthStart.Format("2006-01-02")).Scan(&templateID)
+   AND daterange(effective_from,COALESCE(effective_to,'infinity'::date),'[]') && daterange($3::date,$4::date,'[]')
+ ORDER BY effective_from DESC LIMIT 1`,
+		companyID, employeeID, fromText, toText).Scan(&templateID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return map[time.Weekday]ScheduleDay{}, "", nil
+		return DefaultSchedule(), "", nil
 	}
 	if err != nil {
 		return nil, "", err
@@ -567,10 +620,11 @@ func (s *Service) loadSchedule(ctx context.Context, companyID, employeeID string
 	var versionID string
 	err = s.pool.QueryRow(ctx, `SELECT id::text FROM work_schedule_template_versions
  WHERE company_id=$1 AND template_id=NULLIF($2,'')::uuid
-   AND daterange(effective_from,COALESCE(effective_to,'infinity'::date),'[]') @> $3::date LIMIT 1`,
-		companyID, templateID, monthStart.Format("2006-01-02")).Scan(&versionID)
+   AND daterange(effective_from,COALESCE(effective_to,'infinity'::date),'[]') && daterange($3::date,$4::date,'[]')
+ ORDER BY effective_from DESC LIMIT 1`,
+		companyID, templateID, fromText, toText).Scan(&versionID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return map[time.Weekday]ScheduleDay{}, "", nil
+		return DefaultSchedule(), "", nil
 	}
 	if err != nil {
 		return nil, "", err
@@ -592,7 +646,7 @@ func (s *Service) loadSchedule(ctx context.Context, companyID, employeeID string
 }
 
 func (s *Service) loadManualDays(ctx context.Context, tx pgx.Tx, companyID, periodID, employeeID string) ([]Day, error) {
-	rows, err := tx.Query(ctx, `SELECT to_char(work_date,'YYYY-MM-DD'),planned_minutes,worked_minutes,paid_leave_minutes,unpaid_leave_minutes,public_holiday_minutes
+	rows, err := tx.Query(ctx, `SELECT to_char(work_date,'YYYY-MM-DD'),planned_minutes,worked_minutes,paid_leave_minutes,unpaid_leave_minutes,public_holiday_minutes,week_rest_minutes
  FROM timesheet_days WHERE company_id=$1 AND period_id=NULLIF($2,'')::uuid AND employee_id=NULLIF($3,'')::uuid AND source='MANUAL'`,
 		companyID, periodID, employeeID)
 	if err != nil {
@@ -603,7 +657,7 @@ func (s *Service) loadManualDays(ctx context.Context, tx pgx.Tx, companyID, peri
 	for rows.Next() {
 		var d Day
 		d.Source = "MANUAL"
-		if err := rows.Scan(&d.Date, &d.PlannedMinutes, &d.WorkedMinutes, &d.PaidLeaveMinutes, &d.UnpaidLeaveMinutes, &d.PublicHolidayMinutes); err != nil {
+		if err := rows.Scan(&d.Date, &d.PlannedMinutes, &d.WorkedMinutes, &d.PaidLeaveMinutes, &d.UnpaidLeaveMinutes, &d.PublicHolidayMinutes, &d.WeekRestMinutes); err != nil {
 			return nil, err
 		}
 		days = append(days, d)

@@ -532,6 +532,9 @@ func writePayrollRunError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, http.StatusConflict, "PAYROLL_JOB_IN_PROGRESS", "Bu run için bir hesaplama zaten sürüyor.")
 	case errors.Is(err, payrollrun.ErrNoActiveGeneration):
 		writeError(w, r, http.StatusConflict, "PAYROLL_ACTIVE_GENERATION_NOT_FOUND", "Kesinleştirilecek aktif hesaplama yok.")
+	case errors.Is(err, payrollrun.ErrInputChanged):
+		writeError(w, r, http.StatusConflict, "PAYROLL_INPUT_CHANGED",
+			"Hesaplamadan bu yana bordro girdileri (ücret, çalışan listesi, puantaj ya da manuel bileşenler) değişti. Bordroyu yeniden hesaplayın.")
 	case errors.Is(err, payrollrun.ErrManualNotFound):
 		writeError(w, r, http.StatusNotFound, "PAYROLL_MANUAL_COMPONENT_NOT_FOUND", "Manuel bileşen bulunamadı.")
 	case errors.Is(err, payrollrun.ErrEmployeeGone):

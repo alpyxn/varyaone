@@ -75,16 +75,10 @@ func (s *Service) Calculate(ctx context.Context, session identity.Session, runID
 		return Run{}, err
 	}
 
-	// Fingerprint. It is stable for the duration of this synchronous run.
-	popParts := make([]string, 0, len(population))
-	for _, p := range population {
-		popParts = append(popParts, p.EmployeeID+"|"+p.GrossWage+"|"+p.ContributionSchemeCode+"|"+p.SgkStatus)
-	}
-	populationHash := hashStrings(popParts...)
-	inputChecksum := s.manualInputChecksum(ctx, session.CurrentCompanyID, runID)
-	var manualCount int64
-	_ = s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM payroll_manual_components WHERE company_id=$1 AND payroll_run_id=$2 AND archived_at IS NULL`,
-		session.CurrentCompanyID, runID).Scan(&manualCount)
+	// Fingerprint. It is stable for the duration of this synchronous run, and is
+	// re-derived at finalize time to prove the inputs never moved underneath it.
+	fp := s.fingerprint(ctx, session.CurrentCompanyID, runID, population, tsChecksum, pack.Version)
+	populationHash, inputChecksum, manualCount := fp.PopulationHash, fp.InputChecksum, fp.ManualInputVersion
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -127,7 +121,8 @@ func (s *Service) Calculate(ctx context.Context, session identity.Session, runID
 		result, calcCtx, calcErr := s.calculateEmployee(ctx, tx, session.CurrentCompanyID, runID, p, pack, componentDefs, year, month, daysInMonth, periodDate, monthEnd)
 		payrollID := uuid.NewString()
 		empSnapshot, _ := json.Marshal(map[string]any{"code": p.Code, "name": p.Name, "position_title": p.PositionTitle,
-			"sgk_status": sgkStatusOrDefault(p.SgkStatus), "contribution_scheme_code": p.ContributionSchemeCode})
+			"sgk_status": sgkStatusOrDefault(p.SgkStatus), "contribution_scheme_code": p.ContributionSchemeCode,
+			"gross_wage": p.GrossWage, "wage_period": "MONTHLY", "currency": p.Currency})
 		companySnapshot, _ := json.Marshal(map[string]any{"company_id": session.CurrentCompanyID})
 		legislationSnapshot, _ := json.Marshal(map[string]any{"pack_id": pack.ID, "pack_version": pack.Version, "code": pack.Code})
 		attendanceSnapshot, _ := json.Marshal(map[string]any{
@@ -216,15 +211,23 @@ func (s *Service) calculateEmployee(ctx context.Context, tx pgx.Tx, companyID, r
 	// and an SGK day: worked, paid leave, public holiday, or paid weekly rest.
 	// unpaidDays are unpaid leave / unexcused absence. Empty rows and days the
 	// user removed count as nothing. recordedDays is every row for the period.
-	var paidDaysCount, unpaidDays, recordedDays int
+	var paidDaysCount, unpaidDays, recordedDays, overtimeMinutes int
 	if err := tx.QueryRow(ctx, `SELECT
  COUNT(*) FILTER (WHERE worked_minutes>0 OR paid_leave_minutes>0 OR public_holiday_minutes>0 OR week_rest_minutes>0),
  COUNT(*) FILTER (WHERE unpaid_leave_minutes>0 OR absence_minutes>0),
- COUNT(*)
+ COUNT(*),
+ COALESCE(SUM(overtime_minutes),0)
  FROM timesheet_days d JOIN timesheet_periods tp ON tp.company_id=d.company_id AND tp.id=d.period_id
  JOIN payroll_runs r ON r.company_id=tp.company_id AND r.timesheet_period_id=tp.id
- WHERE d.company_id=$1 AND r.id=$2 AND d.employee_id=$3`, companyID, runID, p.EmployeeID).Scan(&paidDaysCount, &unpaidDays, &recordedDays); err != nil {
+ WHERE d.company_id=$1 AND r.id=$2 AND d.employee_id=$3`, companyID, runID, p.EmployeeID).
+		Scan(&paidDaysCount, &unpaidDays, &recordedDays, &overtimeMinutes); err != nil {
 		return calculation.Result{}, calculation.Context{}, fmt.Errorf("puantaj devam bilgisi okunamadı: %w", err)
+	}
+	// A month with no attendance at all, or one where every recorded day is
+	// blank, would otherwise calculate a silent zero-lira payroll and be
+	// finalizable. Refuse it: the timesheet has to be generated/filled first.
+	if err := checkAttendance(paidDaysCount, unpaidDays, recordedDays); err != nil {
+		return calculation.Result{}, calculation.Context{}, err
 	}
 	workDays, fullMonth := attendanceDays(paidDaysCount, unpaidDays, recordedDays, daysInMonth)
 	paidDays, _ := money.ParseDecimal(fmt.Sprintf("%d", pickDays(fullMonth, workDays)), 2)
@@ -246,6 +249,12 @@ func (s *Service) calculateEmployee(ctx context.Context, tx pgx.Tx, companyID, r
 	companyBase = s.scalarString(ctx, `SELECT cumulative_income_tax_base::text FROM employee_payroll_year_openings
  WHERE company_id=$1 AND employee_id=$2 AND tax_year=$3 AND source='COMPANY_MIGRATION'`, companyID, p.EmployeeID, year)
 	priorFinalized = s.scalarString(ctx, `SELECT COALESCE(SUM(ep.income_tax_base),0)::text FROM employee_payrolls ep
+ JOIN payroll_runs r2 ON r2.company_id=ep.company_id AND r2.id=ep.payroll_run_id
+ WHERE ep.company_id=$1 AND ep.employee_id=$2 AND ep.status='FINALIZED' AND r2.status='FINALIZED'
+   AND r2.period_year=$3 AND r2.period_month<$4`, companyID, p.EmployeeID, year, month)
+	// How many of this year's earlier months are actually covered by a finalized
+	// run — not just whether any are.
+	finalizedMonths := s.scalarInt(ctx, `SELECT COUNT(DISTINCT r2.period_month) FROM employee_payrolls ep
  JOIN payroll_runs r2 ON r2.company_id=ep.company_id AND r2.id=ep.payroll_run_id
  WHERE ep.company_id=$1 AND ep.employee_id=$2 AND ep.status='FINALIZED' AND r2.status='FINALIZED'
    AND r2.period_year=$3 AND r2.period_month<$4`, companyID, p.EmployeeID, year, month)
@@ -277,9 +286,13 @@ func (s *Service) calculateEmployee(ctx context.Context, tx pgx.Tx, companyID, r
 	// those months at the current wage so the year-to-date tax stays close to
 	// correct. (PRIOR_EMPLOYER_CARRY still needs an explicit opening — a former
 	// employer's base cannot be estimated.)
-	if priorMonths > 0 && !hasPriorFinalized && isZeroString(companyBase) && p.PriorEmployerTaxPolicy != "CARRY" {
+	// A migration opening stands in for every unrun month, so estimate only when
+	// there is none. Otherwise estimate exactly the months that no finalized run
+	// covers — estimating none at all whenever a single month happened to be
+	// finalized would leave the year-to-date base short and under-tax the employee.
+	if missing := priorMonths - finalizedMonths; missing > 0 && isZeroString(companyBase) && p.PriorEmployerTaxPolicy != "CARRY" {
 		est := estimateMonthlyIncomeTaxBase(pack, scheme, grossWage, sgkStatusOrDefault(p.SgkStatus))
-		priorBase = sumDecimals(carryBase, est.Mul(mustDec(fmt.Sprintf("%d", priorMonths))).String())
+		priorBase = priorBase.Add(est.Mul(mustDec(fmt.Sprintf("%d", missing))))
 	}
 
 	// "Çözülmemiş rapor": puantajda o dönemde SICK_REQUIRES_REVIEW türüyle
@@ -297,6 +310,9 @@ func (s *Service) calculateEmployee(ctx context.Context, tx pgx.Tx, companyID, r
 	components, err := s.manualComponentsFor(ctx, companyID, runID, p.EmployeeID, defs, paidDays)
 	if err != nil {
 		return calculation.Result{}, calculation.Context{}, err
+	}
+	if overtime, ok := overtimeComponent(grossWage, overtimeMinutes, defs, paidDays); ok {
+		components = append(components, overtime)
 	}
 
 	calcCtx := calculation.Context{
@@ -389,7 +405,12 @@ func (s *Service) insertComponents(ctx context.Context, tx pgx.Tx, companyID, pa
 }
 
 func (s *Service) loadPopulation(ctx context.Context, companyID string, periodDate, monthEnd time.Time) ([]populationRow, error) {
-	rows, err := s.pool.Query(ctx, `SELECT e.id::text,e.employee_code,e.first_name||' '||e.last_name,e.position_title,
+	// DISTINCT ON keeps exactly one row per employee. An employee with two
+	// employments touching the month (a mid-month rehire, or a second contract)
+	// would otherwise be returned twice and collide on the
+	// (generation_id, employee_id) unique key, failing the whole run; the most
+	// recently started employment wins.
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT ON (e.id) e.id::text,e.employee_code,e.first_name||' '||e.last_name,e.position_title,
  t.gross_wage::text,t.currency,t.work_type,t.contribution_scheme_code,t.prior_employer_tax_policy,t.sgk_status,
  (SELECT min(start_date) FROM employments x WHERE x.company_id=$1 AND x.employee_id=e.id
    AND (x.end_date IS NULL OR x.end_date > x.start_date))
@@ -406,8 +427,7 @@ func (s *Service) loadPopulation(ctx context.Context, companyID string, periodDa
    LIMIT 1
  ) t ON true
  WHERE e.company_id=$1 AND e.status='ACTIVE'
- GROUP BY e.id,e.employee_code,e.first_name,e.last_name,e.position_title,t.gross_wage,t.currency,t.work_type,t.contribution_scheme_code,t.prior_employer_tax_policy,t.sgk_status
- ORDER BY e.id`, companyID, periodDate.Format("2006-01-02"), monthEnd.Format("2006-01-02"))
+ ORDER BY e.id,emp.start_date DESC`, companyID, periodDate.Format("2006-01-02"), monthEnd.Format("2006-01-02"))
 	if err != nil {
 		return nil, err
 	}
@@ -444,6 +464,13 @@ func (s *Service) Finalize(ctx context.Context, session identity.Session, runID 
 	if current.Status != "CALCULATED" || current.ActiveGenerationID == nil || *current.ActiveGenerationID == "" {
 		return Run{}, ErrNoActiveGeneration
 	}
+	// A finalized payroll claims to be the calculation of the inputs recorded on
+	// its generation row. Re-derive them and refuse to freeze the run if a wage,
+	// the population, the timesheet or a manual component moved since Calculate.
+	if err = s.verifyFingerprint(ctx, session.CurrentCompanyID, runID, *current.ActiveGenerationID,
+		current.PeriodYear, current.PeriodMonth); err != nil {
+		return Run{}, err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Run{}, err
@@ -472,6 +499,9 @@ func (s *Service) Finalize(ctx context.Context, session identity.Session, runID 
 	if tag.RowsAffected() == 0 {
 		return Run{}, identity.ErrConflict
 	}
+	if err = s.settleAdvances(ctx, tx, session, *current.ActiveGenerationID, current.PaymentDate); err != nil {
+		return Run{}, err
+	}
 	if err = writeEvent(ctx, tx, session, meta, "PAYROLL_FINALIZED", "hr.payroll.finalized", runID); err != nil {
 		return Run{}, err
 	}
@@ -481,7 +511,189 @@ func (s *Service) Finalize(ctx context.Context, session identity.Session, runID 
 	return s.Get(ctx, session, runID)
 }
 
+// settleAdvances posts the ADVANCE deductions of a finalized run to the employee
+// cash-advance sub-ledger, oldest advance first. Without this the deduction only
+// ever existed on the payslip: the advance stayed OPEN, was offered for
+// deduction again the next month, and the outstanding-balance report was wrong.
+//
+// The rows carry no finance movement — the cash effect is already in the payroll
+// payment, whose net this deduction reduced. A deduction larger than the
+// employee's recorded advances settles what it can and leaves the rest alone;
+// advances kept outside the ledger must not block a payroll from being frozen.
+func (s *Service) settleAdvances(ctx context.Context, tx pgx.Tx, session identity.Session, generationID, paymentDate string) error {
+	rows, err := tx.Query(ctx, `SELECT ep.employee_id::text,SUM(c.amount)::text
+ FROM employee_payroll_components c
+ JOIN employee_payrolls ep ON ep.company_id=c.company_id AND ep.id=c.employee_payroll_id
+ WHERE c.company_id=$1 AND ep.generation_id=$2 AND ep.status='FINALIZED'
+   AND c.component_code='ADVANCE' AND c.component_kind='DEDUCTION'
+ GROUP BY ep.employee_id HAVING SUM(c.amount)>0`, session.CurrentCompanyID, generationID)
+	if err != nil {
+		return err
+	}
+	type owed struct{ employeeID, amount string }
+	deductions := []owed{}
+	for rows.Next() {
+		var o owed
+		if err := rows.Scan(&o.employeeID, &o.amount); err != nil {
+			rows.Close()
+			return err
+		}
+		deductions = append(deductions, o)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, d := range deductions {
+		remaining, err := money.ParseDecimal(d.amount, 2)
+		if err != nil {
+			return err
+		}
+		open, err := s.openAdvances(ctx, tx, session.CurrentCompanyID, d.employeeID)
+		if err != nil {
+			return err
+		}
+		for _, a := range open {
+			if remaining.Sign() <= 0 {
+				break
+			}
+			applied := a.outstanding
+			if remaining.Cmp(applied) < 0 {
+				applied = remaining
+			}
+			if applied.Sign() <= 0 {
+				continue
+			}
+			// (company_id, idempotency_key) is unique, so re-running finalize for
+			// the same generation can never post the deduction twice.
+			key := "payroll:" + generationID + ":" + a.id
+			if _, err = tx.Exec(ctx, `INSERT INTO employee_advance_transactions
+ (id,company_id,advance_id,transaction_type,amount,transaction_date,description,idempotency_key,payload_hash,actor_user_id)
+ VALUES($1,$2,$3,'PAYROLL_DEDUCTION',$4::numeric,$5::date,$6,$7,$8,$9)
+ ON CONFLICT (company_id,idempotency_key) DO NOTHING`,
+				uuid.NewString(), session.CurrentCompanyID, a.id, applied.String(), paymentDate,
+				"Bordrodan avans mahsubu", key, sha256Hex(key), session.User.ID); err != nil {
+				return mapConstraint(err)
+			}
+			remaining = remaining.Sub(applied)
+		}
+	}
+	return nil
+}
+
+type openAdvance struct {
+	id          string
+	outstanding money.Decimal
+}
+
+// openAdvances lists an employee's advances that still carry a balance, oldest
+// first, locked for the duration of the transaction.
+func (s *Service) openAdvances(ctx context.Context, tx pgx.Tx, companyID, employeeID string) ([]openAdvance, error) {
+	rows, err := tx.Query(ctx, `SELECT a.id::text,
+ (a.original_amount-COALESCE(SUM(t.amount) FILTER(WHERE t.transaction_type IN ('REPAYMENT','PAYROLL_DEDUCTION','WRITE_OFF')
+    AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions r WHERE r.company_id=t.company_id AND r.reversal_of_id=t.id)),0))::numeric(20,2)::text
+ FROM employee_advances a
+ LEFT JOIN employee_advance_transactions t ON t.company_id=a.company_id AND t.advance_id=a.id
+ WHERE a.company_id=$1 AND a.employee_id=$2
+   AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions d
+     JOIN employee_advance_transactions r ON r.company_id=d.company_id AND r.reversal_of_id=d.id
+     WHERE d.company_id=a.company_id AND d.advance_id=a.id AND d.transaction_type='DISBURSEMENT')
+ GROUP BY a.id,a.original_amount,a.advance_date
+ HAVING a.original_amount-COALESCE(SUM(t.amount) FILTER(WHERE t.transaction_type IN ('REPAYMENT','PAYROLL_DEDUCTION','WRITE_OFF')
+    AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions r WHERE r.company_id=t.company_id AND r.reversal_of_id=t.id)),0) > 0
+ ORDER BY a.advance_date,a.id`, companyID, employeeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []openAdvance{}
+	for rows.Next() {
+		var id, outstanding string
+		if err := rows.Scan(&id, &outstanding); err != nil {
+			return nil, err
+		}
+		value, err := money.ParseDecimal(outstanding, 2)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, openAdvance{id: id, outstanding: value})
+	}
+	return items, rows.Err()
+}
+
 // ---- small helpers ----
+
+// runFingerprint is the set of inputs a calculation generation is derived from.
+type runFingerprint struct {
+	PopulationHash         string
+	TimesheetChecksum      string
+	InputChecksum          string
+	LegislationPackVersion int
+	ManualInputVersion     int64
+}
+
+func (s *Service) fingerprint(ctx context.Context, companyID, runID string, population []populationRow,
+	timesheetChecksum string, packVersion int) runFingerprint {
+
+	parts := make([]string, 0, len(population))
+	for _, p := range population {
+		parts = append(parts, p.EmployeeID+"|"+p.GrossWage+"|"+p.ContributionSchemeCode+"|"+p.SgkStatus)
+	}
+	var manualCount int64
+	_ = s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM payroll_manual_components WHERE company_id=$1 AND payroll_run_id=$2 AND archived_at IS NULL`,
+		companyID, runID).Scan(&manualCount)
+	return runFingerprint{
+		PopulationHash:         hashStrings(parts...),
+		TimesheetChecksum:      timesheetChecksum,
+		InputChecksum:          s.manualInputChecksum(ctx, companyID, runID),
+		LegislationPackVersion: packVersion,
+		ManualInputVersion:     manualCount,
+	}
+}
+
+// verifyFingerprint re-derives the run's inputs and compares them with what the
+// active generation recorded when it was calculated.
+func (s *Service) verifyFingerprint(ctx context.Context, companyID, runID, generationID string, year, month int) error {
+	var stored runFingerprint
+	err := s.pool.QueryRow(ctx, `SELECT population_hash,timesheet_checksum,input_checksum,legislation_pack_version,manual_input_version
+ FROM payroll_calculation_generations WHERE company_id=$1 AND id=$2`, companyID, generationID).
+		Scan(&stored.PopulationHash, &stored.TimesheetChecksum, &stored.InputChecksum,
+			&stored.LegislationPackVersion, &stored.ManualInputVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNoActiveGeneration
+	}
+	if err != nil {
+		return err
+	}
+
+	periodDate := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := periodDate.AddDate(0, 1, -1)
+	var timesheetChecksum string
+	if err = s.pool.QueryRow(ctx, `SELECT COALESCE(tp.checksum,'') FROM timesheet_periods tp
+ JOIN payroll_runs r ON r.company_id=tp.company_id AND r.timesheet_period_id=tp.id
+ WHERE tp.company_id=$1 AND r.id=$2 AND tp.status='FINALIZED'`, companyID, runID).Scan(&timesheetChecksum); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrTimesheetNotFinal
+		}
+		return err
+	}
+	pack, err := s.repo.ActivePack(ctx, companyID, periodDate)
+	if err != nil {
+		if errors.Is(err, legislation.ErrPackNotFound) {
+			return ErrLegislationMissing
+		}
+		return err
+	}
+	population, err := s.loadPopulation(ctx, companyID, periodDate, monthEnd)
+	if err != nil {
+		return err
+	}
+	if s.fingerprint(ctx, companyID, runID, population, timesheetChecksum, pack.Version) != stored {
+		return ErrInputChanged
+	}
+	return nil
+}
 
 func (s *Service) manualInputChecksum(ctx context.Context, companyID, runID string) string {
 	rows, err := s.pool.Query(ctx, `SELECT employee_id::text,component_definition_id::text,amount::text,explanation
@@ -508,6 +720,70 @@ func (s *Service) scalarString(ctx context.Context, query string, args ...any) s
 		return ""
 	}
 	return value
+}
+
+func (s *Service) scalarInt(ctx context.Context, query string, args ...any) int {
+	var value int
+	if err := s.pool.QueryRow(ctx, query, args...).Scan(&value); err != nil {
+		return 0
+	}
+	return value
+}
+
+// monthlyOvertimeHours is the divisor that turns a monthly gross wage into an
+// hourly rate for overtime: 30 days x 7.5 hours. overtimeMultiplier is the
+// 1.5x statutory rate for hours beyond the weekly 45.
+var (
+	monthlyOvertimeHours = mustDec("225")
+	overtimeMultiplier   = mustDec("1.5")
+)
+
+// overtimeComponent turns timesheet overtime minutes into a SYSTEM-owned OVERTIME
+// earning. Without this the minutes recorded on the puantaj never reach the
+// payslip and the employee is simply not paid for them.
+func overtimeComponent(monthlyGross money.Decimal, minutes int, defs map[string]legislation.ComponentDefinition,
+	workedDays money.Decimal) (calculation.InputComponent, bool) {
+
+	if minutes <= 0 || monthlyGross.Sign() <= 0 {
+		return calculation.InputComponent{}, false
+	}
+	hourly, err := monthlyGross.Div(monthlyOvertimeHours, 6)
+	if err != nil {
+		return calculation.InputComponent{}, false
+	}
+	hours, err := mustDec(fmt.Sprintf("%d", minutes)).Div(mustDec("60"), 6)
+	if err != nil {
+		return calculation.InputComponent{}, false
+	}
+	amount, err := hourly.Mul(overtimeMultiplier).Mul(hours).Quantize(2, money.HalfUp)
+	if err != nil || amount.Sign() <= 0 {
+		return calculation.InputComponent{}, false
+	}
+	def := defs["OVERTIME"]
+	name := def.Name
+	if strings.TrimSpace(name) == "" {
+		name = "Fazla mesai"
+	}
+	return calculation.InputComponent{
+		Code: "OVERTIME", Name: name, Kind: "EARNING", Ownership: "SYSTEM",
+		Amount: amount, WorkedDays: workedDays,
+		SGK:       legislation.TreatmentFor(def, "SGK"),
+		IncomeTax: legislation.TreatmentFor(def, "INCOME_TAX"),
+		StampTax:  legislation.TreatmentFor(def, "STAMP_TAX"),
+	}, true
+}
+
+// checkAttendance rejects a period the timesheet says nothing usable about.
+func checkAttendance(paidDays, unpaidDays, recordedDays int) error {
+	if recordedDays == 0 {
+		return &calculation.CalculationError{Code: calculation.ErrPopulationNotSupported, Field: "attendance",
+			Message: "çalışanın bu dönemde puantaj kaydı yok; puantajı oluşturup kesinleştirin"}
+	}
+	if paidDays == 0 && unpaidDays == 0 {
+		return &calculation.CalculationError{Code: calculation.ErrPopulationNotSupported, Field: "attendance",
+			Message: "puantajdaki günlerin tamamı boş; çalışma planı ya da gün girişleri eksik"}
+	}
+	return nil
 }
 
 func (s *Service) exists(ctx context.Context, query string, args ...any) bool {

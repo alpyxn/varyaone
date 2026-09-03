@@ -157,7 +157,7 @@ const advanceSelect = `SELECT a.id::text AS id,a.employee_id::text AS employee_i
  FROM employee_advances a JOIN employees e ON e.company_id=a.company_id AND e.id=a.employee_id
  JOIN finance_accounts fa ON fa.company_id=a.company_id AND fa.id=a.account_id
  LEFT JOIN LATERAL (SELECT
-  COALESCE(SUM(t.amount) FILTER(WHERE t.transaction_type='REPAYMENT' AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions r WHERE r.company_id=t.company_id AND r.reversal_of_id=t.id)),0) repaid,
+  COALESCE(SUM(t.amount) FILTER(WHERE t.transaction_type IN ('REPAYMENT','PAYROLL_DEDUCTION') AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions r WHERE r.company_id=t.company_id AND r.reversal_of_id=t.id)),0) repaid,
   COALESCE(SUM(t.amount) FILTER(WHERE t.transaction_type='WRITE_OFF' AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions r WHERE r.company_id=t.company_id AND r.reversal_of_id=t.id)),0) written_off,
   EXISTS(SELECT 1 FROM employee_advance_transactions d JOIN employee_advance_transactions r ON r.company_id=d.company_id AND r.reversal_of_id=d.id WHERE d.company_id=a.company_id AND d.advance_id=a.id AND d.transaction_type='DISBURSEMENT') disbursement_reversed
   FROM employee_advance_transactions t WHERE t.company_id=a.company_id AND t.advance_id=a.id) x ON true`
@@ -359,7 +359,7 @@ func outstandingTx(ctx context.Context, tx pgx.Tx, companyID, advanceID string) 
 	err := tx.QueryRow(ctx, `SELECT CASE WHEN EXISTS(
 	 SELECT 1 FROM employee_advance_transactions d JOIN employee_advance_transactions r ON r.company_id=d.company_id AND r.reversal_of_id=d.id
 	 WHERE d.company_id=a.company_id AND d.advance_id=a.id AND d.transaction_type='DISBURSEMENT'
-	) THEN 0 ELSE a.original_amount-COALESCE(SUM(t.amount) FILTER(WHERE t.transaction_type IN ('REPAYMENT','WRITE_OFF') AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions r WHERE r.company_id=t.company_id AND r.reversal_of_id=t.id)),0) END::numeric(20,2)::text
+	) THEN 0 ELSE a.original_amount-COALESCE(SUM(t.amount) FILTER(WHERE t.transaction_type IN ('REPAYMENT','PAYROLL_DEDUCTION','WRITE_OFF') AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions r WHERE r.company_id=t.company_id AND r.reversal_of_id=t.id)),0) END::numeric(20,2)::text
 	FROM employee_advances a LEFT JOIN employee_advance_transactions t ON t.company_id=a.company_id AND t.advance_id=a.id
 	WHERE a.company_id=$1 AND a.id=$2 GROUP BY a.company_id,a.id,a.original_amount`, companyID, advanceID).Scan(&value)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -535,6 +535,11 @@ func (s *Service) Reverse(ctx context.Context, session identity.Session, transac
 	if typ == "REVERSAL" {
 		return Advance{}, fmt.Errorf("%w: ters kayıt yeniden ters çevrilemez", identity.ErrValidation)
 	}
+	// A payroll-settled deduction belongs to a finalized payroll run; unwinding it
+	// here would silently disagree with the payslip that produced it.
+	if typ == "PAYROLL_DEDUCTION" {
+		return Advance{}, fmt.Errorf("%w: bordrodan mahsup edilen avans kaydı buradan ters çevrilemez", identity.ErrValidation)
+	}
 	var reversed bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM employee_advance_transactions WHERE company_id=$1 AND reversal_of_id=$2)`, session.CurrentCompanyID, transactionID).Scan(&reversed); err != nil {
 		return Advance{}, err
@@ -544,7 +549,7 @@ func (s *Service) Reverse(ctx context.Context, session identity.Session, transac
 	}
 	if typ == "DISBURSEMENT" {
 		var deps bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM employee_advance_transactions t WHERE t.company_id=$1 AND t.advance_id=$2 AND t.transaction_type IN ('REPAYMENT','WRITE_OFF') AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions r WHERE r.company_id=t.company_id AND r.reversal_of_id=t.id))`, session.CurrentCompanyID, advanceID).Scan(&deps); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM employee_advance_transactions t WHERE t.company_id=$1 AND t.advance_id=$2 AND t.transaction_type IN ('REPAYMENT','PAYROLL_DEDUCTION','WRITE_OFF') AND NOT EXISTS(SELECT 1 FROM employee_advance_transactions r WHERE r.company_id=t.company_id AND r.reversal_of_id=t.id))`, session.CurrentCompanyID, advanceID).Scan(&deps); err != nil {
 			return Advance{}, err
 		}
 		if deps {

@@ -51,6 +51,7 @@
 
   let selection = $state<string[]>([]);
   let editHours = $state('');
+  let editOvertime = $state('');
   let editNote = $state('');
   let selectedLeaveTypeID = $state('');
   let leaveTypes = $state<LeaveType[]>([]);
@@ -265,6 +266,10 @@
       day && day.worked_minutes > 0
         ? `${String(Math.floor(day.worked_minutes / 60)).padStart(2, '0')}:${String(day.worked_minutes % 60).padStart(2, '0')}`
         : '';
+    editOvertime =
+      day && day.overtime_minutes > 0
+        ? `${String(Math.floor(day.overtime_minutes / 60)).padStart(2, '0')}:${String(day.overtime_minutes % 60).padStart(2, '0')}`
+        : '';
     editNote = day?.explanation ?? '';
     selectedLeaveTypeID = day?.leave_type_id ?? '';
   }
@@ -285,6 +290,13 @@
     const minutes = editHours
       ? Number(editHours.split(':')[0]) * 60 + Number(editHours.split(':')[1])
       : undefined;
+    // Overtime only means something on a day the employee was present; leaving
+    // the field blank keeps whatever the day already carries.
+    const worked = kind === 'WORKED' || kind === 'HALF_DAY' || kind === 'PUBLIC_HOLIDAY';
+    const overtime =
+      worked && editOvertime
+        ? Number(editOvertime.split(':')[0]) * 60 + Number(editOvertime.split(':')[1])
+        : undefined;
     busy = true;
     actionError = '';
     msg = '';
@@ -296,6 +308,7 @@
           work_date: date,
           kind,
           minutes: kind === 'WORKED' || kind === 'HALF_DAY' ? minutes : undefined,
+          overtime_minutes: overtime,
           explanation: editNote.trim() || undefined,
           leave_type_id: leaveTypeID || undefined
         });
@@ -554,6 +567,10 @@
                 <label>
                   Çalışılan saat (opsiyonel)
                   <TimeInput bind:value={editHours} ariaLabel="Çalışılan saat" />
+                </label>
+                <label>
+                  Fazla mesai (opsiyonel)
+                  <TimeInput bind:value={editOvertime} ariaLabel="Fazla mesai saati" />
                 </label>
                 <label class="grow">
                   Açıklama

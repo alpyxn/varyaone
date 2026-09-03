@@ -232,6 +232,7 @@ export const upsertTimesheetDay = (
     work_date: string;
     kind: string;
     minutes?: number;
+    overtime_minutes?: number;
     explanation?: string;
     leave_type_id?: string;
   }

@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// DefaultRestMinutes values a weekly-rest day when no schedule day is longer.
+const DefaultRestMinutes = 480
+
 type ScheduleDay struct{ PlannedMinutes int }
 type Holiday struct {
 	Date    time.Time
@@ -54,15 +57,19 @@ func Generate(input Input) (Result, error) {
 	for _, item := range input.Holidays {
 		holiday[item.Date.Format("2006-01-02")] = item
 	}
-	// A non-workday within an assigned schedule is paid weekly rest for a
-	// monthly-salaried employee, so it must count toward the paid/SGK day
-	// total. Value it at a normal workday. With no schedule assigned we cannot
-	// tell rest from work, so nothing is prefilled.
+	// A non-workday within a schedule is paid weekly rest for a monthly-salaried
+	// employee, so it must count toward the paid/SGK day total. Value it at a
+	// normal workday. The caller always supplies a schedule (falling back to a
+	// company default), so restMinutes is never zero in practice; DefaultRestMinutes
+	// keeps a generated day from ever landing with no minutes at all.
 	restMinutes := 0
 	for _, sd := range input.Schedule {
 		if sd.PlannedMinutes > restMinutes {
 			restMinutes = sd.PlannedMinutes
 		}
+	}
+	if restMinutes <= 0 {
+		restMinutes = DefaultRestMinutes
 	}
 	last := time.Date(input.Year, input.Month+1, 0, 0, 0, 0, 0, time.UTC).Day()
 	days := make([]Day, 0, last)
@@ -78,15 +85,20 @@ func Generate(input Input) (Result, error) {
 		}
 		planned := input.Schedule[date.Weekday()].PlannedMinutes
 		day := Day{Date: key, Source: "GENERATED", PlannedMinutes: planned, WorkedMinutes: planned}
-		if item, ok := holiday[key]; ok {
+		switch item, isHoliday := holiday[key]; {
+		case planned == 0:
+			// Weekly rest. A public holiday landing on a rest day stays paid
+			// rest — valuing it at the day's (zero) plan would silently drop a
+			// paid day from the month.
+			day.WorkedMinutes = 0
+			day.WeekRestMinutes = restMinutes
+		case isHoliday:
 			minutes := planned
 			if item.HalfDay {
 				minutes /= 2
 			}
 			day.PublicHolidayMinutes = minutes
-			day.WorkedMinutes = 0
-		} else if planned == 0 && restMinutes > 0 {
-			day.WeekRestMinutes = restMinutes
+			day.WorkedMinutes = planned - minutes
 		}
 		days = append(days, day)
 	}
