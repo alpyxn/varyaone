@@ -35,6 +35,15 @@ x-backend-environment: &backend-environment
   # Kataloğun windows_artifact_url alaninin kabul edilecegi tek konum; farkli
   # bir depoya isaret eden bir alan sessizce dusurulur (bkz. catalog.go).
   VARYAONE_UPDATE_ARTIFACT_PREFIX: ${VARYAONE_UPDATE_ARTIFACT_PREFIX:-https://github.com/alpyxn/varyaone/releases/download/}
+  # Demo modu: VARSAYILAN KAPALI. Acikken bu kurulum herkese acik tanitim
+  # kurulumuna doner: paylasilan ornek sirket duzenli araliklarla SILINIP
+  # yeniden kurulur, ziyaretciler parolasiz girer ve yedekleme/kullanici
+  # yonetimi gibi islemler reddedilir. Gercek veri tutan bir kurulumda ASLA
+  # acilmaz. Bkz. docs/operations/demo.md
+  VARYAONE_DEMO_MODE: ${VARYAONE_DEMO_MODE:-false}
+  VARYAONE_DEMO_EMAIL: ${VARYAONE_DEMO_EMAIL:-demo@varyaone.com}
+  VARYAONE_DEMO_PASSWORD: ${VARYAONE_DEMO_PASSWORD:-varyaone-demo-2026}
+  VARYAONE_DEMO_RESET_INTERVAL: ${VARYAONE_DEMO_RESET_INTERVAL:-2h}
 
 services:
   postgres:

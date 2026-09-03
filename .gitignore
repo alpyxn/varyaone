@@ -1,4 +1,5 @@
 .env
+.env.demo
 .env.tmp.*
 .DS_Store
 *.log
