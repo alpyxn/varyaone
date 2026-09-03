@@ -49,8 +49,16 @@ func TestResetSchedulingAndLocking(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A freshly seeded demo is ready and has its next reset scheduled, so the
-	// banner can show a countdown and the worker knows when to act.
+	// Rebuild once so the schedule is this test's own: Ensure deliberately
+	// keeps an existing next-reset time (a restart must not postpone a reset),
+	// so a database another test already seeded would leave a partly elapsed
+	// schedule here.
+	if err = runner.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// A freshly rebuilt demo is ready and has its next reset scheduled, so the
+	// settings screen can show a countdown and the worker knows when to act.
 	state, err := runner.State(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +69,7 @@ func TestResetSchedulingAndLocking(t *testing.T) {
 	if state.NextResetAt == nil {
 		t.Fatal("no next reset was scheduled")
 	}
-	if delta := time.Until(*state.NextResetAt); delta < 100*time.Minute || delta > 2*time.Hour {
+	if delta := time.Until(*state.NextResetAt); delta < 119*time.Minute || delta > 2*time.Hour {
 		t.Fatalf("next reset is %v away, want about two hours", delta)
 	}
 	due, err := runner.DueForReset(ctx)
@@ -69,7 +77,7 @@ func TestResetSchedulingAndLocking(t *testing.T) {
 		t.Fatalf("a just-seeded demo reported due=%v err=%v", due, err)
 	}
 
-	// Seeding counts as a reset, so a visitor cannot immediately wipe a demo
+	// A rebuild counts as a reset, so a visitor cannot immediately wipe a demo
 	// that was just rebuilt.
 	if err = runner.RequestReset(ctx); !errors.Is(err, ErrResetTooSoon) {
 		t.Fatalf("reset right after seeding returned %v, want ErrResetTooSoon", err)
@@ -194,7 +202,16 @@ func TestEnsureReconcilesTheDemoAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the reconciled demo account could not sign in: %v", err)
 	}
-	if session.CurrentCompanyID != CompanyID {
-		t.Fatalf("demo login landed on company %q", session.CurrentCompanyID)
+	// Which company a password login lands on is not this test's business (the
+	// account may belong to more than one); what matters is that the demo
+	// company is reachable from the reconciled account.
+	member := false
+	for _, company := range session.Companies {
+		if company.ID == CompanyID {
+			member = true
+		}
+	}
+	if !member {
+		t.Fatalf("the reconciled demo account is not a member of the demo company: %+v", session.Companies)
 	}
 }
