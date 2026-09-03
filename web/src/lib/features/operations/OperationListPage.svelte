@@ -69,7 +69,6 @@
     primaryLabel?: string;
     showPrimary?: boolean;
     preserveListState?: boolean;
-    clientSearchFields?: string[];
     includeInactiveFilter?: boolean;
     openAction?: boolean;
     actionPrefill?: {
@@ -97,7 +96,6 @@
     primaryLabel = 'Yeni Kayıt',
     showPrimary = true,
     preserveListState = true,
-    clientSearchFields = [],
     includeInactiveFilter = false,
     openAction = false,
     actionPrefill,
@@ -123,6 +121,9 @@
   let actionOpen = $state(false);
   let entitySelections = $state<Record<string, EntityOption | undefined>>({});
   let activeRequest: AbortController | undefined;
+  const SEARCH_DEBOUNCE_MS = 250;
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => () => clearTimeout(searchTimer));
   const activeFilterCount = $derived(query.filters.length);
 
   function baseEndpoint() {
@@ -171,16 +172,6 @@
       if (value !== undefined && value !== null && value !== '') return value;
     }
     return undefined;
-  }
-
-  function matchesClientSearch(row: OperationRow) {
-    const needle = search.trim().toLocaleLowerCase('tr-TR');
-    if (!needle || clientSearchFields.length === 0) return true;
-    return clientSearchFields.some((field) => {
-      const raw = columnRawValue(row, field);
-      const label = displayCell(field, row);
-      return `${String(raw ?? '')} ${label}`.toLocaleLowerCase('tr-TR').includes(needle);
-    });
   }
 
   function actionKindForEndpoint(value: string): OperationActionKind | undefined {
@@ -419,9 +410,7 @@
       const result = await api<OperationList>(`${requestPath}${separator}${params}`, {
         signal: request.signal
       });
-      const items = (Array.isArray(result.items) ? result.items : [])
-        .filter(trackingRowIsUsable)
-        .filter(matchesClientSearch);
+      const items = (Array.isArray(result.items) ? result.items : []).filter(trackingRowIsUsable);
       rows = append ? [...rows, ...items] : items;
       nextCursor = result.next_cursor;
     } catch (cause) {
@@ -461,19 +450,25 @@
     }
   }
 
-  function applySearch(event: Event) {
-    search = (event.currentTarget as HTMLInputElement).value;
+  function reloadFromFirstPage() {
     query = { ...query, pagination: { mode: 'cursor', pageSize: 50 } };
     cursorHistory = [];
     void load();
   }
 
+  // The search box hits the API, so wait for a pause in typing instead of
+  // firing (and aborting) a request per keystroke.
+  function applySearch(event: Event) {
+    search = (event.currentTarget as HTMLInputElement).value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(reloadFromFirstPage, SEARCH_DEBOUNCE_MS);
+  }
+
   function clearSearch() {
     if (!search) return;
     search = '';
-    query = { ...query, pagination: { mode: 'cursor', pageSize: 50 } };
-    cursorHistory = [];
-    void load();
+    clearTimeout(searchTimer);
+    reloadFromFirstPage();
   }
 
   function filterValue(field: string) {
@@ -673,7 +668,14 @@
       <Search size={15} aria-hidden="true" /><Input
         value={search}
         oninput={applySearch}
-        onkeydown={(event) => event.key === 'Escape' && clearSearch()}
+        onkeydown={(event) => {
+          if (event.key === 'Escape') clearSearch();
+          else if (event.key === 'Enter') {
+            event.preventDefault();
+            clearTimeout(searchTimer);
+            reloadFromFirstPage();
+          }
+        }}
         aria-label={`${title} ara`}
         placeholder={searchPlaceholder}
         maxlength={128}

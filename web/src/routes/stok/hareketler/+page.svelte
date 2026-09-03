@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import { ChevronDown, ChevronRight, RefreshCw, Search, ExternalLink } from '@lucide/svelte';
   import { api, type Session } from '$lib/api';
+  import { matchesSearch } from '$lib/filtering';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { DateInput } from '$lib/components/varya/date-input';
@@ -26,6 +27,11 @@
   let pageNumber = $state(1);
   const pageSize = 25;
   const totalPages = $derived(Math.max(1, Math.ceil(operations.length / pageSize)));
+  // Narrowing the search can drop the result set below the current page, which
+  // would otherwise leave the table blank until the user pages back.
+  $effect(() => {
+    if (pageNumber > totalPages) pageNumber = totalPages;
+  });
   const visibleOperations = $derived(
     operations.slice((pageNumber - 1) * pageSize, pageNumber * pageSize)
   );
@@ -194,22 +200,21 @@
   }
 
   function matches(operation: MovementOperation) {
-    const needle = search.trim().toLocaleLowerCase('tr-TR');
-    if (!needle) return true;
+    if (!search.trim()) return true;
     const lineText = linesOf(operation)
       .flatMap((line) => [variantLabel(line), text(line, ['variant_code', 'sku'])])
       .join(' ');
-    return [
-      operationTitle(operation),
-      text(operation, ['operation_no', 'movement_no', 'document_no', 'id']),
-      text(operation, ['warehouse_name', 'warehouse.name']),
-      directionLabel(operation),
-      sourceDocumentLabel(operation),
-      lineText
-    ]
-      .join(' ')
-      .toLocaleLowerCase('tr-TR')
-      .includes(needle);
+    return matchesSearch(
+      [
+        operationTitle(operation),
+        text(operation, ['operation_no', 'movement_no', 'document_no', 'id']),
+        text(operation, ['warehouse_name', 'warehouse.name']),
+        directionLabel(operation),
+        sourceDocumentLabel(operation),
+        lineText
+      ].join(' '),
+      search
+    );
   }
 
   async function load() {

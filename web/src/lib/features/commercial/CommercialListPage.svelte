@@ -107,16 +107,7 @@
       {filters}
       enumLabels={commercialStatusLabels}
       showPrimary={false}
-      clientSearchFields={[
-        'document_no',
-        'party_name',
-        'party_code',
-        'lifecycle_status',
-        'fulfillment_status',
-        'invoicing_status',
-        'payment_status'
-      ]}
-      searchPlaceholder="Belge no, cari veya durum ara"
+      searchPlaceholder="Belge no, cari veya not ara"
       detailPath={(row) => `${routePath}/${encodeURIComponent(String(row.id ?? ''))}`}
     >
       {#snippet primaryAction()}

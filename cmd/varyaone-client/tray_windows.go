@@ -95,13 +95,39 @@ var (
 	trayHWND    uintptr
 	origWndProc uintptr
 	trayNID     notifyIconData
+	trayEnabled bool
+	// showMessage is the registered "raise this instance" message this window
+	// answers; see single_instance_windows.go.
+	showMessage uintptr
 )
+
+// subclassWindow installs the shared window procedure. Both modes use it: the
+// app window only needs the "raise me" message, the panel additionally gets the
+// tray behaviour. Returns false when the subclass could not be installed, in
+// which case the window still works as an ordinary window.
+func subclassWindow(hwnd uintptr, mode string) bool {
+	trayHWND = hwnd
+	showMessage = showInstanceMessage(mode)
+	if origWndProc != 0 {
+		return true
+	}
+	cb := windows.NewCallback(trayWndProc)
+	nIndex := int32(gwlpWndProc)
+	r, _, _ := procSetWindowLongPtr.Call(hwnd, uintptr(nIndex), cb)
+	if r == 0 {
+		return false
+	}
+	origWndProc = r
+	return true
+}
 
 // setupTray installs the tray icon and window subclass. startHidden hides the
 // window immediately (login autostart). Safe to call once, after the window
 // exists and before view.Run().
 func setupTray(hwnd uintptr, startHidden bool) {
-	trayHWND = hwnd
+	if !subclassWindow(hwnd, instanceModePanel) {
+		return
+	}
 
 	trayNID = notifyIconData{
 		HWnd:             hwnd,
@@ -117,15 +143,7 @@ func setupTray(hwnd uintptr, startHidden bool) {
 		// Keep the ordinary window usable if Explorer rejected the tray icon.
 		return
 	}
-
-	cb := windows.NewCallback(trayWndProc)
-	nIndex := int32(gwlpWndProc)
-	r, _, _ := procSetWindowLongPtr.Call(hwnd, uintptr(nIndex), cb)
-	if r == 0 {
-		removeTrayIcon()
-		return
-	}
-	origWndProc = r
+	trayEnabled = true
 
 	if startHidden {
 		procShowWindow.Call(hwnd, swHide)
@@ -155,10 +173,19 @@ func showTrayWindow() {
 }
 
 func removeTrayIcon() {
+	if !trayEnabled {
+		return
+	}
 	procShellNotifyIcon.Call(nimDelete, uintptr(unsafe.Pointer(&trayNID)))
 }
 
 func trayWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
+	// A second launch of this mode was blocked by the single-instance guard and
+	// asked us to come forward instead.
+	if showMessage != 0 && msg == showMessage {
+		showTrayWindow()
+		return 0
+	}
 	switch msg {
 	case wmTrayCB:
 		switch lparam {
@@ -182,7 +209,7 @@ func trayWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 
 	case wmClose:
 		// A plain close hides to tray. wparam==1 is our "really quit" marker.
-		if wparam != 1 {
+		if trayEnabled && wparam != 1 {
 			procShowWindow.Call(hwnd, swHide)
 			return 0
 		}

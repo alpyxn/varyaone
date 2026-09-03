@@ -606,15 +606,6 @@
     {columns}
     {filters}
     showPrimary={false}
-    clientSearchFields={[
-      'transfer_no',
-      'transfer_type',
-      'state',
-      'from_warehouse_name',
-      'to_warehouse_name',
-      'source_warehouse_name',
-      'destination_warehouse_name'
-    ]}
     searchPlaceholder="Transfer no, depo veya durum ara"
   >
     {#snippet primaryAction()}

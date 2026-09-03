@@ -486,7 +486,7 @@ func (s *Service) loadAccount(ctx context.Context, session identity.Session, id 
 	return item, nil
 }
 
-func (s *Service) ListAccounts(ctx context.Context, session identity.Session, accountType string, includeInactive bool) ([]Account, error) {
+func (s *Service) ListAccounts(ctx context.Context, session identity.Session, accountType, search string, includeInactive bool) ([]Account, error) {
 	accountType = strings.ToUpper(strings.TrimSpace(accountType))
 	if accountType != "" && !contains([]string{"CASH", "BANK"}, accountType) {
 		return nil, identity.ErrForbidden
@@ -521,6 +521,23 @@ func (s *Service) ListAccounts(ctx context.Context, session identity.Session, ac
 	}
 	if !includeInactive {
 		query += ` AND is_active`
+	}
+	patterns, err := searchTokens(search)
+	if err != nil {
+		return nil, err
+	}
+	for _, pattern := range patterns {
+		args = append(args, pattern)
+		param := len(args)
+		query += fmt.Sprintf(` AND (
+			code ILIKE $%d ESCAPE '\'
+			OR name ILIKE $%d ESCAPE '\'
+			OR COALESCE(bank_name,'') ILIKE $%d ESCAPE '\'
+			OR COALESCE(bank_branch_name,'') ILIKE $%d ESCAPE '\'
+			OR COALESCE(iban,'') ILIKE $%d ESCAPE '\'
+			OR COALESCE(account_number,'') ILIKE $%d ESCAPE '\'
+			OR currency ILIKE $%d ESCAPE '\'
+		)`, param, param, param, param, param, param, param)
 	}
 	query += ` ORDER BY lower(name),id`
 	rows, err := s.pool.Query(ctx, query, args...)
@@ -990,6 +1007,7 @@ type PaymentListOptions struct {
 	AccountID string
 	AmountMin string
 	AmountMax string
+	Query     string // free-text search over receipt no, reference, description and party
 	From      *time.Time
 	To        *time.Time
 	Cursor    string
@@ -1101,6 +1119,22 @@ func (s *Service) ListPaymentsPaged(ctx context.Context, session identity.Sessio
 		query += " AND reversal_of_id IS NULL AND NOT EXISTS(SELECT 1 FROM finance_payments r WHERE r.company_id=finance_payments.company_id AND r.reversal_of_id=finance_payments.id)"
 	default:
 		return PaymentListResult{}, fmt.Errorf("%w: ödeme durumu geçersiz", identity.ErrValidation)
+	}
+	patterns, patternErr := searchTokens(options.Query)
+	if patternErr != nil {
+		return PaymentListResult{}, patternErr
+	}
+	for _, pattern := range patterns {
+		args = append(args, pattern)
+		param := len(args)
+		query += fmt.Sprintf(` AND (
+			document_no ILIKE $%d ESCAPE '\'
+			OR reference_no ILIKE $%d ESCAPE '\'
+			OR description ILIKE $%d ESCAPE '\'
+			OR currency ILIKE $%d ESCAPE '\'
+			OR EXISTS(SELECT 1 FROM parties pq WHERE pq.company_id=finance_payments.company_id AND pq.id=finance_payments.party_id AND (pq.code ILIKE $%d ESCAPE '\' OR pq.display_name ILIKE $%d ESCAPE '\'))
+			OR EXISTS(SELECT 1 FROM finance_accounts aq WHERE aq.company_id=finance_payments.company_id AND aq.id=finance_payments.account_id AND (aq.code ILIKE $%d ESCAPE '\' OR aq.name ILIKE $%d ESCAPE '\'))
+		)`, param, param, param, param, param, param, param, param)
 	}
 	if options.From != nil {
 		args = append(args, options.From.Format("2006-01-02"))
@@ -2971,6 +3005,27 @@ func truncate(value string, max int) string {
 		return value[:max]
 	}
 	return value
+}
+
+// searchTokens splits a user search box value into ILIKE patterns. Each token
+// must match somewhere in the row, so "ziraat 4512" narrows instead of widening.
+func searchTokens(search string) ([]string, error) {
+	search = strings.TrimSpace(search)
+	if search == "" {
+		return nil, nil
+	}
+	if len(search) > 128 {
+		return nil, fmt.Errorf("%w: arama metni çok uzun", identity.ErrValidation)
+	}
+	fields := strings.Fields(search)
+	patterns := make([]string, 0, len(fields))
+	for _, token := range fields {
+		token = strings.ReplaceAll(token, `\`, `\\`)
+		token = strings.ReplaceAll(token, `%`, `\%`)
+		token = strings.ReplaceAll(token, `_`, `\_`)
+		patterns = append(patterns, "%"+token+"%")
+	}
+	return patterns, nil
 }
 
 func contains(values []string, value string) bool {

@@ -89,7 +89,10 @@ innosetup`). Kullanıcı çift tıklar:
   düşer: **Varya One** (`appicon.ico`) ve **Varya Kontrol Paneli**
   (`panelicon.ico`, `varyaone-client.exe --panel`).
 - Kurulum: `netmode <lan|local>` → `service repair` → `service wait-ready`.
-  `VaryaOne` servisi (gecikmeli otomatik başlatma) `varyaone stack`'i sürer.
+  `VaryaOne` servisi (otomatik başlatma, açılışta) `varyaone stack`'i sürer.
+  Servis her başlayışında kendi SCM kaydını denetler: eski kurulumlardaki
+  *gecikmeli* otomatik başlatma / manuel başlatma otomatiğe çekilir ve çökme
+  sonrası 15 sn'lik yeniden başlatma aksiyonu tazelenir.
 - Sihirbazdaki **"Ağdaki diğer bilgisayarlar erişebilsin"** görevi (varsayılan
   işaretli) ağ modunu belirler → `netmode`:
   - `lan`: sunucu `0.0.0.0:8080`, 8080 güvenlik duvarı kuralı, mDNS yayını.
@@ -110,11 +113,15 @@ Tek `varyaone-client.exe` (WebView2 penceresi, saf Go — `jchv/go-webview2`):
 
 - **Varya One** (argümansız): mDNS ile ağdaki sunucuyu arar, bulursa adresi
   doldurur; `%AppData%\VaryaOne\client.json` son çalışan adresi + geçmişi hatırlar.
-  "Bağlan" → pencere sunucu arayüzüne geçer. Sağ altta "⚙" → kontrol paneli.
-- **Varya Kontrol Paneli** (`--panel`): servis durumu, erişim adresleri, **Ağ
-  modu** radio'ları (yükseltilmiş `varyaone netmode` çağırır — bir kez UAC),
-  "Servisi yeniden başlat", "Loglar". Ağ modu satırı yalnızca yerel servis varsa
-  anlamlı.
+  "Bağlan" → pencere sunucu arayüzüne geçer. Sağ altta "⚙" → kontrol panelini
+  **ayrı pencerede** açar (uygulama penceresi sunucuda kalır).
+- **Varya Kontrol Paneli** (`--panel`): servis durumu, erişim adresleri (salt
+  bilgi), **Ağ modu** radio'ları (yükseltilmiş `varyaone netmode` çağırır — bir
+  kez UAC) ve dört eylem: "Servisi yeniden başlat", "Servisi durdur", "Servisi
+  onar", "Loglar". Panel sunucu arayüzünü **açmaz**; o iş uygulama penceresinin.
+- Her iki mod da adlandırılmış mutex ile **tek örnek**: ikinci bir kısayol
+  tıklaması (ya da açılıştaki `--tray` girdisiyle çakışma) yeni pencere/tepsi
+  ikonu üretmez, çalışan örneği öne getirir.
 - İkon/manifest exe'ye `cmd/varyaone-client/winres/` + `rsrc_windows_amd64.syso`
   ile gömülür (`go-winres make`; `.syso` commit'li, build sırasında varsa
   tazelenir). WebView2 Runtime gerekir (Win10 21H2+/Win11'de hazır).

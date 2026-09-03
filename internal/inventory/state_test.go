@@ -67,7 +67,7 @@ func TestTransferListFilterNormalizesWorkflowStatesAndType(t *testing.T) {
 }
 
 func TestTransferSearchTokenEscapesILIKEWildcards(t *testing.T) {
-	if got := escapeTransferSearchToken(`a%_\b`); got != `a\%\_\\b` {
+	if got := escapeSearchToken(`a%_\b`); got != `a\%\_\\b` {
 		t.Fatalf("escaped transfer search token=%q", got)
 	}
 }

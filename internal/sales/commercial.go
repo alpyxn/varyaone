@@ -959,6 +959,12 @@ type txQueryRow struct{ row pgx.Row }
 
 func (q txQueryRow) Scan(dest ...any) error { return q.row.Scan(dest...) }
 
+func escapeCommercialSearchToken(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
+}
+
 func (s *Service) ListCommercialDocuments(ctx context.Context, session identity.Session, kind CommercialKind, options CommercialListOptions) (CommercialListResult, error) {
 	spec, ok := commercialSpecFor(kind)
 	if !ok {
@@ -1034,9 +1040,12 @@ func (s *Service) ListCommercialDocuments(ctx context.Context, session identity.
 		args = append(args, value)
 		query += fmt.Sprintf(" AND t.currency_code=$%d", len(args))
 	}
-	if value := strings.TrimSpace(options.Search); value != "" {
-		args = append(args, "%"+value+"%")
-		query += fmt.Sprintf(" AND (t.document_no ILIKE $%d OR t.notes ILIKE $%d OR p.code ILIKE $%d OR p.display_name ILIKE $%d)", len(args), len(args), len(args), len(args))
+	// Every token has to land somewhere on the row, so a two-word search narrows
+	// the list instead of widening it.
+	for _, token := range strings.Fields(strings.TrimSpace(options.Search)) {
+		args = append(args, "%"+escapeCommercialSearchToken(token)+"%")
+		param := len(args)
+		query += fmt.Sprintf(" AND (t.document_no ILIKE $%d ESCAPE '\\' OR t.notes ILIKE $%d ESCAPE '\\' OR p.code ILIKE $%d ESCAPE '\\' OR p.display_name ILIKE $%d ESCAPE '\\')", param, param, param, param)
 	}
 	if options.From != nil {
 		args = append(args, *options.From)

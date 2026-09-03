@@ -892,7 +892,7 @@ type AccountMovementPage struct {
 // the same branch/account scope filters as ListAccountMovements. The scope
 // filters live in SQL, so a stable (transaction_date, posted_at, id) cursor is
 // safe here.
-func (s *Service) ListAllAccountMovements(ctx context.Context, session identity.Session, accountID, direction, cursor string, from, to *time.Time, limit int) (AccountMovementPage, error) {
+func (s *Service) ListAllAccountMovements(ctx context.Context, session identity.Session, accountID, direction, search, cursor string, from, to *time.Time, limit int) (AccountMovementPage, error) {
 	allowed := make([]string, 0, 2)
 	if can(session, movementPermission("CASH", "read")) {
 		allowed = append(allowed, "CASH")
@@ -929,6 +929,22 @@ func (s *Service) ListAllAccountMovements(ctx context.Context, session identity.
 	if to != nil {
 		args = append(args, to.Format("2006-01-02"))
 		query += fmt.Sprintf(` AND m.transaction_date <= $%d::date`, len(args))
+	}
+	patterns, patternErr := searchTokens(search)
+	if patternErr != nil {
+		return AccountMovementPage{}, patternErr
+	}
+	for _, pattern := range patterns {
+		args = append(args, pattern)
+		param := len(args)
+		query += fmt.Sprintf(` AND (
+			m.description ILIKE $%d ESCAPE '\'
+			OR COALESCE(m.external_reference,'') ILIKE $%d ESCAPE '\'
+			OR m.movement_kind ILIKE $%d ESCAPE '\'
+			OR m.currency ILIKE $%d ESCAPE '\'
+			OR a.code ILIKE $%d ESCAPE '\'
+			OR a.name ILIKE $%d ESCAPE '\'
+		)`, param, param, param, param, param, param)
 	}
 	if strings.TrimSpace(cursor) != "" {
 		lastDate, lastPostedAt, lastID, decodeErr := decodePaymentCursor(cursor)
@@ -1216,7 +1232,7 @@ func (s *Service) loadFinanceTransfer(ctx context.Context, session identity.Sess
 	return item, nil
 }
 
-func (s *Service) ListFinanceTransfers(ctx context.Context, session identity.Session, accountID string, from, to *time.Time, limit int) ([]FinanceTransfer, error) {
+func (s *Service) ListFinanceTransfers(ctx context.Context, session identity.Session, accountID, search string, from, to *time.Time, limit int) ([]FinanceTransfer, error) {
 	if !can(session, "finance.transfer.read") {
 		return nil, identity.ErrForbidden
 	}
@@ -1236,6 +1252,21 @@ func (s *Service) ListFinanceTransfers(ctx context.Context, session identity.Ses
 	if to != nil {
 		args = append(args, to.Format("2006-01-02"))
 		query += fmt.Sprintf(` AND transaction_date <= $%d::date`, len(args))
+	}
+	patterns, patternErr := searchTokens(search)
+	if patternErr != nil {
+		return nil, patternErr
+	}
+	for _, pattern := range patterns {
+		args = append(args, pattern)
+		param := len(args)
+		query += fmt.Sprintf(` AND (
+			document_no ILIKE $%d ESCAPE '\'
+			OR COALESCE(external_reference,'') ILIKE $%d ESCAPE '\'
+			OR description ILIKE $%d ESCAPE '\'
+			OR currency ILIKE $%d ESCAPE '\'
+			OR EXISTS(SELECT 1 FROM finance_accounts aq WHERE aq.company_id=finance_transfers.company_id AND aq.id IN (finance_transfers.from_account_id, finance_transfers.to_account_id) AND (aq.code ILIKE $%d ESCAPE '\' OR aq.name ILIKE $%d ESCAPE '\'))
+		)`, param, param, param, param, param, param)
 	}
 	args = append(args, limit)
 	query += fmt.Sprintf(` ORDER BY transaction_date DESC,posted_at DESC,id DESC LIMIT $%d`, len(args))

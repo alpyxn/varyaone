@@ -396,9 +396,12 @@ func (s *Service) ListPurchaseDocuments(ctx context.Context, session identity.Se
 		args = append(args, currency)
 		query += fmt.Sprintf(" AND t.currency=$%d", len(args))
 	}
-	if search := strings.TrimSpace(options.Search); search != "" {
-		args = append(args, "%"+search+"%")
-		query += fmt.Sprintf(" AND (t.%s ILIKE $%d OR p.code ILIKE $%d OR p.display_name ILIKE $%d)", spec.documentNo, len(args), len(args), len(args))
+	// Every token has to land somewhere on the row, so a two-word search narrows
+	// the list instead of widening it.
+	for _, token := range strings.Fields(strings.TrimSpace(options.Search)) {
+		args = append(args, "%"+escapePurchaseSearchToken(token)+"%")
+		param := len(args)
+		query += fmt.Sprintf(" AND (t.%s ILIKE $%d ESCAPE '\\' OR p.code ILIKE $%d ESCAPE '\\' OR p.display_name ILIKE $%d ESCAPE '\\')", spec.documentNo, param, param, param)
 	}
 	if options.From != nil {
 		args = append(args, *options.From)
@@ -517,6 +520,12 @@ WHERE t.company_id=$1
   AND EXISTS (SELECT 1 FROM branches b WHERE b.company_id=t.company_id AND b.id=t.branch_id AND b.is_active AND (NOT EXISTS (SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=t.company_id AND bs.user_id=$2) OR EXISTS (SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=t.company_id AND bs.user_id=$2 AND bs.branch_id=t.branch_id)))
   AND (t.warehouse_id IS NULL OR EXISTS (SELECT 1 FROM warehouses w WHERE w.company_id=t.company_id AND w.id=t.warehouse_id AND w.is_active AND (w.is_system OR w.branch_id IS NULL OR w.branch_id=t.branch_id) AND (w.is_system OR ((w.branch_id IS NULL OR NOT EXISTS (SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=t.company_id AND bs.user_id=$2) OR EXISTS (SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=t.company_id AND bs.user_id=$2 AND bs.branch_id=w.branch_id)) AND (NOT EXISTS (SELECT 1 FROM membership_warehouse_scopes ws WHERE ws.company_id=t.company_id AND ws.user_id=$2) OR EXISTS (SELECT 1 FROM membership_warehouse_scopes ws WHERE ws.company_id=t.company_id AND ws.user_id=$2 AND ws.warehouse_id=t.warehouse_id))))))
   AND NOT EXISTS (SELECT 1 FROM %s l WHERE l.company_id=t.company_id AND l.%s=t.id AND %s AND (l.warehouse_id IS NULL OR NOT EXISTS (SELECT 1 FROM warehouses lw WHERE lw.company_id=t.company_id AND lw.id=l.warehouse_id AND lw.is_active AND (lw.is_system OR lw.branch_id IS NULL OR lw.branch_id=t.branch_id) AND (lw.is_system OR ((lw.branch_id IS NULL OR NOT EXISTS (SELECT 1 FROM membership_branch_scopes lbs WHERE lbs.company_id=t.company_id AND lbs.user_id=$2) OR EXISTS (SELECT 1 FROM membership_branch_scopes lbs WHERE lbs.company_id=t.company_id AND lbs.user_id=$2 AND lbs.branch_id=lw.branch_id)) AND (NOT EXISTS (SELECT 1 FROM membership_warehouse_scopes lws WHERE lws.company_id=t.company_id AND lws.user_id=$2) OR EXISTS (SELECT 1 FROM membership_warehouse_scopes lws WHERE lws.company_id=t.company_id AND lws.user_id=$2 AND lws.warehouse_id=lw.id)))))))`, spec.documentNo, spec.documentDate, spec.currency, spec.total, spec.taxTotal, spec.grandTotal, spec.payableTotal, spec.version, spec.table, spec.lineTable, spec.lineParentColumn, spec.lineWarehousePredicate)
+}
+
+func escapePurchaseSearchToken(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
 }
 
 type purchaseListTableSpec struct {

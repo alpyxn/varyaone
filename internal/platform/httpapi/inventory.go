@@ -594,7 +594,7 @@ func (h inventoryHandler) listLots(w http.ResponseWriter, r *http.Request) {
 	if !h.allowed(w, r, "inventory.lot_serial.read") {
 		return
 	}
-	items, err := h.service.ListLots(r.Context(), sessionFromRequest(r).CurrentCompanyID, r.URL.Query().Get("product_id"), queryLimit(r, 50, 200), r.URL.Query().Get("warehouse_id"), sessionFromRequest(r).User.ID)
+	items, err := h.service.ListLots(r.Context(), sessionFromRequest(r).CurrentCompanyID, r.URL.Query().Get("product_id"), r.URL.Query().Get("q"), queryLimit(r, 50, 200), r.URL.Query().Get("warehouse_id"), sessionFromRequest(r).User.ID)
 	if err != nil {
 		writeInventoryError(w, r, err, "Lotlar okunamadı.")
 		return
@@ -630,7 +630,7 @@ func (h inventoryHandler) listSerialNumbers(w http.ResponseWriter, r *http.Reque
 	if !h.allowed(w, r, "inventory.lot_serial.read") {
 		return
 	}
-	items, err := h.service.ListSerialNumbers(r.Context(), sessionFromRequest(r).CurrentCompanyID, r.URL.Query().Get("product_id"), queryLimit(r, 50, 200), r.URL.Query().Get("warehouse_id"), sessionFromRequest(r).User.ID)
+	items, err := h.service.ListSerialNumbers(r.Context(), sessionFromRequest(r).CurrentCompanyID, r.URL.Query().Get("product_id"), r.URL.Query().Get("q"), queryLimit(r, 50, 200), r.URL.Query().Get("warehouse_id"), sessionFromRequest(r).User.ID)
 	if err != nil {
 		writeInventoryError(w, r, err, "Seri numaraları okunamadı.")
 		return

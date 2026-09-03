@@ -24,7 +24,12 @@ func serviceConfig() *service.Config {
 		Description: "Varya One ERP sunucusu (API, worker, veritabanı ve arayüz).",
 		Arguments:   []string{"stack"},
 		Option: service.KeyValue{
-			"DelayedAutoStart": true,
+			// Boot-start, not delayed: the stack still needs to start PostgreSQL
+			// and run migrations after the SCM starts it, and DelayedAutoStart
+			// pushes that whole sequence ~2 minutes past boot. Users who reboot
+			// and immediately open the client read that gap as "the server does
+			// not start by itself".
+			"StartType": "automatic",
 			// Auto-restart on crash (e.g. a transient DB start failure): the
 			// service exits non-zero, SCM waits 15s and starts it again.
 			"OnFailure":              "restart",
@@ -41,6 +46,15 @@ type program struct {
 }
 
 func (p *program) Start(service.Service) error {
+	// Self-heal the registration of installs that predate the current start-up
+	// configuration (delayed auto-start, missing recovery action). The service
+	// runs with enough privilege to rewrite its own SCM entry, and updates never
+	// re-run the installer, so this is the only path that reaches them. Purely
+	// best-effort: a stack that is otherwise healthy must not refuse to start
+	// because the SCM rejected a config change.
+	if err := reconcileServiceStartup(); err != nil {
+		p.logger.Warn("could not reconcile service start configuration", "error", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 	p.done = make(chan struct{})
@@ -90,6 +104,13 @@ func Control(action string) (resultErr error) {
 		return err
 	}
 	if action == "ensure" {
+		// An installation registered by an older build (or by hand) can still be
+		// manual/delayed start; ensure is the one elevated path every install and
+		// update runs through, so reconcile the registration here instead of
+		// making the user click "Servisi onar".
+		if err := reconcileServiceStartup(); err != nil {
+			return err
+		}
 		if err := ensureManagedService(svc); err != nil {
 			return err
 		}

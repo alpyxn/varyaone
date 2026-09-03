@@ -26,8 +26,6 @@
   .pill { background: #eee; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
   .ok { color: #1a7f37; } .bad { color: #c1272d; }
   .urls { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
-  .url-link { min-height: 28px; padding: 2px 4px; border: 0; background: transparent;
-              color: #c1272d; font: inherit; font-weight: 600; text-align: left; }
   label.opt { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; cursor: pointer; }
   label.opt small { display: block; opacity: .65; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -59,8 +57,8 @@
     <div class="row"><span class="k">Servis</span><span id="svc" class="pill">—</span></div>
     <ul class="urls" id="urls"></ul>
     <div class="actions" style="margin-top:10px">
-      <button id="open">Sunucuyu aç</button>
-      <button class="ghost" id="restart">Servisi yönet</button>
+      <button id="restart">Servisi yönet</button>
+      <button class="ghost" id="stop">Servisi durdur</button>
       <button class="ghost" id="repair">Servisi onar</button>
       <button class="ghost" id="logs">Loglar</button>
     </div>
@@ -116,17 +114,14 @@
     $("restart").textContent = !s.serviceInstalled ? "Servisi kur ve başlat" :
       (!s.running ? "Servisi başlat" : "Servisi yeniden başlat");
 
+    $("stop").disabled = busy || !s.serviceInstalled || !s.running;
+
+    // Addresses are informational: the panel manages the service, it does not
+    // open the application.
     const ul = $("urls"); ul.innerHTML = "";
     (s.urls || []).forEach(u => {
       const li = document.createElement("li");
-      const link = document.createElement("button");
-      link.type = "button";
-      link.className = "url-link";
-      link.textContent = u;
-      link.addEventListener("click", () => window.hostPanelConnect(panelToken, u).catch(e => {
-        $("status").textContent = errorText(e);
-      }));
-      li.append(link);
+      li.textContent = u;
       ul.appendChild(li);
     });
     document.querySelectorAll('input[name=mode]').forEach(r => { r.checked = (r.value === s.mode); });
@@ -134,12 +129,14 @@
     refreshInFlight = false;
   }
 
-  $("open").addEventListener("click", async () => {
-    $("status").textContent = "Sunucu açılıyor…";
+  $("stop").addEventListener("click", async () => {
+    $("status").textContent = "Servis durduruluyor… (yönetici onayı gerekebilir)";
     setBusy(true);
-    try { await window.hostOpenServer(panelToken); }
-    catch (e) { $("status").textContent = errorText(e); }
-    finally { setBusy(false); }
+    try {
+      await window.hostStop(panelToken);
+      $("status").textContent = "Servis durduruldu.";
+    } catch (e) { $("status").textContent = errorText(e); }
+    finally { setBusy(false); await refresh(); }
   });
   $("restart").addEventListener("click", async () => {
     const verb = lastState && !lastState.serviceInstalled ? "Kurulup başlatılıyor" :

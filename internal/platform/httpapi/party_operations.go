@@ -56,7 +56,7 @@ func (h partyOperationsHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Cari hareket tarih aralığı geçersiz.")
 		return
 	}
-	result, err := h.service.ListLedgerEntries(r.Context(), sessionFromRequest(r), r.URL.Query().Get("party_id"), r.URL.Query().Get("currency"), r.URL.Query().Get("cursor"), queryLimit(r, 50, 200), from, to)
+	result, err := h.service.ListLedgerEntries(r.Context(), sessionFromRequest(r), r.URL.Query().Get("party_id"), r.URL.Query().Get("currency"), r.URL.Query().Get("q"), r.URL.Query().Get("cursor"), queryLimit(r, 50, 200), from, to)
 	if err != nil {
 		writePartyError(w, r, err, "Cari hareketleri okunamadı.")
 		return
@@ -70,7 +70,7 @@ func (h partyOperationsHandler) listForParty(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Cari hareket tarih aralığı geçersiz.")
 		return
 	}
-	result, err := h.service.ListLedgerEntries(r.Context(), sessionFromRequest(r), chi.URLParam(r, "partyID"), r.URL.Query().Get("currency"), r.URL.Query().Get("cursor"), queryLimit(r, 50, 200), from, to)
+	result, err := h.service.ListLedgerEntries(r.Context(), sessionFromRequest(r), chi.URLParam(r, "partyID"), r.URL.Query().Get("currency"), r.URL.Query().Get("q"), r.URL.Query().Get("cursor"), queryLimit(r, 50, 200), from, to)
 	if err != nil {
 		writePartyError(w, r, err, "Cari hareketleri okunamadı.")
 		return

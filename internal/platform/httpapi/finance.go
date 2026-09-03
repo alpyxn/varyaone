@@ -88,7 +88,7 @@ func financeAccountType(r *http.Request) string {
 }
 
 func (h financeHandler) listTypedAccounts(w http.ResponseWriter, r *http.Request) {
-	items, err := h.service.ListAccounts(r.Context(), sessionFromRequest(r), financeAccountType(r), r.URL.Query().Get("include_inactive") == "true")
+	items, err := h.service.ListAccounts(r.Context(), sessionFromRequest(r), financeAccountType(r), r.URL.Query().Get("q"), r.URL.Query().Get("include_inactive") == "true")
 	if err != nil {
 		writeFinanceError(w, r, err, "Finans hesapları okunamadı.")
 		return
@@ -263,7 +263,7 @@ func (h financeHandler) listUnifiedMovements(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Hareket tarih aralığı geçersiz.")
 		return
 	}
-	page, err := h.service.ListAllAccountMovements(r.Context(), sessionFromRequest(r), r.URL.Query().Get("account_id"), r.URL.Query().Get("direction"), r.URL.Query().Get("cursor"), from, to, queryLimit(r, 100, 500))
+	page, err := h.service.ListAllAccountMovements(r.Context(), sessionFromRequest(r), r.URL.Query().Get("account_id"), r.URL.Query().Get("direction"), r.URL.Query().Get("q"), r.URL.Query().Get("cursor"), from, to, queryLimit(r, 100, 500))
 	if err != nil {
 		writeFinanceError(w, r, err, "Hesap hareketleri okunamadı.")
 		return
@@ -348,7 +348,7 @@ func (h financeHandler) listFinanceTransfers(w http.ResponseWriter, r *http.Requ
 		writeError(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Transfer tarih aralığı geçersiz.")
 		return
 	}
-	items, err := h.service.ListFinanceTransfers(r.Context(), sessionFromRequest(r), r.URL.Query().Get("account_id"), from, to, queryLimit(r, 100, 500))
+	items, err := h.service.ListFinanceTransfers(r.Context(), sessionFromRequest(r), r.URL.Query().Get("account_id"), r.URL.Query().Get("q"), from, to, queryLimit(r, 100, 500))
 	if err != nil {
 		writeFinanceError(w, r, err, "Transferler okunamadı.")
 		return
@@ -448,7 +448,7 @@ func (h financeHandler) previewAllocation(w http.ResponseWriter, r *http.Request
 }
 
 func (h financeHandler) listAccounts(w http.ResponseWriter, r *http.Request) {
-	items, err := h.service.ListAccounts(r.Context(), sessionFromRequest(r), r.URL.Query().Get("type"), r.URL.Query().Get("include_inactive") == "true")
+	items, err := h.service.ListAccounts(r.Context(), sessionFromRequest(r), r.URL.Query().Get("type"), r.URL.Query().Get("q"), r.URL.Query().Get("include_inactive") == "true")
 	if err != nil {
 		writeFinanceError(w, r, err, "Finans hesapları okunamadı.")
 		return
@@ -498,7 +498,7 @@ func (h financeHandler) listPayments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Ödeme tarih aralığı geçersiz.")
 		return
 	}
-	result, err := h.service.ListPaymentsPaged(r.Context(), sessionFromRequest(r), finance.PaymentListOptions{PartyID: r.URL.Query().Get("party_id"), Method: r.URL.Query().Get("method"), Status: r.URL.Query().Get("status"), AccountID: r.URL.Query().Get("account_id"), AmountMin: r.URL.Query().Get("amount_min"), AmountMax: r.URL.Query().Get("amount_max"), From: from, To: to, Cursor: r.URL.Query().Get("cursor"), Limit: queryLimit(r, 50, 200)})
+	result, err := h.service.ListPaymentsPaged(r.Context(), sessionFromRequest(r), finance.PaymentListOptions{PartyID: r.URL.Query().Get("party_id"), Method: r.URL.Query().Get("method"), Status: r.URL.Query().Get("status"), AccountID: r.URL.Query().Get("account_id"), AmountMin: r.URL.Query().Get("amount_min"), AmountMax: r.URL.Query().Get("amount_max"), Query: r.URL.Query().Get("q"), From: from, To: to, Cursor: r.URL.Query().Get("cursor"), Limit: queryLimit(r, 50, 200)})
 	if err != nil {
 		writeFinanceError(w, r, err, "Tahsilat ve ödemeler okunamadı.")
 		return
@@ -512,7 +512,7 @@ func (h financeHandler) listCollections(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Tahsilat tarih aralığı geçersiz.")
 		return
 	}
-	result, err := h.service.ListPaymentsPaged(r.Context(), sessionFromRequest(r), finance.PaymentListOptions{Kind: "COLLECTION", PartyID: r.URL.Query().Get("party_id"), Method: r.URL.Query().Get("method"), Status: r.URL.Query().Get("status"), AccountID: r.URL.Query().Get("account_id"), AmountMin: r.URL.Query().Get("amount_min"), AmountMax: r.URL.Query().Get("amount_max"), From: from, To: to, Cursor: r.URL.Query().Get("cursor"), Limit: queryLimit(r, 50, 200)})
+	result, err := h.service.ListPaymentsPaged(r.Context(), sessionFromRequest(r), finance.PaymentListOptions{Kind: "COLLECTION", PartyID: r.URL.Query().Get("party_id"), Method: r.URL.Query().Get("method"), Status: r.URL.Query().Get("status"), AccountID: r.URL.Query().Get("account_id"), AmountMin: r.URL.Query().Get("amount_min"), AmountMax: r.URL.Query().Get("amount_max"), Query: r.URL.Query().Get("q"), From: from, To: to, Cursor: r.URL.Query().Get("cursor"), Limit: queryLimit(r, 50, 200)})
 	if err != nil {
 		writeFinanceError(w, r, err, "Tahsilatlar okunamadı.")
 		return

@@ -426,7 +426,13 @@ func baseAmountRoundsToZero(debit, credit, rate string) bool {
 // ListLedgerEntries is the company-scoped read model used by the Cari
 // hareketler screen. A party filter is optional for the list view; the
 // running-balance UI still supplies one party and one currency separately.
-func (s *Service) ListLedgerEntries(ctx context.Context, session identity.Session, partyID, currency, cursor string, limit int, from, to *time.Time) (LedgerListResult, error) {
+func escapeLedgerSearchToken(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
+}
+
+func (s *Service) ListLedgerEntries(ctx context.Context, session identity.Session, partyID, currency, search, cursor string, limit int, from, to *time.Time) (LedgerListResult, error) {
 	if !authorized(session, "party.ledger.read") {
 		return LedgerListResult{}, identity.ErrForbidden
 	}
@@ -470,6 +476,22 @@ func (s *Service) ListLedgerEntries(ctx context.Context, session identity.Sessio
 	if to != nil {
 		args = append(args, to.Format("2006-01-02"))
 		pagePredicates = append(pagePredicates, fmt.Sprintf(`o.document_date <= $%d::date`, len(args)))
+	}
+	search = strings.TrimSpace(search)
+	if len(search) > 128 {
+		return LedgerListResult{}, fmt.Errorf("%w: arama metni çok uzun", identity.ErrValidation)
+	}
+	for _, token := range strings.Fields(search) {
+		args = append(args, "%"+escapeLedgerSearchToken(token)+"%")
+		param := len(args)
+		pagePredicates = append(pagePredicates, fmt.Sprintf(`(
+			o.description ILIKE $%d ESCAPE '\'
+			OR o.entry_type ILIKE $%d ESCAPE '\'
+			OR o.source_type ILIKE $%d ESCAPE '\'
+			OR o.currency ILIKE $%d ESCAPE '\'
+			OR COALESCE(p.code,'') ILIKE $%d ESCAPE '\'
+			OR COALESCE(p.display_name,'') ILIKE $%d ESCAPE '\'
+		)`, param, param, param, param, param, param))
 	}
 	// The movement cursor includes all three ordering columns. A date/id-only
 	// cursor can skip same-day rows when several entries share a timestamp.

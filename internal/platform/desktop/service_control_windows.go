@@ -15,6 +15,13 @@ import (
 
 const serviceTransitionTimeout = 30 * time.Second
 
+// Recovery-action settings mirrored from serviceConfig(); reconcileServiceStartup
+// writes them onto registrations that predate them.
+const (
+	serviceRestartDelay       = 15 * time.Second
+	serviceFailureResetPeriod = 86400
+)
+
 // controlManagedService deliberately does not call kardianos/service's Windows
 // Stop/Restart implementation: v1.3.0 breaks only out of its select when its
 // timeout fires, leaving the surrounding polling loop alive forever.
@@ -208,4 +215,64 @@ func windowsServiceState(state svc.State) string {
 	default:
 		return fmt.Sprintf("unknown(%d)", state)
 	}
+}
+
+// reconcileServiceStartup forces an already-registered service back to plain
+// automatic (boot) start and re-applies the crash recovery action.
+//
+// Without it a machine keeps whatever start type its first install wrote:
+// builds before this one registered the service as *delayed* auto-start, which
+// makes Windows hold the whole stack back for ~2 minutes after a reboot, and a
+// manual/disabled start type (set by hand, or by an aborted update) means the
+// server simply never comes back after a restart. Both look identical to the
+// user — "I restarted the PC and the server is not running".
+//
+// A missing registration is not an error: `service ensure` installs it right
+// after, already with the correct configuration.
+func reconcileServiceStartup() error {
+	h, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return fmt.Errorf("connect to Windows service manager: %w", err)
+	}
+	m := &mgr.Mgr{Handle: h}
+	defer m.Disconnect()
+
+	name, err := windows.UTF16PtrFromString(ServiceName)
+	if err != nil {
+		return err
+	}
+	serviceHandle, err := windows.OpenService(
+		m.Handle,
+		name,
+		// SERVICE_START is required alongside SERVICE_CHANGE_CONFIG to write a
+		// failure action of type "restart".
+		windows.SERVICE_QUERY_CONFIG|windows.SERVICE_CHANGE_CONFIG|windows.SERVICE_START,
+	)
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open Windows service %s: %w", ServiceName, err)
+	}
+	managed := &mgr.Service{Name: ServiceName, Handle: serviceHandle}
+	defer managed.Close()
+
+	cfg, err := managed.Config()
+	if err != nil {
+		return fmt.Errorf("read Windows service config: %w", err)
+	}
+	if cfg.StartType != mgr.StartAutomatic || cfg.DelayedAutoStart {
+		cfg.StartType = mgr.StartAutomatic
+		cfg.DelayedAutoStart = false
+		if err := managed.UpdateConfig(cfg); err != nil {
+			return fmt.Errorf("set Windows service to automatic start: %w", err)
+		}
+	}
+	if err := managed.SetRecoveryActions(
+		[]mgr.RecoveryAction{{Type: mgr.ServiceRestart, Delay: serviceRestartDelay}},
+		serviceFailureResetPeriod,
+	); err != nil {
+		return fmt.Errorf("set Windows service recovery actions: %w", err)
+	}
+	return nil
 }

@@ -15,6 +15,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { api, type Session } from '$lib/api';
+  import { matchesSearch } from '$lib/filtering';
   import {
     activatePartyGroup,
     createPartyGroup,
@@ -46,12 +47,8 @@
   let requestSequence = 0;
 
   const canEdit = $derived(Boolean(session?.permissions.includes('party.edit')));
-  const normalizedSearch = $derived(search.trim().toLocaleLowerCase('tr-TR'));
   const filteredGroups = $derived(
-    groups.filter((group) => {
-      if (!normalizedSearch) return true;
-      return `${group.code} ${group.name}`.toLocaleLowerCase('tr-TR').includes(normalizedSearch);
-    })
+    groups.filter((group) => matchesSearch(`${group.code} ${group.name}`, search))
   );
   const activeCount = $derived(groups.filter((group) => group.is_active).length);
   const inactiveCount = $derived(groups.length - activeCount);

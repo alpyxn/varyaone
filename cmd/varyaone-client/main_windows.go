@@ -46,6 +46,17 @@ func main() {
 		}
 	}
 
+	mode := instanceModeApp
+	if panel {
+		mode = instanceModePanel
+	}
+	// A second launch of the same mode (login autostart plus a shortcut click,
+	// or the ⚙ button pressed twice) raises the window that is already running
+	// instead of adding another process and another tray icon.
+	if !claimSingleInstance(mode) {
+		return
+	}
+
 	title := "Varya One"
 	w, h := 1100, 760
 	if panel {
@@ -82,6 +93,7 @@ func main() {
 		setupTray(uintptr(view.Window()), hidden)
 	} else {
 		view.SetHtml(app.clientDocument())
+		subclassWindow(uintptr(view.Window()), instanceModeApp)
 	}
 	view.Run()
 }
@@ -119,12 +131,11 @@ func (a *clientApp) bind() {
 	_ = a.view.Bind("hostDiscover", a.discover)
 	_ = a.view.Bind("hostSaved", a.saved)
 	_ = a.view.Bind("hostConnect", a.connectAuthorized)
-	_ = a.view.Bind("hostOpenServer", a.openLocalServer)
-	_ = a.view.Bind("hostPanelConnect", a.panelConnect)
 	_ = a.view.Bind("hostOpenPanel", a.openPanel)
 	_ = a.view.Bind("hostPanelState", a.panelState)
 	_ = a.view.Bind("hostApplyMode", a.applyMode)
 	_ = a.view.Bind("hostRestart", a.restartService)
+	_ = a.view.Bind("hostStop", a.stopService)
 	_ = a.view.Bind("hostRepair", a.repairService)
 	_ = a.view.Bind("hostOpenLogs", a.openLogs)
 }
@@ -249,26 +260,14 @@ const controlPanelButtonJS = `(function(){
 	(document.body||document.documentElement).appendChild(b);
 })();`
 
-func (a *clientApp) openLocalServer(token string) error {
-	if err := a.authorizePanel(token); err != nil {
-		return err
-	}
-	return a.connect(fmt.Sprintf("http://127.0.0.1:%d", desktop.HTTPPort()))
-}
-
-func (a *clientApp) panelConnect(token, raw string) error {
-	if err := a.authorizePanel(token); err != nil {
-		return err
-	}
-	return a.connect(raw)
-}
-
+// openPanel opens the control panel as its own window rather than replacing the
+// served application in this one: the panel no longer navigates to the server,
+// so swapping the document in place would strand the user with no way back.
+// The single-instance guard turns a second call into "raise the open panel".
 func (a *clientApp) openPanel() error {
-	a.view.Dispatch(func() {
-		a.view.SetTitle("Varya Kontrol Paneli")
-		a.view.SetHtml(a.panelDocument())
-	})
-	return nil
+	cmd := exec.Command(siblingExe("varyaone-client.exe"), "--panel")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd.Start()
 }
 
 func (a *clientApp) panelState(token string) (panelState, error) {
@@ -347,6 +346,23 @@ func (a *clientApp) restartService(token string) error {
 		return a.waitUntilReady(coldReadyWait)
 	}
 	return a.waitUntilReady(restartReadyWait)
+}
+
+func (a *clientApp) stopService(token string) error {
+	if err := a.authorizePanel(token); err != nil {
+		return err
+	}
+	service := queryServiceState()
+	if service.err != nil {
+		return fmt.Errorf("Windows servis durumu okunamadı: %w", service.err)
+	}
+	if !service.installed || service.status == "stopped" {
+		return nil
+	}
+	if err := runElevated(siblingExe("varyaone.exe"), "service", "stop"); err != nil {
+		return err
+	}
+	return waitUntilServiceStopped(30 * time.Second)
 }
 
 func waitUntilServiceStopped(timeout time.Duration) error {

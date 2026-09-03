@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { RefreshCw, ChevronLeft, ChevronRight, Check } from '@lucide/svelte';
   import { api, APIRequestError, type Session } from '$lib/api';
+  import { matchesSearch } from '$lib/filtering';
   import { Button } from '$lib/components/ui/button';
   import { Badge } from '$lib/components/ui/badge';
   import { TimeInput } from '$lib/components/varya/time-input';
@@ -66,7 +67,7 @@
 
   const filteredEmployees = $derived(
     employees.filter((e) =>
-      `${e.first_name} ${e.last_name}`.toLowerCase().includes(empQuery.trim().toLowerCase())
+      matchesSearch(`${e.first_name} ${e.last_name} ${e.employee_code}`, empQuery)
     )
   );
 

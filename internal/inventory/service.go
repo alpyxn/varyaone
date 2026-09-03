@@ -2921,7 +2921,7 @@ type TransferListFilter struct {
 	UserID        string
 }
 
-func escapeTransferSearchToken(value string) string {
+func escapeSearchToken(value string) string {
 	value = strings.ReplaceAll(value, `\`, `\\`)
 	value = strings.ReplaceAll(value, `%`, `\%`)
 	return strings.ReplaceAll(value, `_`, `\_`)
@@ -3047,7 +3047,7 @@ func (s *Service) ListTransfersPaged(ctx context.Context, filter TransferListFil
 		)`, warehouseScope("sw"), warehouseScope("dw"), warehouseScope("tw"))
 	}
 	for _, token := range strings.Fields(filter.Query) {
-		args = append(args, "%"+escapeTransferSearchToken(token)+"%")
+		args = append(args, "%"+escapeSearchToken(token)+"%")
 		param := len(args)
 		query += fmt.Sprintf(` AND (
 			 t.transfer_no ILIKE $%d ESCAPE '\'
@@ -4477,7 +4477,7 @@ func (s *Service) CreateSerialNumber(ctx context.Context, input SerialNumberInpu
 	return result, err
 }
 
-func (s *Service) ListLots(ctx context.Context, companyID, productID string, limit int, warehouseIDs ...string) ([]Lot, error) {
+func (s *Service) ListLots(ctx context.Context, companyID, productID, search string, limit int, warehouseIDs ...string) ([]Lot, error) {
 	if _, err := requireUUID("company_id", companyID); err != nil {
 		return nil, err
 	}
@@ -4567,6 +4567,19 @@ func (s *Service) ListLots(ctx context.Context, companyID, productID string, lim
 		}
 		args = append(args, productID)
 		query += fmt.Sprintf(` AND l.product_id=$%d`, len(args))
+	}
+	search = strings.TrimSpace(search)
+	if len(search) > 128 {
+		return nil, fmt.Errorf("%w: arama metni çok uzun", identity.ErrValidation)
+	}
+	for _, token := range strings.Fields(search) {
+		args = append(args, "%"+escapeSearchToken(token)+"%")
+		param := len(args)
+		query += fmt.Sprintf(` AND (
+			l.lot_number ILIKE $%d ESCAPE '\'
+			OR COALESCE(l.supplier_reference,'') ILIKE $%d ESCAPE '\'
+			OR EXISTS (SELECT 1 FROM products pq WHERE pq.company_id=l.company_id AND pq.id=l.product_id AND (pq.code ILIKE $%d ESCAPE '\' OR pq.name ILIKE $%d ESCAPE '\'))
+		)`, param, param, param, param)
 	}
 	args = append(args, limit)
 	query += fmt.Sprintf(` GROUP BY l.id,l.company_id,l.product_id,l.lot_number,l.manufactured_at,l.expires_at,l.supplier_reference,l.metadata,l.created_at
@@ -4705,7 +4718,7 @@ func (s *Service) GetLot(ctx context.Context, companyID, lotID string, userIDs .
 	return item, nil
 }
 
-func (s *Service) ListSerialNumbers(ctx context.Context, companyID, productID string, limit int, warehouseIDs ...string) ([]SerialNumber, error) {
+func (s *Service) ListSerialNumbers(ctx context.Context, companyID, productID, search string, limit int, warehouseIDs ...string) ([]SerialNumber, error) {
 	if _, err := requireUUID("company_id", companyID); err != nil {
 		return nil, err
 	}
@@ -4749,6 +4762,19 @@ func (s *Service) ListSerialNumbers(ctx context.Context, companyID, productID st
 		}
 		args = append(args, productID)
 		query += fmt.Sprintf(` AND sn.product_id=$%d`, len(args))
+	}
+	search = strings.TrimSpace(search)
+	if len(search) > 128 {
+		return nil, fmt.Errorf("%w: arama metni çok uzun", identity.ErrValidation)
+	}
+	for _, token := range strings.Fields(search) {
+		args = append(args, "%"+escapeSearchToken(token)+"%")
+		param := len(args)
+		query += fmt.Sprintf(` AND (
+			sn.serial_number ILIKE $%d ESCAPE '\'
+			OR sn.status ILIKE $%d ESCAPE '\'
+			OR EXISTS (SELECT 1 FROM products pq WHERE pq.company_id=sn.company_id AND pq.id=sn.product_id AND (pq.code ILIKE $%d ESCAPE '\' OR pq.name ILIKE $%d ESCAPE '\'))
+		)`, param, param, param, param)
 	}
 	args = append(args, limit)
 	query += fmt.Sprintf(` ORDER BY serial_number,id LIMIT $%d`, len(args))
