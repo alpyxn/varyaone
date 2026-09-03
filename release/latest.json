@@ -5,13 +5,24 @@
       "mandatory": false,
       "min_version": "",
       "pg_major": 18,
+      "version": "v0.1.5-alpha",
+      "notes_md": "feat(demo): shared showcase company with one-click entry and periodic reset",
+      "published_at": "2026-09-03T20:55:02Z",
+      "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.5-alpha/varyaone-v0.1.5-alpha-windows-amd64.zip",
+      "windows_sha256": "c94c283a3911c133ab7868c3a5fe633b7ea4429c4471dcbf93ae9eeb62b999aa"
+    }
+  },
+  "yanked": [],
+  "history": [
+    {
+      "mandatory": false,
+      "min_version": "",
+      "pg_major": 18,
       "version": "v0.1.0-alpha",
       "notes_md": "fix update scheduler",
       "published_at": "2026-09-02T23:48:12Z",
       "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.0-alpha/varyaone-v0.1.0-alpha-windows-amd64.zip",
       "windows_sha256": "ace69b735450dc5d4deb8422fa89a4bbcd9427ed2f3c21400212cd8700fed143"
     }
-  },
-  "yanked": [],
-  "history": []
+  ]
 }
