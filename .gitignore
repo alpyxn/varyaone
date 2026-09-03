@@ -6,6 +6,7 @@ CHANGELOG.md
 CONTEXT.md
 AGENTS.md
 CLAUDE.md
+versionchanges.md
 bin/
 deploy/.lock-*
 deploy/.update-rollback

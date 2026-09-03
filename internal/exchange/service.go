@@ -246,6 +246,13 @@ func (s *Service) dashboard(ctx context.Context, companyID string) (Dashboard, e
 		if err := rows.Scan(&item.CompanyID, &item.CurrencyCode, &item.BaseCurrency, &item.RateToBase, &item.RateDate, &item.Source, &item.SourceURL, &item.FetchedAt); err != nil {
 			return Dashboard{}, err
 		}
+		// rate_to_base is numeric(38,18); handing eighteen fraction digits to a
+		// screen that prefills a tahsilat/ödeme rate field would post a value
+		// the money parser rejects ("kur geçersiz"). Publish the same canonical
+		// form document posting uses.
+		if canonical, rateErr := documentRate(item.RateToBase); rateErr == nil {
+			item.RateToBase = canonical
+		}
 		items = append(items, item)
 	}
 	return Dashboard{BaseCurrency: base, Settings: settings, Items: items}, rows.Err()

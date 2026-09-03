@@ -18,6 +18,11 @@ var (
 	ErrAlreadySetup       = errors.New("instance setup is already complete")
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrLoginLimited       = errors.New("too many login attempts")
+	// ErrTOTPRequired means the password was correct but the account has two
+	// step verification on and the request carried no code. It is only ever
+	// returned after the password itself verified, so it cannot be used to
+	// discover whether an account exists or has 2FA enabled.
+	ErrTOTPRequired       = errors.New("totp code required")
 	ErrUnauthenticated    = errors.New("authentication required")
 	ErrForbidden          = errors.New("permission denied")
 	ErrConflict           = errors.New("concurrent update conflict")
@@ -516,6 +521,12 @@ func (s *Service) Login(ctx context.Context, email, password, totpCode string, m
 	}
 	if err != nil {
 		return Session{}, err
+	}
+	if valid && len(totpCiphertext) > 0 && strings.TrimSpace(totpCode) == "" {
+		// The code is asked for in a second step, after the password proved
+		// itself; this attempt is neither a success nor a failure, so it is
+		// deliberately kept out of the login_attempts rate-limit window.
+		return Session{}, ErrTOTPRequired
 	}
 	if valid && len(totpCiphertext) > 0 {
 		secret, openErr := s.secretBox.Open(user.ID, "totp", totpCiphertext)

@@ -10,6 +10,7 @@ import {
   type PartyStatementList,
   type PartyStatementReport,
   type PartyOpenItemList,
+  type PartyAgingReport,
   type PartyInput,
   type PartyList,
   type PartyLocationDefaults,
@@ -343,3 +344,9 @@ export const activatePartyGroup = (id: string, version: number) =>
     headers: { 'If-Match': `"${version}"` },
     body: '{}'
   });
+
+/** Cari yaşlandırma: açık fatura bakiyelerinin vade kovalarına dağılımı. */
+export const getPartyAging = (params = new URLSearchParams(), signal?: AbortSignal) => {
+  const query = params.toString();
+  return api<PartyAgingReport>(`/finance/party-aging${query ? `?${query}` : ''}`, { signal });
+};

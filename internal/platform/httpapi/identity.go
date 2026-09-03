@@ -127,6 +127,8 @@ func (h identityHandler) login(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		minutes := (retryAfter + 59) / 60
 		writeError(w, r, http.StatusTooManyRequests, "LOGIN_RATE_LIMITED", fmt.Sprintf("Çok fazla başarısız deneme. Yaklaşık %d dakika sonra tekrar deneyin.", minutes))
+	case errors.Is(err, identity.ErrTOTPRequired):
+		writeError(w, r, http.StatusUnauthorized, "TOTP_REQUIRED", "İki adımlı doğrulama kodu gerekli.")
 	case errors.Is(err, identity.ErrInvalidCredentials):
 		writeError(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", "E-posta, parola veya doğrulama kodu hatalı.")
 	case err != nil:

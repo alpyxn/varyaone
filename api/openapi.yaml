@@ -90,7 +90,7 @@ paths:
           }
         "401":
           {
-            description: Invalid credentials,
+            description: "Invalid credentials, or code TOTP_REQUIRED when the password verified but the account needs a two-step code",
             content:
               {
                 application/json:
@@ -2542,6 +2542,30 @@ paths:
                 description: { type: string, minLength: 1 }
                 transaction_date: { type: string, format: date }
       responses: { "201": { description: Party transfer, content: { application/json: { schema: { $ref: "#/components/schemas/PartyTransfer" } } } } }
+  /api/v1/finance/party-aging:
+    get:
+      operationId: getPartyAging
+      summary: Age open invoice balances per party into due-date buckets
+      security: [{ browserSession: [] }, { apiToken: [] }]
+      parameters:
+        - { name: as_of, in: query, schema: { type: string, format: date } }
+        - { name: party_id, in: query, schema: { type: string, format: uuid } }
+        - { name: currency, in: query, schema: { type: string, pattern: "^[A-Z]{3}$" } }
+        - {
+            name: side,
+            in: query,
+            schema: { type: string, enum: [RECEIVABLE, PAYABLE] },
+          }
+      responses:
+        "200":
+          {
+            description: Party aging report,
+            content:
+              {
+                application/json:
+                  { schema: { $ref: "#/components/schemas/PartyAgingReport" } },
+              },
+          }
   /api/v1/invoice-open-items:
     get:
       operationId: listInvoiceOpenItems
@@ -5640,6 +5664,30 @@ components:
         currency: { type: string, pattern: "^[A-Z]{3}$" }
         amount: { $ref: "#/components/schemas/Decimal" }
         exchange_rate: { $ref: "#/components/schemas/Decimal" }
+    PartyAgingRow:
+      type: object
+      additionalProperties: false
+      required: [party_id, party_code, party_name, side, currency, not_due, days_0_30, days_31_60, days_61_90, days_90_plus, overdue_total, total]
+      properties:
+        party_id: { type: string, format: uuid }
+        party_code: { type: string }
+        party_name: { type: string }
+        side: { type: string, enum: [RECEIVABLE, PAYABLE] }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        not_due: { $ref: "#/components/schemas/Decimal" }
+        days_0_30: { $ref: "#/components/schemas/Decimal" }
+        days_31_60: { $ref: "#/components/schemas/Decimal" }
+        days_61_90: { $ref: "#/components/schemas/Decimal" }
+        days_90_plus: { $ref: "#/components/schemas/Decimal" }
+        overdue_total: { $ref: "#/components/schemas/Decimal" }
+        total: { $ref: "#/components/schemas/Decimal" }
+    PartyAgingReport:
+      type: object
+      additionalProperties: false
+      required: [as_of, items]
+      properties:
+        as_of: { type: string, format: date }
+        items: { type: array, items: { $ref: "#/components/schemas/PartyAgingRow" } }
     OpenItem:
       type: object
       additionalProperties: false

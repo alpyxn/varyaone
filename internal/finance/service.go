@@ -599,7 +599,7 @@ func (s *Service) postPayment(ctx context.Context, session identity.Session, inp
 	if err != nil {
 		return Payment{}, fmt.Errorf("%w: tutar geçersiz", identity.ErrValidation)
 	}
-	rate, err := parsePositiveDefault(input.ExchangeRate, 10)
+	rate, err := parseRateDefault(input.ExchangeRate)
 	if err != nil {
 		return Payment{}, fmt.Errorf("%w: kur geçersiz", identity.ErrValidation)
 	}
@@ -641,7 +641,7 @@ func (s *Service) postPayment(ctx context.Context, session identity.Session, inp
 		retryRate := rate
 		if strings.TrimSpace(retryInput.ExchangeRate) == "" {
 			retryInput.ExchangeRate = existing.ExchangeRate
-			if parsedRate, parseErr := parsePositive(existing.ExchangeRate, 10); parseErr == nil {
+			if parsedRate, parseErr := parseRate(existing.ExchangeRate); parseErr == nil {
 				retryRate = parsedRate
 			}
 		}
@@ -1828,7 +1828,7 @@ func (s *Service) PostManualEntry(ctx context.Context, session identity.Session,
 		return ManualEntry{}, fmt.Errorf("%w: tutar geçersiz", identity.ErrValidation)
 	}
 	rateProvided := strings.TrimSpace(input.ExchangeRate) != ""
-	rate, err := parsePositiveDefault(input.ExchangeRate, 10)
+	rate, err := parseRateDefault(input.ExchangeRate)
 	if err != nil {
 		return ManualEntry{}, fmt.Errorf("%w: kur geçersiz", identity.ErrValidation)
 	}
@@ -1974,7 +1974,7 @@ func (s *Service) PostPartyTransfer(ctx context.Context, session identity.Sessio
 		return PartyTransfer{}, fmt.Errorf("%w: tutar geçersiz", identity.ErrValidation)
 	}
 	rateProvided := strings.TrimSpace(input.ExchangeRate) != ""
-	rate, err := parsePositiveDefault(input.ExchangeRate, 10)
+	rate, err := parseRateDefault(input.ExchangeRate)
 	if err != nil {
 		return PartyTransfer{}, fmt.Errorf("%w: kur geçersiz", identity.ErrValidation)
 	}
@@ -2102,7 +2102,7 @@ func (s *Service) PostInvoiceTx(ctx context.Context, tx pgx.Tx, session identity
 	// Parse a provisional rate before the idempotency lookup so a replay is
 	// compared against the original immutable posting snapshot. Foreign
 	// currency blank-rate rejection is applied after company currency lookup.
-	rate, err := parsePositiveDefault(input.ExchangeRate, 10)
+	rate, err := parseRateDefault(input.ExchangeRate)
 	if err != nil {
 		return InvoicePosting{}, fmt.Errorf("%w: fatura kuru geçersiz", identity.ErrValidation)
 	}
@@ -2204,7 +2204,7 @@ func (s *Service) PostInvoiceTx(ctx context.Context, tx pgx.Tx, session identity
 		if strings.TrimSpace(input.ExchangeRate) == "" {
 			rate = big.NewRat(1, 1)
 		} else {
-			rate, err = parsePositive(input.ExchangeRate, 10)
+			rate, err = parseRate(input.ExchangeRate)
 			if err != nil || rate.Cmp(big.NewRat(1, 1)) != 0 {
 				return InvoicePosting{}, fmt.Errorf("%w: şirket para biriminde kur 1 olmalıdır", identity.ErrValidation)
 			}
@@ -2213,7 +2213,7 @@ func (s *Service) PostInvoiceTx(ctx context.Context, tx pgx.Tx, session identity
 		if strings.TrimSpace(input.ExchangeRate) == "" {
 			return InvoicePosting{}, domainError(ErrExchangeRateRequired, "yabancı para fatura postu için kur gereklidir")
 		}
-		rate, err = parsePositive(input.ExchangeRate, 10)
+		rate, err = parseRate(input.ExchangeRate)
 		if err != nil {
 			return InvoicePosting{}, fmt.Errorf("%w: fatura kuru geçersiz", identity.ErrValidation)
 		}
@@ -2883,19 +2883,30 @@ func writeAuditAndEventTx(ctx context.Context, tx pgx.Tx, session identity.Sessi
 	return err
 }
 
+// parseRate accepts an exchange rate from a client or from storage. The value
+// is normalized to the canonical rate form first, so a rate carrying the raw
+// eighteen fraction digits of exchange_rates.rate_to_base is accepted instead
+// of being refused as "kur geçersiz"; a value that is not a decimal at all
+// still fails validation here.
+func parseRate(value string) (*big.Rat, error) {
+	return parsePositive(NormalizeRateText(value), rateScale)
+}
+
+// parseRateDefault is parseRate with the base-currency default of 1 for an
+// omitted rate.
+func parseRateDefault(value string) (*big.Rat, error) {
+	if strings.TrimSpace(value) == "" {
+		value = "1"
+	}
+	return parseRate(value)
+}
+
 func parsePositive(value string, scale int) (*big.Rat, error) {
 	parsed, err := money.ParseDecimal(value, scale)
 	if err != nil || parsed.Sign() <= 0 {
 		return nil, money.ErrInvalidDecimal
 	}
 	return parseRat(parsed.String())
-}
-
-func parsePositiveDefault(value string, scale int) (*big.Rat, error) {
-	if strings.TrimSpace(value) == "" {
-		value = "1"
-	}
-	return parsePositive(value, scale)
 }
 
 func parseRat(value string) (*big.Rat, error) {

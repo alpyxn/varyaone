@@ -30,6 +30,7 @@ func mountFinanceRoutes(router chi.Router, identityService *identity.Service, se
 		r.Get("/collections/{paymentID}", h.getPayment)
 		r.Get("/payments", h.listPayments)
 		r.Get("/payments/{paymentID}", h.getPayment)
+		r.Get("/party-aging", h.partyAging)
 		r.Get("/transfers", h.listFinanceTransfers)
 		r.Get("/transfers/{transferID}", h.getFinanceTransfer)
 		r.Group(func(r chi.Router) {
@@ -552,6 +553,27 @@ func (h financeHandler) listOpenItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// partyAging answers the "kim ne kadar borçlu, ne kadar gecikmiş" question
+// straight from the open-item read model.
+func (h financeHandler) partyAging(w http.ResponseWriter, r *http.Request) {
+	asOf := time.Now().UTC()
+	if raw := strings.TrimSpace(r.URL.Query().Get("as_of")); raw != "" {
+		parsed, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Yaşlandırma tarihi geçersiz.")
+			return
+		}
+		asOf = parsed
+	}
+	report, err := h.service.PartyAging(r.Context(), sessionFromRequest(r), asOf,
+		r.URL.Query().Get("party_id"), r.URL.Query().Get("currency"), r.URL.Query().Get("side"))
+	if err != nil {
+		writeFinanceError(w, r, err, "Cari yaşlandırma okunamadı.")
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 func (h financeHandler) postCollection(w http.ResponseWriter, r *http.Request) {

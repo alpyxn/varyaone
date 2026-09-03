@@ -599,7 +599,10 @@ func financeRateTx(ctx context.Context, tx pgx.Tx, companyID, currency string, d
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", domainError(ErrExchangeRateRequired, "işlem tarihi için döviz kuru bulunamadı")
 	}
-	return rate, base, err
+	if err != nil {
+		return "", "", err
+	}
+	return NormalizeRateText(rate), base, nil
 }
 
 func enforceNegativeBalanceTx(ctx context.Context, tx pgx.Tx, session identity.Session, accountID string, outAmount *big.Rat, reason string) error {
@@ -714,8 +717,11 @@ func (s *Service) postAccountMovement(ctx context.Context, session identity.Sess
 	if err != nil {
 		return AccountMovement{}, err
 	}
-	rateValue, rateErr := parsePositive(rate, 10)
-	if rateErr != nil || amountString(new(big.Rat).Mul(amount, rateValue), 4) == "0.0000" {
+	rateValue, rateErr := parseRate(rate)
+	if rateErr != nil {
+		return AccountMovement{}, fmt.Errorf("%w: işlem tarihindeki kur değeri geçersiz", identity.ErrValidation)
+	}
+	if amountString(new(big.Rat).Mul(amount, rateValue), 4) == "0.0000" {
 		return AccountMovement{}, fmt.Errorf("%w: temel para birimine çevrilen tutar dört ondalıkta sıfıra yuvarlanamaz", identity.ErrValidation)
 	}
 	id := uuid.NewString()
@@ -1268,4 +1274,35 @@ func (s *Service) ListFinanceTransfers(ctx context.Context, session identity.Ses
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+// rateScale is the number of fraction digits every exchange rate is carried
+// with once it leaves storage. exchange_rates.rate_to_base is numeric(38,18),
+// so a raw read renders eighteen digits -- more than the money parser accepts
+// (scale 10) and more than any movement column keeps (numeric(20,10)). Eight
+// digits is well past what TCMB and ECB publish (four to six), so trimming to
+// it loses no value while keeping every stored rate usable.
+const rateScale = 8
+
+// NormalizeRateText renders a stored rate in the canonical form the rest of
+// the system speaks: at most rateScale fraction digits, no trailing zeros.
+// A value that is not a decimal at all is returned untouched so the caller's
+// own validation still reports it.
+func NormalizeRateText(value string) string {
+	trimmed := strings.TrimSpace(value)
+	// big.Rat reads exponent notation, which the money parser deliberately
+	// refuses; normalizing "1e5" into a plain number here would widen what the
+	// API accepts, so such a value is passed through to fail validation.
+	if strings.ContainsAny(trimmed, "eE") {
+		return trimmed
+	}
+	parsed, ok := new(big.Rat).SetString(trimmed)
+	if !ok || parsed.Sign() <= 0 {
+		return trimmed
+	}
+	formatted := strings.TrimRight(strings.TrimRight(parsed.FloatString(rateScale), "0"), ".")
+	if formatted == "" || formatted == "0" {
+		return trimmed
+	}
+	return formatted
 }

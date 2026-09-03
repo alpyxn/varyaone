@@ -161,6 +161,24 @@ export type PartyOpenItem = {
 
 export type PartyOpenItemList = { items: PartyOpenItem[]; next_cursor?: string };
 
+/** One party's open balance in one currency, split into due-date buckets. */
+export type PartyAgingRow = {
+  party_id: string;
+  party_code: string;
+  party_name: string;
+  side: 'RECEIVABLE' | 'PAYABLE';
+  currency: string;
+  not_due: string;
+  days_0_30: string;
+  days_31_60: string;
+  days_61_90: string;
+  days_90_plus: string;
+  overdue_total: string;
+  total: string;
+};
+
+export type PartyAgingReport = { as_of: string; items: PartyAgingRow[] };
+
 export type LocationOption = {
   id: string;
   name: string;

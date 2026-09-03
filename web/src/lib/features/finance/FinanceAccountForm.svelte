@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { ArrowLeft, Save } from '@lucide/svelte';
-  import { api, type Session } from '$lib/api';
+  import { api, APIRequestError, type Session } from '$lib/api';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { CurrencySelect } from '$lib/components/varya/currency-select';
@@ -34,6 +34,11 @@
     notes: ''
   });
   let openingAmount = $state('');
+  // Set once the account itself is created. A failed opening balance must not
+  // make the next attempt create a second account, so a retry posts only the
+  // movement.
+  let createdAccountId = $state('');
+  let openingError = $state('');
 
   const isEdit = $derived(mode === 'edit');
   const typeEndpoint = $derived(`/finance/${type === 'BANK' ? 'bank' : 'cash'}-accounts`);
@@ -132,13 +137,16 @@
         });
         await goto(`/finans/hesaplar/${encodeURIComponent(accountId)}`);
       } else {
-        const result = await api<{ id: string }>(typeEndpoint, { method: 'POST', body });
+        const id =
+          createdAccountId ||
+          (await api<{ id: string }>(typeEndpoint, { method: 'POST', body })).id;
+        createdAccountId = id;
         if (opening) {
           try {
-            await api(`${typeEndpoint}/${encodeURIComponent(result.id)}/opening-balance`, {
+            await api(`${typeEndpoint}/${encodeURIComponent(id)}/opening-balance`, {
               method: 'POST',
               body: JSON.stringify({
-                account_id: result.id,
+                account_id: id,
                 direction: 'IN',
                 amount: opening,
                 transaction_date: `${new Date().toISOString().slice(0, 10)}T00:00:00+03:00`,
@@ -146,18 +154,38 @@
               })
             });
           } catch (cause) {
-            error =
-              (cause instanceof Error ? cause.message : 'Açılış bakiyesi kaydedilemedi.') +
-              ' Hesap oluşturuldu; açılış bakiyesini hesap sayfasından girebilirsiniz.';
+            // The account exists either way; navigating on would throw the
+            // reason away and the balance would look silently ignored.
+            openingError = describeOpeningFailure(cause);
+            return;
           }
         }
-        await goto(`/finans/hesaplar/${encodeURIComponent(result.id)}`);
+        await goto(`/finans/hesaplar/${encodeURIComponent(id)}`);
       }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Hesap kaydedilemedi.';
     } finally {
       saving = false;
     }
+  }
+
+  /**
+   * A foreign-currency account needs a company exchange rate on the movement
+   * date before any amount can be posted, so the missing rate is named along
+   * with where the user fixes it.
+   */
+  function describeOpeningFailure(cause: unknown): string {
+    const currency = form.currency.trim().toUpperCase();
+    if (cause instanceof APIRequestError && cause.code === 'EXCHANGE_RATE_REQUIRED') {
+      return `Hesap oluşturuldu, açılış bakiyesi kaydedilemedi: bugün için ${currency} kuru yok. Ayarlar > Döviz Kurları ekranından kuru güncelleyip tekrar deneyin.`;
+    }
+    const message = cause instanceof Error ? cause.message : 'Açılış bakiyesi kaydedilemedi.';
+    return `Hesap oluşturuldu, açılış bakiyesi kaydedilemedi: ${message}`;
+  }
+
+  function skipOpening() {
+    if (!createdAccountId) return;
+    void goto(`/finans/hesaplar/${encodeURIComponent(createdAccountId)}`);
   }
 
   function back() {
@@ -185,6 +213,17 @@
   </header>
 
   {#if error}<div class="error" role="alert">{error}</div>{/if}
+  {#if openingError}
+    <div class="error" role="alert">
+      <p>{openingError}</p>
+      <div class="error-actions">
+        <Button type="button" variant="outline" size="sm" onclick={skipOpening}>
+          Açılış bakiyesiz devam et
+        </Button>
+        <a class="error-link" href="/ayarlar/doviz-kurlari">Döviz Kurları</a>
+      </div>
+    </div>
+  {/if}
 
   {#if loading}
     <p class="muted">Hesap formu hazırlanıyor…</p>
@@ -394,6 +433,20 @@
     border-radius: var(--radius-control);
     background: color-mix(in srgb, var(--danger) 8%, var(--surface));
     color: var(--danger);
+  }
+  .error p {
+    margin: 0;
+  }
+  .error-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 10px;
+  }
+  .error-link {
+    color: inherit;
+    font-size: 12px;
+    text-decoration: underline;
   }
   @media (max-width: 640px) {
     .page-shell {

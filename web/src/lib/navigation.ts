@@ -60,6 +60,11 @@ export const navigation: NavigationGroup[] = [
     children: [
       { label: 'Cari Kartlar', href: '/cari/kartlar', permission: 'party.read' },
       { label: 'Cari Hareketler', href: '/cari/hareketler', permission: 'party.ledger.read' },
+      {
+        label: 'Cari Yaşlandırma',
+        href: '/cari/yaslandirma',
+        anyPermission: ['finance.collection.read', 'finance.payment.read']
+      },
       { label: 'Tahsilatlar', href: '/cari/tahsilatlar', permission: 'finance.collection.read' },
       { label: 'Ödemeler', href: '/cari/odemeler', permission: 'finance.payment.read' }
     ]
