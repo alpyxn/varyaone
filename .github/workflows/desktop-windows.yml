@@ -33,6 +33,13 @@ jobs:
       BUNDLED_PG_VERSION: 18.4-1
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A tag push checks out the commit with a lightweight local tag, so
+          # `git for-each-ref --format='%(contents)'` below would read the
+          # commit message instead of the tag annotation and ship that as the
+          # release notes. Full history plus the real tag objects fixes it.
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/setup-go@v5
         with:
@@ -243,10 +250,15 @@ jobs:
           artifact_prefix="https://github.com/${repo}/releases/download"
           sha256="$(cut -d' ' -f1 "dist/windows/varyaone-${version}-windows-amd64.zip.sha256")"
           published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # The tag's own annotation (if any) becomes the release notes; a
-          # lightweight tag (workflow_dispatch dry-runs, or a plain `git tag`)
-          # yields an empty message, which is a valid (if terse) notes_md.
-          notes_md="$(git for-each-ref "refs/tags/${version}" --format='%(contents)' 2>/dev/null || true)"
+          # The tag's own annotation becomes the release notes. `%(contents)`
+          # on a lightweight tag (workflow_dispatch dry-runs, or a plain
+          # `git tag`) returns the commit message instead, so read the tag
+          # object explicitly and fall back to an empty - valid, if terse -
+          # notes_md when the ref is not an annotated tag.
+          notes_md=""
+          if [ "$(git cat-file -t "refs/tags/${version}" 2>/dev/null || true)" = "tag" ]; then
+            notes_md="$(git for-each-ref "refs/tags/${version}" --format='%(contents)')"
+          fi
 
           # Carry the previous release's channel entry into history (capped at
           # 10) so fetchNotes can still find its notes right after an apply.

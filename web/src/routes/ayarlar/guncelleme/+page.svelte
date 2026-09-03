@@ -14,6 +14,7 @@
   import { Button } from '$lib/components/ui/button';
   import {
     getUpdateStatus,
+    checkForUpdates,
     applyUpdate,
     snoozeUpdate,
     ackUpdate,
@@ -39,6 +40,21 @@
       error = '';
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Durum alınamadı.';
+    }
+  }
+
+  // The button asks the catalog itself; refresh() alone would only redraw a
+  // status the worker may have stored hours ago.
+  async function checkNow() {
+    busy = 'check';
+    error = '';
+    try {
+      status = await checkForUpdates();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Kontrol edilemedi.';
+      await refresh();
+    } finally {
+      busy = '';
     }
   }
 
@@ -103,8 +119,9 @@
     <h1>Güncelleme</h1>
   </div>
   {#if !loading && !denied}
-    <Button type="button" variant="ghost" onclick={refresh} disabled={!!busy}>
-      <RefreshCw size={15} /> Kontrol et
+    <Button type="button" variant="ghost" onclick={checkNow} disabled={!!busy}>
+      <RefreshCw size={15} />
+      {busy === 'check' ? 'Kontrol ediliyor…' : 'Kontrol et'}
     </Button>
   {/if}
 </div>

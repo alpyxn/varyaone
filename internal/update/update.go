@@ -32,9 +32,13 @@ import (
 const (
 	checkInterval    = 6 * time.Hour
 	maxCheckInterval = 24 * time.Hour
-	snoozeWindow     = 24 * time.Hour
-	httpTimeout      = 15 * time.Second
-	channel          = "stable"
+	// manualCheckInterval is the floor between two operator-triggered checks.
+	// It exists only so the button cannot be held down against the catalog
+	// host; the six-hour schedule above is for the unattended worker.
+	manualCheckInterval = time.Minute
+	snoozeWindow        = 24 * time.Hour
+	httpTimeout         = 15 * time.Second
+	channel             = "stable"
 
 	keyLatest        = "update.latest"
 	keyState         = "update.state"
@@ -72,6 +76,11 @@ var (
 	// ErrMandatory is returned by Snooze when the pending release may not be
 	// deferred.
 	ErrMandatory = errors.New("this update is mandatory and cannot be snoozed")
+	// ErrCheckTooSoon is returned by CheckNow when a check ran moments ago.
+	ErrCheckTooSoon = errors.New("an update check ran too recently")
+	// ErrNotConfigured is returned by CheckNow when this installation has no
+	// release catalog to check against.
+	ErrNotConfigured = errors.New("update checking is not configured")
 )
 
 // Service coordinates update checks and the apply lifecycle.
@@ -451,8 +460,25 @@ func (s *Service) RecordResult(ctx context.Context, in ResultInput) error {
 // the next attempt is scheduled correctly and the worker never hammers a dead
 // endpoint every tick.
 func (s *Service) CheckDue(ctx context.Context) error {
+	err := s.check(ctx, false)
+	if errors.Is(err, ErrCheckTooSoon) || errors.Is(err, ErrNotConfigured) {
+		return nil // the worker's normal "nothing to do yet" outcome
+	}
+	return err
+}
+
+// CheckNow is the operator-facing check behind the settings screen's "Kontrol
+// et" button. It contacts the catalog immediately instead of waiting for the
+// six-hour schedule - without it the button can only redraw a status that may
+// be hours stale, which reads as "there is no update" when there is one.
+//
+// A backed-off failure schedule does not block it either: retrying now is
+// exactly what an operator asks for after fixing their network.
+func (s *Service) CheckNow(ctx context.Context) error { return s.check(ctx, true) }
+
+func (s *Service) check(ctx context.Context, manual bool) error {
 	if !s.Configured() {
-		return nil
+		return ErrNotConfigured
 	}
 	if err := s.reconcile(ctx); err != nil {
 		return err
@@ -471,8 +497,11 @@ func (s *Service) CheckDue(ctx context.Context) error {
 	if interval > maxCheckInterval || interval <= 0 {
 		interval = maxCheckInterval
 	}
+	if manual {
+		interval = manualCheckInterval
+	}
 	if last := meta.time(keyCheckedAt); last != nil && s.now().Sub(*last) < interval {
-		return nil
+		return ErrCheckTooSoon
 	}
 
 	doc, fetchErr := fetchCatalog(ctx, s.client, s.catalogURLs, s.userAgent())

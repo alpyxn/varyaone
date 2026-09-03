@@ -29,6 +29,7 @@ func mountSystemUpdateRoutes(router chi.Router, identityService *identity.Servic
 		r.Get("/", handler.status)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.requireCSRF)
+			r.Post("/check", handler.check)
 			r.Post("/apply", handler.apply)
 			r.Post("/snooze", handler.snooze)
 			r.Post("/ack", handler.ack)
@@ -75,6 +76,27 @@ func (h updateHandler) status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// check contacts the release catalog now and answers with the refreshed status,
+// so the settings screen's button reports what the catalog actually says
+// instead of redrawing a status the worker last refreshed hours ago.
+func (h updateHandler) check(w http.ResponseWriter, r *http.Request) {
+	switch err := h.service.CheckNow(r.Context()); {
+	case errors.Is(err, update.ErrNotConfigured):
+		writeError(w, r, http.StatusConflict, "UPDATE_NOT_CONFIGURED", "Bu kurulumda güncelleme kontrolü kapalı.")
+		return
+	case errors.Is(err, update.ErrCheckTooSoon):
+		w.Header().Set("Retry-After", "60")
+		writeError(w, r, http.StatusTooManyRequests, "UPDATE_CHECK_TOO_SOON", "Az önce kontrol edildi, biraz sonra tekrar deneyin.")
+		return
+	case err != nil:
+		// The check recorded its attempt; only the fetch failed. Say so rather
+		// than letting the screen imply there is no update.
+		writeError(w, r, http.StatusBadGateway, "UPDATE_CHECK_FAILED", "Sürüm kataloğuna ulaşılamadı.")
+		return
+	}
+	h.status(w, r)
 }
 
 func (h updateHandler) apply(w http.ResponseWriter, r *http.Request) {

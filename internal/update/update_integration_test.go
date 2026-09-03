@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -363,4 +364,86 @@ func updateTestPool(t *testing.T, ctx context.Context, databaseURL string) *pgxp
 		base.Close()
 	})
 	return pool
+}
+
+// TestCheckNowBypassesTheSchedule is the regression test for the settings
+// screen's "Kontrol et" button. The button used to read stored status only, so
+// a release published minutes ago stayed invisible for up to six hours and the
+// screen looked like it had checked and found nothing.
+func TestCheckNowBypassesTheSchedule(t *testing.T) {
+	databaseURL := os.Getenv("VARYAONE_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("VARYAONE_TEST_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	pool := updateTestPool(t, ctx, databaseURL)
+	if err := migrations.New(pool).Up(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	published := "v1.4.0"
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema_version": 1,
+			"channels": map[string]any{
+				"stable": map[string]any{"version": published, "published_at": "2026-09-01T00:00:00Z"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	svc := NewService(pool, config.Config{Release: "v1.4.0"})
+	svc.catalogURLs = []string{server.URL}
+	now := time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.CheckDue(ctx); err != nil {
+		t.Fatalf("initial CheckDue: %v", err)
+	}
+
+	// A release appears minutes later. The scheduled check is not due yet, so
+	// the worker must stay quiet...
+	published = "v1.5.0"
+	now = now.Add(5 * time.Minute)
+	if err := svc.CheckDue(ctx); err != nil {
+		t.Fatalf("CheckDue inside the interval: %v", err)
+	}
+	st, err := svc.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.UpdateAvailable {
+		t.Fatal("the scheduled check ran inside its interval")
+	}
+
+	// ...but the operator pressing the button must see it immediately.
+	if err = svc.CheckNow(ctx); err != nil {
+		t.Fatalf("CheckNow: %v", err)
+	}
+	if st, err = svc.Status(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !st.UpdateAvailable || st.Latest == nil || st.Latest.Version != "v1.5.0" {
+		t.Fatalf("after CheckNow status = %+v, want v1.5.0 available", st)
+	}
+
+	// Pressing it repeatedly must not hammer the catalog host.
+	before := requests
+	if err = svc.CheckNow(ctx); !errors.Is(err, ErrCheckTooSoon) {
+		t.Fatalf("immediate second CheckNow returned %v, want ErrCheckTooSoon", err)
+	}
+	if requests != before {
+		t.Fatalf("the rate-limited check still contacted the catalog (%d calls)", requests-before)
+	}
+
+	// After the cooldown it works again.
+	now = now.Add(2 * time.Minute)
+	if err = svc.CheckNow(ctx); err != nil {
+		t.Fatalf("CheckNow after the cooldown: %v", err)
+	}
 }

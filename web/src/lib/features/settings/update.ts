@@ -71,6 +71,15 @@ export function getUpdateStatus(): Promise<UpdateStatus> {
   return api<UpdateStatus>('/system/update');
 }
 
+/**
+ * Contacts the release catalog now and returns the refreshed status. Reading
+ * the status alone would only redraw what the worker last stored, which can be
+ * hours old - and reads to the operator as "there is no update".
+ */
+export function checkForUpdates(): Promise<UpdateStatus> {
+  return api<UpdateStatus>('/system/update/check', { method: 'POST', body: '{}' });
+}
+
 export function applyUpdate(): Promise<{ ok: boolean }> {
   return api('/system/update/apply', { method: 'POST', body: '{}' });
 }
