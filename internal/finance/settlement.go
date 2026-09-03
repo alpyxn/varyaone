@@ -59,29 +59,10 @@ WITH invoice AS (
     WHERE oi.company_id=$1 AND oi.document_id=$2
     ORDER BY oi.created_at DESC, oi.id DESC
     LIMIT 1
-), related_sources AS (
-    SELECT $2::uuid AS id
-    UNION
-    SELECT s.source_document_id
-    FROM commercial_document_sources s
-    WHERE s.company_id=$1 AND s.document_id=$2
-), return_documents AS (
-    SELECT DISTINCT relation.document_id
-    FROM commercial_document_sources relation
-    JOIN related_sources rs ON rs.id=relation.source_document_id
-    JOIN documents d
-      ON d.company_id=relation.company_id AND d.id=relation.document_id
-    WHERE relation.company_id=$1
-      AND relation.relation_type='RETURN'
-      AND d.status='POSTED'
-      AND d.document_type_code IN ('SALES_RETURN_INVOICE', 'PURCHASE_RETURN_INVOICE')
 ), returned AS (
-    SELECT COALESCE(SUM(GREATEST(oi.original_amount - COALESCE(r.amount, 0), 0)), 0)::text AS amount
-    FROM return_documents rd
-    JOIN finance_invoice_open_items oi
-      ON oi.company_id=$1 AND oi.document_id=rd.document_id
-    LEFT JOIN finance_invoice_open_item_reversals r
-      ON r.company_id=oi.company_id AND r.open_item_id=oi.id
+    SELECT COALESCE(SUM(attribution.amount), 0)::text AS amount
+    FROM finance_invoice_return_attributions attribution
+    WHERE attribution.company_id=$1 AND attribution.document_id=$2
 )
 SELECT COALESCE(i.original_amount, '0'),
        COALESCE(i.reversed_amount, '0'),
@@ -209,35 +190,36 @@ func settlementRat(value string) *big.Rat {
 func settlementAmount(value *big.Rat) string { return amountString(value, 4) }
 
 // returnedAmountForDocumentTx is the command-side counterpart of the
-// settlement projection. Return rows are append-only and may point at an
-// invoice directly or through one of its source documents. DISTINCT keeps a
-// multi-source relation from counting the same return twice.
+// settlement projection. Both read finance_invoice_return_attributions, which
+// is the single definition of how much of a return belongs to this invoice
+// (see migration 000149); a second, diverging rule here would let a command
+// allocate against an open amount the read model never showed.
 func returnedAmountForDocumentTx(ctx context.Context, tx pgx.Tx, companyID, documentID string) (*big.Rat, error) {
 	var amount string
 	err := tx.QueryRow(ctx, `
-WITH related_sources AS (
-    SELECT $2::uuid AS id
-    UNION
-    SELECT source_document_id
-    FROM commercial_document_sources
-    WHERE company_id=$1 AND document_id=$2
-), return_documents AS (
-    SELECT DISTINCT relation.document_id
-    FROM commercial_document_sources relation
-    JOIN related_sources source ON source.id=relation.source_document_id
-    JOIN documents d ON d.company_id=relation.company_id AND d.id=relation.document_id
-    WHERE relation.company_id=$1
-      AND relation.relation_type='RETURN'
-      AND d.status='POSTED'
-      AND d.document_type_code IN ('SALES_RETURN_INVOICE','PURCHASE_RETURN_INVOICE')
-)
-SELECT COALESCE(SUM(GREATEST(oi.original_amount-COALESCE(reversal.amount,0),0)),0)::text
-FROM return_documents rd
-JOIN finance_invoice_open_items oi ON oi.company_id=$1 AND oi.document_id=rd.document_id
-LEFT JOIN finance_invoice_open_item_reversals reversal
-  ON reversal.company_id=oi.company_id AND reversal.open_item_id=oi.id`, companyID, documentID).Scan(&amount)
+SELECT COALESCE(SUM(attribution.amount),0)::text
+FROM finance_invoice_return_attributions attribution
+WHERE attribution.company_id=$1 AND attribution.document_id=$2`, companyID, documentID).Scan(&amount)
 	if err != nil {
 		return nil, err
 	}
 	return settlementRat(amount), nil
+}
+
+// OutstandingAmount is the amount still owed on this document, whichever side
+// it sits on: AmountDue for a receivable, AmountPayable for a payable. The two
+// fields are deliberately separate in the JSON payload (a cari card must not
+// call a supplier balance "tahsil edilecek"), so every consumer that only
+// wants "is anything still open" must go through this accessor instead of
+// reading one field and silently seeing an empty string on the other side.
+// The result is always a canonical four-scale decimal, never "".
+func (s DocumentSettlement) OutstandingAmount() string {
+	value := strings.TrimSpace(s.AmountDue)
+	if value == "" {
+		value = strings.TrimSpace(s.AmountPayable)
+	}
+	if value == "" {
+		return "0.0000"
+	}
+	return value
 }

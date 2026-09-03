@@ -517,19 +517,29 @@ func (s *Service) AccountStatement(ctx context.Context, session identity.Session
 		limit = 100
 	}
 	args := []any{session.CurrentCompanyID, id}
-	openingQuery := `SELECT COALESCE(SUM(CASE WHEN direction='IN' THEN amount ELSE -amount END),0)::text FROM finance_account_movements WHERE company_id=$1 AND account_id=$2`
 	query := accountMovementSelect + ` WHERE m.company_id=$1 AND m.account_id=$2`
+	// Opening and closing are summed over the whole ledger in SQL, never over
+	// the page below: a period with more movements than the page size would
+	// otherwise report the balance after the first `limit` rows as the period
+	// closing balance. This mirrors the cari ekstre (party.StatementReportPage).
+	openingCondition, closingCondition := "false", "true"
 	if from != nil {
 		args = append(args, from.Format("2006-01-02"))
-		openingQuery += fmt.Sprintf(` AND transaction_date < $%d::date`, len(args))
+		openingCondition = fmt.Sprintf("m.transaction_date < $%d::date", len(args))
 		query += fmt.Sprintf(` AND transaction_date >= $%d::date`, len(args))
 	}
 	if to != nil {
 		args = append(args, to.Format("2006-01-02"))
+		closingCondition = fmt.Sprintf("m.transaction_date <= $%d::date", len(args))
 		query += fmt.Sprintf(` AND transaction_date <= $%d::date`, len(args))
 	}
-	var opening string
-	if err = s.pool.QueryRow(ctx, openingQuery, args[:2+boolInt(from != nil)]...).Scan(&opening); err != nil {
+	const signedAmount = `CASE WHEN m.direction='IN' THEN m.amount ELSE -m.amount END`
+	balanceQuery := fmt.Sprintf(`SELECT COALESCE(SUM(CASE WHEN %s THEN %s ELSE 0 END),0)::text,
+		COALESCE(SUM(CASE WHEN %s THEN %s ELSE 0 END),0)::text
+		FROM finance_account_movements m WHERE m.company_id=$1 AND m.account_id=$2`,
+		openingCondition, signedAmount, closingCondition, signedAmount)
+	var opening, closing string
+	if err = s.pool.QueryRow(ctx, balanceQuery, args...).Scan(&opening, &closing); err != nil {
 		return AccountStatement{}, err
 	}
 	query += fmt.Sprintf(` ORDER BY transaction_date,posted_at,m.id LIMIT $%d`, len(args)+1)
@@ -540,7 +550,6 @@ func (s *Service) AccountStatement(ctx context.Context, session identity.Session
 	}
 	defer rows.Close()
 	items := make([]AccountMovement, 0)
-	closing := mustRat(opening)
 	for rows.Next() {
 		var item AccountMovement
 		var advanceID *string
@@ -548,24 +557,12 @@ func (s *Service) AccountStatement(ctx context.Context, session identity.Session
 			return AccountStatement{}, err
 		}
 		decorateMovementSource(&item, advanceID)
-		if item.Direction == "IN" {
-			closing.Add(closing, mustRat(item.Amount))
-		} else {
-			closing.Sub(closing, mustRat(item.Amount))
-		}
 		items = append(items, item)
 	}
 	if err = rows.Err(); err != nil {
 		return AccountStatement{}, err
 	}
-	return AccountStatement{AccountID: id, Currency: account.Currency, OpeningBalance: amountString(mustRat(opening), 4), ClosingBalance: amountString(closing, 4), Items: items}, nil
-}
-
-func boolInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
+	return AccountStatement{AccountID: id, Currency: account.Currency, OpeningBalance: amountString(mustRat(opening), 4), ClosingBalance: amountString(mustRat(closing), 4), Items: items}, nil
 }
 
 func ensureFinanceDate(ctx context.Context, q interface {
@@ -586,6 +583,16 @@ func ensureFinanceDate(ctx context.Context, q interface {
 	return nil
 }
 
+// maxFinanceRateAgeDays bounds how far a cash/bank movement may reach back for
+// its rate. Documents resolve through exchange.ResolveRate, which refreshes and
+// fails closed when a provider is down; this path reads the stored table
+// directly, so without a bound a company whose rate feed had been dead for
+// months would keep converting foreign movements at a months-old rate and never
+// be told. The bound is deliberately far wider than any publishing gap -- TCMB
+// skips weekends and public holidays, at worst about ten days around a bayram --
+// so a healthy installation never meets it.
+const maxFinanceRateAgeDays = 30
+
 func financeRateTx(ctx context.Context, tx pgx.Tx, companyID, currency string, date time.Time) (string, string, error) {
 	var base string
 	if err := tx.QueryRow(ctx, `SELECT base_currency FROM companies WHERE id=$1`, companyID).Scan(&base); err != nil {
@@ -595,12 +602,16 @@ func financeRateTx(ctx context.Context, tx pgx.Tx, companyID, currency string, d
 		return "1.0000000000", base, nil
 	}
 	var rate string
-	err := tx.QueryRow(ctx, `SELECT rate_to_base::text FROM exchange_rates WHERE company_id=$1 AND currency_code=$2 AND rate_date <= $3::date ORDER BY rate_date DESC,fetched_at DESC LIMIT 1`, companyID, currency, date.Format("2006-01-02")).Scan(&rate)
+	var ageDays int
+	err := tx.QueryRow(ctx, `SELECT rate_to_base::text,($3::date - rate_date) FROM exchange_rates WHERE company_id=$1 AND currency_code=$2 AND rate_date <= $3::date ORDER BY rate_date DESC,fetched_at DESC LIMIT 1`, companyID, currency, date.Format("2006-01-02")).Scan(&rate, &ageDays)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", domainError(ErrExchangeRateRequired, "işlem tarihi için döviz kuru bulunamadı")
 	}
 	if err != nil {
 		return "", "", err
+	}
+	if ageDays > maxFinanceRateAgeDays {
+		return "", "", domainError(ErrExchangeRateRequired, fmt.Sprintf("%s kuru %d gündür güncellenmemiş; Ayarlar'dan kurları yenileyin", currency, ageDays))
 	}
 	return NormalizeRateText(rate), base, nil
 }

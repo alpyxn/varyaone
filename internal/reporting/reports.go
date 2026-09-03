@@ -315,7 +315,8 @@ func (s *Service) OverduePayables(ctx context.Context, session identity.Session,
 	rows, err := s.pool.Query(ctx, `
 		SELECT oi.document_id, COALESCE(d.document_no,''), pt.display_name, oi.due_date::text, oi.currency
 		  FROM finance_invoice_open_items oi
-		  LEFT JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
+		  JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
+		   AND d.document_type_code='PURCHASE_INVOICE'
 		  JOIN parties pt ON pt.company_id=oi.company_id AND pt.id=oi.party_id
 		 WHERE oi.company_id=$1 AND oi.side='PAYABLE' AND oi.due_date IS NOT NULL AND oi.due_date < $2
 		 ORDER BY oi.due_date`, session.CurrentCompanyID, asOf)
@@ -344,7 +345,8 @@ func (s *Service) OverduePayables(ctx context.Context, session identity.Session,
 		if settleErr != nil {
 			return nil, settleErr
 		}
-		if settlement.AmountDue == "" || settlement.AmountDue == "0" || settlement.AmountDue == "0.0000" {
+		outstanding := settlement.OutstandingAmount()
+		if outstanding == "" || outstanding == "0" || outstanding == "0.0000" {
 			continue
 		}
 		due, parseErr := time.Parse("2006-01-02", c.dueDate)
@@ -354,7 +356,7 @@ func (s *Service) OverduePayables(ctx context.Context, session identity.Session,
 		}
 		items = append(items, OverdueRow{
 			DocumentID: c.documentID, DocumentNo: c.documentNo, PartyName: c.partyName,
-			DueDate: c.dueDate, DaysOverdue: daysOverdue, AmountDue: settlement.AmountDue, Currency: c.currency,
+			DueDate: c.dueDate, DaysOverdue: daysOverdue, AmountDue: outstanding, Currency: c.currency,
 		})
 	}
 	return items, nil

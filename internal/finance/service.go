@@ -788,7 +788,7 @@ func (s *Service) postPayment(ctx context.Context, session identity.Session, inp
 			return Payment{}, err
 		}
 	}
-	if _, err = s.applyAllocationsTx(ctx, tx, session, paymentID, allocations, meta); err != nil {
+	if _, err = s.applyAllocationsTx(ctx, tx, session, paymentID, "payment:"+input.IdempotencyKey, allocations, meta); err != nil {
 		return Payment{}, err
 	}
 	if err = writeAuditAndEventTx(ctx, tx, session, "FINANCE_PAYMENT_POSTED", "finance.payment.posted", "finance_payment", paymentID, meta, map[string]any{"payment_id": paymentID, "payment_kind": input.PaymentKind}); err != nil {
@@ -1279,19 +1279,9 @@ COALESCE(returns.returned_amount,0)::text,oi.document_date,oi.due_date::text,oi.
 FROM finance_invoice_open_items oi
 JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
 LEFT JOIN LATERAL (
-    SELECT COALESCE(SUM(GREATEST(return_item.original_amount-COALESCE(return_reversal.amount,0),0)),0) AS returned_amount
-    FROM (
-        SELECT DISTINCT relation.document_id
-        FROM commercial_document_sources relation
-        JOIN documents return_document ON return_document.company_id=relation.company_id AND return_document.id=relation.document_id
-        WHERE relation.company_id=oi.company_id
-          AND relation.relation_type='RETURN'
-          AND return_document.status='POSTED'
-          AND return_document.document_type_code IN ('SALES_RETURN_INVOICE','PURCHASE_RETURN_INVOICE')
-          AND (relation.source_document_id=oi.document_id OR relation.source_document_id IN (SELECT source_document_id FROM commercial_document_sources source WHERE source.company_id=oi.company_id AND source.document_id=oi.document_id))
-    ) return_documents
-    JOIN finance_invoice_open_items return_item ON return_item.company_id=oi.company_id AND return_item.document_id=return_documents.document_id
-    LEFT JOIN finance_invoice_open_item_reversals return_reversal ON return_reversal.company_id=return_item.company_id AND return_reversal.open_item_id=return_item.id
+    SELECT COALESCE(SUM(attribution.amount),0) AS returned_amount
+    FROM finance_invoice_return_attributions attribution
+    WHERE attribution.company_id=oi.company_id AND attribution.document_id=oi.document_id
 ) returns ON TRUE
 WHERE oi.company_id=$1`
 	if session.User.ID != "" {
@@ -1426,7 +1416,7 @@ func (s *Service) AllocatePayment(ctx context.Context, session identity.Session,
 	if lockedPayment.Status == "REVERSED" || lockedPayment.ReversalOfID != nil {
 		return nil, domainError(ErrInvalidPaymentState, "ters kaydedilmiş işlem tahsis edilemez")
 	}
-	items, err := s.applyAllocationsTx(ctx, tx, session, paymentID, inputs, meta)
+	items, err := s.applyAllocationsTx(ctx, tx, session, paymentID, "allocate:"+strings.TrimSpace(meta.IdempotencyKey), inputs, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -1510,7 +1500,7 @@ func (s *Service) AllocatePaymentFIFO(ctx context.Context, session identity.Sess
 	if len(inputs) == 0 {
 		return nil, domainError(ErrPaymentAllocationExceedsOpenAmount, "bu cari ve para biriminde açık fatura yok")
 	}
-	items, err := s.applyAllocationsTx(ctx, tx, session, paymentID, inputs, meta)
+	items, err := s.applyAllocationsTx(ctx, tx, session, paymentID, "allocate-fifo:"+strings.TrimSpace(meta.IdempotencyKey), inputs, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -2299,24 +2289,18 @@ func (s *Service) ReverseInvoiceTx(ctx context.Context, tx pgx.Tx, session ident
 	if allocated := mustRat(allocatedAmount); allocated.Sign() > 0 {
 		return "", domainError(ErrInvoiceHasDependencies, "tahsis edilmiş tahsilat veya ödeme bulunduğu için belge ters kaydedilemez")
 	}
+	// A return that still reduces this document blocks its reversal, otherwise
+	// the return would be left hanging off a cancelled invoice. "Still reduces"
+	// is the attribution view's answer, the same one the open amount and the
+	// settlement card use: a return whose quantity was billed on a sibling
+	// invoice attributes nothing here and must not block this one, and a return
+	// already reversed attributes zero. Cancelling a return document is
+	// unaffected -- the view keys invoices, so a return is never blocked by
+	// another return that merely shares its source irsaliye.
 	var activeReturn bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(
-		SELECT 1
-		  FROM commercial_document_sources rel
-		  JOIN documents d ON d.company_id=rel.company_id AND d.id=rel.document_id
-		  LEFT JOIN finance_invoice_open_items roi ON roi.company_id=rel.company_id AND roi.document_id=rel.document_id
-		  LEFT JOIN finance_invoice_open_item_reversals rr ON rr.company_id=roi.company_id AND rr.open_item_id=roi.id
-		 WHERE rel.company_id=$1
-		   AND rel.relation_type='RETURN'
-		   AND rel.document_id <> $2
-		   AND d.document_type_code IN ('SALES_RETURN_INVOICE','PURCHASE_RETURN_INVOICE')
-		   AND d.status='POSTED'
-		   AND (rel.source_document_id=$2 OR rel.source_document_id IN (
-			   SELECT source_document_id
-			   FROM commercial_document_sources src
-			   WHERE src.company_id=$1 AND src.document_id=$2
-		   ))
-		   AND rr.id IS NULL
+		SELECT 1 FROM finance_invoice_return_attributions
+		 WHERE company_id=$1 AND document_id=$2 AND amount > 0
 	)`, session.CurrentCompanyID, documentID).Scan(&activeReturn); err != nil {
 		return "", err
 	}
@@ -2449,7 +2433,15 @@ func normalizeAllocationInputs(inputs []AllocationInput) ([]AllocationInput, err
 	return result, nil
 }
 
-func (s *Service) applyAllocationsTx(ctx context.Context, tx pgx.Tx, session identity.Session, paymentID string, inputs []AllocationInput, meta identity.RequestMeta) ([]Allocation, error) {
+// applyAllocationsTx writes the immutable allocation rows for one command.
+// commandScope identifies the command the allocations belong to (the payment's
+// own idempotency key when they are posted with the payment, the request's
+// Idempotency-Key for a standalone allocate/allocate-FIFO). It is part of the
+// per-allocation idempotency key so a retry of the same command still replays
+// the same rows, while a genuinely new command targeting the same
+// payment/open-item pair writes a new row instead of silently replaying an
+// older -- possibly already reversed -- allocation.
+func (s *Service) applyAllocationsTx(ctx context.Context, tx pgx.Tx, session identity.Session, paymentID, commandScope string, inputs []AllocationInput, meta identity.RequestMeta) ([]Allocation, error) {
 	if len(inputs) == 0 {
 		return []Allocation{}, nil
 	}
@@ -2482,7 +2474,15 @@ func (s *Service) applyAllocationsTx(ctx context.Context, tx pgx.Tx, session ide
 		}
 		key := strings.TrimSpace(input.IdempotencyKey)
 		if key == "" {
-			key = fmt.Sprintf("%s:%s", paymentID, input.OpenItemID)
+			// Without the command scope this key would be a bare
+			// payment+open-item pair, so re-allocating after an unallocate
+			// found the original (now reversed) row and replayed it: the API
+			// answered 200 while no allocation was written.
+			if scope := strings.TrimSpace(commandScope); scope != "" {
+				key = fmt.Sprintf("%s:%s:%s", scope, paymentID, input.OpenItemID)
+			} else {
+				key = fmt.Sprintf("%s:%s", paymentID, input.OpenItemID)
+			}
 		}
 		var existing Allocation
 		var existingReversal *string

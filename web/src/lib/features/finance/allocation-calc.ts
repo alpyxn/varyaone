@@ -1,7 +1,8 @@
 import {
   addDecimalStrings,
   canonicalDecimal,
-  decimalNumber,
+  compareDecimalStrings,
+  multiplyDecimalStrings,
   subtractDecimalStrings
 } from '$lib/design/decimal';
 
@@ -34,7 +35,14 @@ export function unappliedAmount(amount: string, rows: Array<{ applied: string }>
 
 /** True when the distributed total exceeds the payment amount. */
 export function isOverApplied(amount: string, rows: Array<{ applied: string }>): boolean {
-  return decimalNumber(allocatedTotal(rows)) > decimalNumber(amount);
+  return compareDecimalStrings(allocatedTotal(rows), canonicalDecimal(amount) || '0') > 0;
+}
+
+/** Render an exact decimal with the four places the finance API speaks. */
+function money(value: string): string {
+  const rounded = multiplyDecimalStrings(value, '1', 4) ?? '0';
+  const [integer = '0', fraction = ''] = rounded.split('.', 2);
+  return `${integer}.${fraction.padEnd(4, '0')}`;
 }
 
 /** Days a due date is overdue relative to `now` (0 or negative when not late). */
@@ -51,7 +59,10 @@ export function daysOverdue(dueDate: string | undefined, now = new Date()): numb
  * min(open, remaining); any surplus is left unallocated (an advance).
  */
 export function previewFifo(items: AllocationOpenItem[], amount: string): Record<string, string> {
-  let remaining = decimalNumber(amount);
+  // Exact decimals throughout: these amounts are submitted as the allocation
+  // payload, and a float remainder drifting by a ten-thousandth is either a
+  // kurus left open on the last invoice or a server-side over-allocation.
+  let remaining = canonicalDecimal(amount) || '0';
   const ordered = [...items].sort((a, b) => {
     if (a.due_date || b.due_date) {
       if (!a.due_date) return 1;
@@ -65,12 +76,12 @@ export function previewFifo(items: AllocationOpenItem[], amount: string): Record
   });
   const result: Record<string, string> = {};
   for (const item of ordered) {
-    if (remaining <= 0) break;
-    const open = decimalNumber(item.open_amount);
-    if (open <= 0) continue;
-    const part = Math.min(open, remaining);
-    result[item.id] = canonicalDecimal(part.toFixed(4));
-    remaining -= part;
+    if (compareDecimalStrings(remaining, '0') <= 0) break;
+    const open = canonicalDecimal(item.open_amount) || '0';
+    if (compareDecimalStrings(open, '0') <= 0) continue;
+    const part = compareDecimalStrings(open, remaining) > 0 ? remaining : open;
+    result[item.id] = money(part);
+    remaining = subtractDecimalStrings(remaining, part);
   }
   return result;
 }

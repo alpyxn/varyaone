@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { addDecimalStrings } from '$lib/design/decimal';
 import {
   allocatedTotal,
   daysOverdue,
@@ -28,6 +29,34 @@ describe('allocation-calc', () => {
     ];
     expect(previewFifo(items, '250')).toEqual({ a: '100.0000', b: '80.0000', c: '40.0000' });
     expect(previewFifo(items, '150')).toEqual({ a: '100.0000', b: '50.0000' });
+  });
+
+  it('distributes without floating-point drift', () => {
+    // 0.1 + 0.2 !== 0.3 in IEEE-754: the old float loop left a phantom
+    // remainder on the last invoice (or overshot the payment by a kurus).
+    const items = [
+      { id: 'a', open_amount: '0.1', due_date: '2026-06-01' },
+      { id: 'b', open_amount: '0.2', due_date: '2026-06-02' },
+      { id: 'c', open_amount: '1', due_date: '2026-06-03' }
+    ];
+    expect(previewFifo(items, '0.3')).toEqual({ a: '0.1000', b: '0.2000' });
+
+    const thirds = [
+      { id: 'a', open_amount: '33.3333', due_date: '2026-06-01' },
+      { id: 'b', open_amount: '33.3333', due_date: '2026-06-02' },
+      { id: 'c', open_amount: '33.3334', due_date: '2026-06-03' }
+    ];
+    const spread = previewFifo(thirds, '100');
+    expect(spread).toEqual({ a: '33.3333', b: '33.3333', c: '33.3334' });
+    expect(Object.values(spread).reduce((sum, value) => addDecimalStrings(sum, value), '0')).toBe(
+      '100'
+    );
+    expect(
+      isOverApplied(
+        '100',
+        Object.values(spread).map((applied) => ({ applied }))
+      )
+    ).toBe(false);
   });
 
   it('places undated items after dated ones', () => {

@@ -229,7 +229,8 @@ func (s *Service) OverdueReceivables(ctx context.Context, session identity.Sessi
 		if settleErr != nil {
 			return nil, settleErr
 		}
-		if settlement.AmountDue == "" || settlement.AmountDue == "0" || settlement.AmountDue == "0.0000" {
+		outstanding := settlement.OutstandingAmount()
+		if outstanding == "" || outstanding == "0" || outstanding == "0.0000" {
 			continue
 		}
 		due, parseErr := time.Parse("2006-01-02", c.dueDate)
@@ -239,7 +240,7 @@ func (s *Service) OverdueReceivables(ctx context.Context, session identity.Sessi
 		}
 		items = append(items, OverdueRow{
 			DocumentID: c.documentID, DocumentNo: c.documentNo, PartyName: c.partyName,
-			DueDate: c.dueDate, DaysOverdue: daysOverdue, AmountDue: settlement.AmountDue, Currency: c.currency,
+			DueDate: c.dueDate, DaysOverdue: daysOverdue, AmountDue: outstanding, Currency: c.currency,
 		})
 	}
 	return items, nil

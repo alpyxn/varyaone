@@ -166,3 +166,22 @@ export function negateDecimalString(value: string | number | null | undefined): 
   const parsed = parseSignedDecimal(value);
   return parsed ? signedDecimalText(-parsed.units, parsed.scale) : undefined;
 }
+
+/**
+ * Compare exact decimal strings: negative when left < right, 0 when equal,
+ * positive when left > right. Comparing through Number() would let a value the
+ * user typed exactly ("0.1") lose to its binary approximation, which is how a
+ * money total silently drifts.
+ */
+export function compareDecimalStrings(
+  left: string | number | null | undefined,
+  right: string | number | null | undefined
+): number {
+  const first = parseSignedDecimal(left);
+  const second = parseSignedDecimal(right);
+  if (!first || !second) return 0;
+  const scale = Math.max(first.scale, second.scale);
+  const scaled = (value: SignedDecimal) => value.units * 10n ** BigInt(scale - value.scale);
+  const difference = scaled(first) - scaled(second);
+  return difference === 0n ? 0 : difference < 0n ? -1 : 1;
+}

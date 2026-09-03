@@ -41,6 +41,14 @@ type PartyAgingReport struct {
 // ListOpenItemsPage (original minus allocations, minus open-item reversal,
 // minus returns); a second, diverging definition of "borç" would be worse
 // than no report at all.
+//
+// Every component is taken as of asOf on its own business date -- the invoice's
+// document date, the payment's transaction date behind an allocation, the
+// ledger date of an open-item reversal, the return's document date. Reading
+// today's allocations into a backdated report would show an invoice as
+// collected months before the collection existed. Finance refuses future-dated
+// postings, so for asOf = today (the default) these filters match everything
+// and the report is unchanged.
 func (s *Service) PartyAging(ctx context.Context, session identity.Session, asOf time.Time, partyID, currency, side string) (PartyAgingReport, error) {
 	report := PartyAgingReport{Items: []PartyAgingRow{}}
 	currency = strings.ToUpper(strings.TrimSpace(currency))
@@ -86,33 +94,26 @@ WITH open_items AS (
            GREATEST(oi.original_amount
                     - COALESCE((SELECT SUM(CASE WHEN a.reversal_of_id IS NULL THEN a.amount ELSE -a.amount END)
                                   FROM finance_payment_allocations a
-                                 WHERE a.company_id=oi.company_id AND a.open_item_id=oi.id), 0)
+                                  JOIN finance_payments p ON p.company_id=a.company_id AND p.id=a.payment_id
+                                 WHERE a.company_id=oi.company_id AND a.open_item_id=oi.id
+                                   AND p.transaction_date <= $2::date), 0)
                     - COALESCE((SELECT r.amount FROM finance_invoice_open_item_reversals r
-                                 WHERE r.company_id=oi.company_id AND r.open_item_id=oi.id), 0)
+                                  JOIN party_ledger_entries l ON l.company_id=r.company_id AND l.id=r.reversal_ledger_entry_id
+                                 WHERE r.company_id=oi.company_id AND r.open_item_id=oi.id
+                                   AND l.document_date <= $2::date), 0)
                     - COALESCE(returns.returned_amount, 0), 0) AS open_amount,
            COALESCE(oi.due_date, oi.document_date) AS effective_due
       FROM finance_invoice_open_items oi
       JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
        AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
       LEFT JOIN LATERAL (
-          SELECT COALESCE(SUM(GREATEST(return_item.original_amount-COALESCE(return_reversal.amount,0),0)),0) AS returned_amount
-            FROM (
-                SELECT DISTINCT relation.document_id
-                  FROM commercial_document_sources relation
-                  JOIN documents return_document ON return_document.company_id=relation.company_id AND return_document.id=relation.document_id
-                 WHERE relation.company_id=oi.company_id
-                   AND relation.relation_type='RETURN'
-                   AND return_document.status='POSTED'
-                   AND return_document.document_type_code IN ('SALES_RETURN_INVOICE','PURCHASE_RETURN_INVOICE')
-                   AND (relation.source_document_id=oi.document_id
-                        OR relation.source_document_id IN (SELECT source.source_document_id
-                                                             FROM commercial_document_sources source
-                                                            WHERE source.company_id=oi.company_id AND source.document_id=oi.document_id))
-            ) return_documents
-            JOIN finance_invoice_open_items return_item ON return_item.company_id=oi.company_id AND return_item.document_id=return_documents.document_id
-            LEFT JOIN finance_invoice_open_item_reversals return_reversal ON return_reversal.company_id=return_item.company_id AND return_reversal.open_item_id=return_item.id
+          SELECT COALESCE(SUM(attribution.amount),0) AS returned_amount
+            FROM finance_invoice_return_attributions attribution
+           WHERE attribution.company_id=oi.company_id
+             AND attribution.document_id=oi.document_id
+             AND attribution.return_document_date <= $2::date
       ) returns ON TRUE
-     WHERE oi.company_id=$1`
+     WHERE oi.company_id=$1 AND oi.document_date <= $2::date`
 	if session.User.ID != "" {
 		args = append(args, session.User.ID)
 		query += fmt.Sprintf(` AND (d.branch_id IS NULL OR NOT EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$%d) OR EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$%d AND bs.branch_id=d.branch_id))`, len(args), len(args))

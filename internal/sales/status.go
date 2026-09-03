@@ -315,7 +315,9 @@ func commercialPaymentPredicate(requested string) (string, bool) {
 	if requested != PaymentUnpaid && requested != PaymentPartial && requested != PaymentPaid {
 		return "", false
 	}
-	returnedAmount := `(SELECT COALESCE(SUM(GREATEST(ri.original_amount-COALESCE((SELECT rr.amount FROM finance_invoice_open_item_reversals rr WHERE rr.company_id=ri.company_id AND rr.open_item_id=ri.id),0),0)),0) FROM (SELECT DISTINCT rs.document_id FROM commercial_document_sources rs JOIN documents rd ON rd.company_id=rs.company_id AND rd.id=rs.document_id WHERE rs.company_id=t.company_id AND rs.relation_type='RETURN' AND rd.status='POSTED' AND rd.document_type_code='SALES_RETURN_INVOICE' AND (rs.source_document_id=t.id OR rs.source_document_id IN (SELECT source_document_id FROM commercial_document_sources src WHERE src.company_id=t.company_id AND src.document_id=t.id))) return_documents JOIN finance_invoice_open_items ri ON ri.company_id=t.company_id AND ri.document_id=return_documents.document_id)`
+	// Same source of truth as finance's settlement/open-item projections, so a
+	// grid filtered by "Ödendi" can never disagree with the invoice card.
+	returnedAmount := `COALESCE((SELECT SUM(ra.amount) FROM finance_invoice_return_attributions ra WHERE ra.company_id=t.company_id AND ra.document_id=t.id),0)`
 	allocatedAmount := `COALESCE((SELECT SUM(CASE WHEN a.reversal_of_id IS NULL THEN a.amount ELSE -a.amount END) FROM finance_payment_allocations a WHERE a.company_id=oi.company_id AND a.open_item_id=oi.id),0)`
 	postedAmount := `oi.original_amount-COALESCE((SELECT amount FROM finance_invoice_open_item_reversals r WHERE r.company_id=oi.company_id AND r.open_item_id=oi.id),0)`
 	effectiveAmount := fmt.Sprintf(`(%s-%s)`, postedAmount, returnedAmount)
