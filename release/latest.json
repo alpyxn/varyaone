@@ -5,13 +5,24 @@
       "mandatory": false,
       "min_version": "",
       "pg_major": 18,
+      "version": "v0.1.5-alpha",
+      "notes_md": "",
+      "published_at": "2026-09-03T22:26:52Z",
+      "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.5-alpha/varyaone-v0.1.5-alpha-windows-amd64.zip",
+      "windows_sha256": "3cd1a5bc60c1675074b71c9f2c129e7ee4995ebd4bddc763e3bd4fcd399965e9"
+    }
+  },
+  "yanked": [],
+  "history": [
+    {
+      "mandatory": false,
+      "min_version": "",
+      "pg_major": 18,
       "version": "v0.1.0-alpha",
       "notes_md": "fix update scheduler",
       "published_at": "2026-09-02T23:48:12Z",
       "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.0-alpha/varyaone-v0.1.0-alpha-windows-amd64.zip",
       "windows_sha256": "ace69b735450dc5d4deb8422fa89a4bbcd9427ed2f3c21400212cd8700fed143"
     }
-  },
-  "yanked": [],
-  "history": []
+  ]
 }
