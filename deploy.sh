@@ -343,6 +343,8 @@ Komutlar:
                           geri al. Sonraki 'update' bunu otomatik de yapar.
   status                  Servis durumu + sağlık kontrolü.
   doctor                  Ön koşul ve ortam denetimi.
+  repair-app-role         varyaone_app rolünün parolasını ve yetkilerini yeniden uygular
+                          (majör PostgreSQL yükseltmesi sonrası gerekebilir).
   renew-cert              SSL sertifikasını hemen yenilemeyi dene (domainli).
   backup                  Tam sistem yedeği al: backups/ altına tek .varya dosyası
                           (veritabanı + yüklenen dosyalar).
@@ -453,6 +455,22 @@ ensure_app_role() {
   env_set VARYAONE_APP_DATABASE_URL "postgres://varyaone_app:$_apppw@postgres:5432/$_pgdb?sslmode=disable"
   echo "  ✓ varyaone_app rolü etkin — firma izolasyonu veritabanı seviyesinde zorlanıyor."
   return 0
+}
+
+# Rolu elle onarir: grant'leri yeniden uygular, parolayi yeniden verir ve
+# .env'deki DSN'i tazeler. Bir majör PostgreSQL yükseltmesinden veya yarida
+# kesilmis bir guncellemeden sonra rol parolasiz kalirsa tek gereken budur.
+repair_app_role() {
+  require_docker
+  [ -f .env ] || { echo ".env yok; önce ./deploy.sh install çalıştırın." >&2; exit 1; }
+  if ensure_app_role; then
+    compose up -d api worker >/dev/null 2>&1 || true
+    echo "  Servisler yeniden başlatıldı. Durum: ./deploy.sh status"
+  else
+    echo "  Rol onarılamadı. Sistemi ayakta tutmak için .env içindeki" >&2
+    echo "  VARYAONE_APP_DATABASE_URL satırını boşaltıp servisleri yeniden başlatabilirsiniz." >&2
+    exit 1
+  fi
 }
 
 # --- tekil çalıştırma kilidi -------------------------------------------------
@@ -1475,8 +1493,21 @@ run_update() {
   # açılır (ALTER DEFAULT PRIVILEGES) ama bu ekstra bir emniyet ağı. Güncelleme
   # sırasında zorlama KENDİLİĞİNDEN açılmaz; operatör `./deploy.sh` fresh install
   # veya elle etkinleştirir.
+  #
+  # Bir majör PostgreSQL yükseltmesi veritabanini BOS bir kumeye geri yukler.
+  # Roller kume seviyesindedir, yedekle tasinmaz: varyaone_app'i migration
+  # 000148 parolasiz ve NOLOGIN olarak yeniden yaratir. Yani bu adim yalnizca
+  # bir emniyet agi degil, yukseltmeden sonra rolun tek onarim yeridir.
+  #
+  # Basarisiz olursa .env'deki DSN giris yapamayan bir role isaret etmeye devam
+  # ederdi: api baglanamaz, /health/ready 503 doner ve butun kurulum ayaga
+  # kalkmaz. Bunun yerine URL temizlenir; sunucu superuser baglantisina doner
+  # (izolasyon yalnizca uygulama yukune dayanir) ve sistem ayakta kalir.
   if [ -n "$(env_get VARYAONE_APP_DATABASE_URL)" ]; then
-    ensure_app_role >>"$UPD_LOG" 2>&1 || true
+    if ! ensure_app_role >>"$UPD_LOG" 2>&1; then
+      env_set VARYAONE_APP_DATABASE_URL ""
+      report_phase migrate "UYARI: varyaone_app rolü kurulamadı — superuser bağlantısına dönüldü. Düzeltmek için: ./deploy.sh repair-app-role"
+    fi
   fi
 
   # 7) Servisleri yeniden baslat
@@ -1658,6 +1689,25 @@ doctor() {
     else
       warn "henüz alınmadı — ./deploy.sh install"
     fi
+  fi
+
+  # Uygulama rolu, api'nin gercekten kullandigi baglantidir. Parolasi eksikse
+  # (ornegin majör yükseltme rolu parolasiz yeniden yaratmissa) api hicbir
+  # zaman hazir olmaz, ama belirti "api yanit vermiyor" gibi alakasiz gorunur.
+  # Once bunu soyle ki operatoru dogru yere gondersin.
+  check "Uygulama veritabanı rolü"
+  _appurl=$(env_get VARYAONE_APP_DATABASE_URL)
+  if [ -z "$_appurl" ]; then
+    pass "kullanılmıyor — superuser bağlantısı (izolasyon uygulama yükünde)"
+  elif ! compose exec -T postgres pg_isready >/dev/null 2>&1; then
+    warn "postgres çalışmıyor — kontrol edilemedi"
+  elif compose exec -T postgres \
+      env PGPASSWORD="$(env_get VARYAONE_APP_DB_PASSWORD)" \
+      psql -h 127.0.0.1 -U varyaone_app -d "$(env_get POSTGRES_DB || echo varyaone)" \
+      -c 'SELECT 1' >/dev/null 2>&1; then
+    pass "varyaone_app giriş yapabiliyor"
+  else
+    warn "varyaone_app giriş YAPAMIYOR — api bu yüzden hazır olmaz. Düzelt: ./deploy.sh repair-app-role"
   fi
 
   check "Servis sağlığı"
@@ -1934,6 +1984,7 @@ case "${1:-}" in
   uninstall-agent) uninstall_agent || exit 1 ;;
   status) show_status ;;
   doctor) doctor ;;
+  repair-app-role) repair_app_role ;;
   renew-cert) renew_cert ;;
   backup) backup ;;
   restore) shift; restore "$@" ;;

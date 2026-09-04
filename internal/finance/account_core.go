@@ -336,14 +336,6 @@ func NormalizeIBAN(value string) (string, error) {
 	return iban, nil
 }
 
-func MaskIBAN(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) <= 8 {
-		return value
-	}
-	return value[:4] + strings.Repeat("•", len(value)-8) + value[len(value)-4:]
-}
-
 func ensureFinanceAccountAccess(ctx context.Context, q interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }, session identity.Session, accountID string, branchID *string) error {

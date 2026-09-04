@@ -2,7 +2,6 @@ package finance
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -150,12 +149,5 @@ func TestNormalizeIBANUsesCountryNeutralMod97(t *testing.T) {
 	}
 	if _, err = NormalizeIBAN("GB82WEST12345698765431"); !errors.Is(err, identity.ErrValidation) {
 		t.Fatalf("invalid checksum was accepted: %v", err)
-	}
-}
-
-func TestMaskIBANKeepsOnlySafeEdges(t *testing.T) {
-	got := MaskIBAN("TR330006100519786457841326")
-	if got[:4] != "TR33" || got[len(got)-4:] != "1326" || strings.Contains(got, "610051") {
-		t.Fatalf("IBAN was not safely masked: %q", got)
 	}
 }

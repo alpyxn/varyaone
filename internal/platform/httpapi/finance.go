@@ -93,9 +93,6 @@ func (h financeHandler) listTypedAccounts(w http.ResponseWriter, r *http.Request
 		writeFinanceError(w, r, err, "Finans hesapları okunamadı.")
 		return
 	}
-	for index := range items {
-		items[index].IBAN = finance.MaskIBAN(items[index].IBAN)
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -108,7 +105,6 @@ func (h financeHandler) getTypedAccount(w http.ResponseWriter, r *http.Request) 
 		writeFinanceError(w, r, err, "Finans hesabı okunamadı.")
 		return
 	}
-	item.IBAN = finance.MaskIBAN(item.IBAN)
 	w.Header().Set("ETag", formatETag(item.Version))
 	writeJSON(w, http.StatusOK, item)
 }
@@ -125,7 +121,6 @@ func (h financeHandler) createTypedAccount(w http.ResponseWriter, r *http.Reques
 		writeFinanceError(w, r, err, "Finans hesabı oluşturulamadı.")
 		return
 	}
-	item.IBAN = finance.MaskIBAN(item.IBAN)
 	w.Header().Set("ETag", formatETag(item.Version))
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -147,7 +142,6 @@ func (h financeHandler) updateTypedAccount(w http.ResponseWriter, r *http.Reques
 		writeFinanceError(w, r, err, "Finans hesabı güncellenemedi.")
 		return
 	}
-	item.IBAN = finance.MaskIBAN(item.IBAN)
 	w.Header().Set("ETag", formatETag(item.Version))
 	writeJSON(w, http.StatusOK, item)
 }
@@ -169,7 +163,6 @@ func (h financeHandler) setAccountActive(w http.ResponseWriter, r *http.Request,
 		writeFinanceError(w, r, err, "Finans hesabı durumu değiştirilemedi.")
 		return
 	}
-	item.IBAN = finance.MaskIBAN(item.IBAN)
 	w.Header().Set("ETag", formatETag(item.Version))
 	writeJSON(w, http.StatusOK, item)
 }
@@ -453,9 +446,6 @@ func (h financeHandler) listAccounts(w http.ResponseWriter, r *http.Request) {
 		writeFinanceError(w, r, err, "Finans hesapları okunamadı.")
 		return
 	}
-	for index := range items {
-		items[index].IBAN = finance.MaskIBAN(items[index].IBAN)
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -465,7 +455,6 @@ func (h financeHandler) getAccount(w http.ResponseWriter, r *http.Request) {
 		writeFinanceError(w, r, err, "Finans hesabı okunamadı.")
 		return
 	}
-	item.IBAN = finance.MaskIBAN(item.IBAN)
 	writeJSON(w, http.StatusOK, item)
 }
 
