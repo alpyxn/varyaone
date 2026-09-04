@@ -568,6 +568,8 @@ render_nginx_conf() {
     echo "server {"
     echo "    listen 80;"
     echo "    server_name $domain;"
+    # Bir kurulum, sahibinin işletme verisidir; arama motorlarında yeri yok.
+    echo "    add_header X-Robots-Tag \"noindex, nofollow\" always;"
     echo "    location /.well-known/acme-challenge/ { root /var/www/certbot; }"
     if [ "$mode" = "full" ]; then
       echo "    location / { return 301 https://\$host\$request_uri; }"
@@ -589,6 +591,7 @@ server {
     ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
     add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Robots-Tag "noindex, nofollow" always;
 
     # .varya tam sistem yedeği geri yükleme için büyük gövde sınırı.
     client_max_body_size 8g;

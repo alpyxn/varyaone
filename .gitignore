@@ -39,3 +39,6 @@ web/test-results/
 
 # deploy.sh tarafindan uretilen nginx yapilandirmasi (domainli kurulum)
 deploy/nginx/conf.d/*.conf
+
+# Ayni nginx uzerinden yayinlanan statik icerik (bkz. compose.domain.yaml)
+deploy/nginx/site/

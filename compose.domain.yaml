@@ -22,6 +22,10 @@ services:
       - "${VARYAONE_HTTPS_PORT:-443}:443"
     volumes:
       - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      # Ayni nginx uzerinden yayinlanacak statik icerik (baska bir alan adinda
+      # duran tanitim sitesi gibi). Varsayilan olarak bostur; conf.d altina bir
+      # server blogu konmadikca hicbir sey sunulmaz.
+      - ./deploy/nginx/site:/usr/share/nginx/site:ro
       - letsencrypt:/etc/letsencrypt:ro
       - certbot-webroot:/var/www/certbot
     # Yenilenen sertifikalari almak icin nginx'i periyodik olarak yeniden yukle.

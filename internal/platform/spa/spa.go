@@ -47,6 +47,10 @@ func Handler() http.Handler {
 	index, _ := fs.ReadFile(bundle, "index.html")
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// An installation holds its owner's business data; it has no place in a
+		// search index, whether or not the crawler honours robots.txt.
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+
 		upstream := strings.TrimPrefix(r.URL.Path, "/")
 		if upstream == "" {
 			serveIndex(w, index)
