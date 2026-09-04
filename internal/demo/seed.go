@@ -2,12 +2,15 @@ package demo
 
 import (
 	"context"
+	_ "embed"
+	"encoding/base64"
 	"fmt"
 	"time"
 
 	"github.com/alpyxn/varyaone/internal/finance"
 	"github.com/alpyxn/varyaone/internal/fixedasset"
 	"github.com/alpyxn/varyaone/internal/hr/employee"
+	"github.com/alpyxn/varyaone/internal/hr/timesheet"
 	"github.com/alpyxn/varyaone/internal/identity"
 	"github.com/alpyxn/varyaone/internal/party"
 	"github.com/alpyxn/varyaone/internal/products"
@@ -161,6 +164,7 @@ func (r *Runner) seed(ctx context.Context, session identity.Session) error {
 		name string
 		run  func(context.Context, identity.Session, *services, *catalogue) error
 	}{
+		{"company logo", r.seedCompanyLogo},
 		{"warehouses", r.seedWarehouses},
 		{"finance accounts", r.seedFinanceAccounts},
 		{"products", r.seedProducts},
@@ -170,6 +174,7 @@ func (r *Runner) seed(ctx context.Context, session identity.Session) error {
 		{"stock operations", r.seedStockOperations},
 		{"settlements", r.seedSettlements},
 		{"hr", r.seedHR},
+		{"timesheet", r.seedTimesheet},
 		{"fixed assets", r.seedFixedAssets},
 	}
 	for _, step := range steps {
@@ -177,6 +182,26 @@ func (r *Runner) seed(ctx context.Context, session identity.Session) error {
 			return fmt.Errorf("%s: %w", step.name, err)
 		}
 		r.opts.Logger.Debug("demo seed step complete", "step", step.name)
+	}
+	return nil
+}
+
+// placeholderLogo is the demo company's logo. It is a Logoipsum mark — a free
+// placeholder logo, deliberately not a real brand — so the demo shows what a
+// company logo looks like on the payslip and in the app without implying the
+// sample data belongs to anyone.
+//
+//go:embed assets/placeholder-logo.png
+var placeholderLogo []byte
+
+// seedCompanyLogo puts the placeholder mark on the demo company. The logo is
+// stored the way the settings screen stores an uploaded one: a base64 image
+// data URI on the company row.
+func (r *Runner) seedCompanyLogo(ctx context.Context, session identity.Session, svc *services, built *catalogue) error {
+	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(placeholderLogo)
+	if _, err := r.pool.Exec(ctx, `UPDATE companies SET logo=$2,updated_at=now(),version=version+1 WHERE id=$1`,
+		CompanyID, dataURI); err != nil {
+		return fmt.Errorf("set demo company logo: %w", err)
 	}
 	return nil
 }
@@ -265,9 +290,12 @@ func (r *Runner) seedSettlements(ctx context.Context, session identity.Session, 
 		if index%2 == 1 {
 			account, method = built.cash, "CASH"
 		}
+		// Collections happen after the newest seeded invoice and return. Keeping
+		// the business date behind those documents would make FIFO allocation pay
+		// an invoice that, on paper, did not exist yet.
 		if _, err = svc.finance.PostCollection(ctx, session, finance.PaymentInput{
 			PartyID: customer.ID, AccountID: account.ID, PaymentKind: "COLLECTION", PaymentMethod: method,
-			Currency: "TRY", Amount: amount, TransactionDate: r.day(-20 + index*2),
+			Currency: "TRY", Amount: amount, TransactionDate: r.day(-6 + index%6),
 			Description: "Müşteri tahsilatı", IdempotencyKey: fmt.Sprintf("demo-collection-%d", index),
 			AutoAllocate: true,
 		}, seedMeta(fmt.Sprintf("collection-%d", index))); err != nil {
@@ -298,7 +326,7 @@ func (r *Runner) seedSettlements(ctx context.Context, session identity.Session, 
 }
 
 // settlementAmount is what this party can be settled for: the whole open
-// balance when full is set, and the oldest invoice alone otherwise, which is
+// balance when full is set, and half the oldest invoice otherwise, which is
 // what leaves the demo with a mix of paid, part-paid and untouched invoices.
 // It returns "" when the party owes nothing.
 func (r *Runner) settlementAmount(ctx context.Context, session identity.Session, svc *services, partyID, side string, full bool) (string, error) {
@@ -308,10 +336,12 @@ func (r *Runner) settlementAmount(ctx context.Context, session identity.Session,
 	}
 	total := int64(0)
 	for _, item := range items {
-		total += minor(item.OpenAmount)
+		open := minor(item.OpenAmount)
 		if !full {
+			total = open / 2
 			break
 		}
+		total += open
 	}
 	if total == 0 {
 		return "", nil
@@ -320,31 +350,62 @@ func (r *Runner) settlementAmount(ctx context.Context, session identity.Session,
 }
 
 type employeeSpec struct {
-	code     string
-	first    string
-	last     string
-	title    string
-	email    string
-	position string
+	code       string
+	first      string
+	last       string
+	title      string
+	email      string
+	grossWage  string // monthly gross wage in TRY; the demo pays every seeded employee something so payroll can actually run
+	hireOffset int    // days before "now" the employment started
 }
 
 var employeeSpecs = []employeeSpec{
-	{"PER-001", "Ayşe", "Yıldırım", "Genel Müdür", "ayse.yildirim@demo.varyaone.com", ""},
-	{"PER-002", "Burak", "Şahin", "Satış Müdürü", "burak.sahin@demo.varyaone.com", ""},
-	{"PER-003", "Ceren", "Demir", "Muhasebe Uzmanı", "ceren.demir@demo.varyaone.com", ""},
-	{"PER-004", "Deniz", "Arslan", "Depo Sorumlusu", "deniz.arslan@demo.varyaone.com", ""},
-	{"PER-005", "Emre", "Koç", "Saha Teknisyeni", "emre.koc@demo.varyaone.com", ""},
-	{"PER-006", "Funda", "Aksoy", "İnsan Kaynakları Uzmanı", "funda.aksoy@demo.varyaone.com", ""},
+	{"PER-001", "Ayşe", "Yıldırım", "Genel Müdür", "ayse.yildirim@demo.varyaone.com", "120000.00", -1095},
+	{"PER-002", "Burak", "Şahin", "Satış Müdürü", "burak.sahin@demo.varyaone.com", "75000.00", -820},
+	{"PER-003", "Ceren", "Demir", "Muhasebe Uzmanı", "ceren.demir@demo.varyaone.com", "55000.00", -640},
+	{"PER-004", "Deniz", "Arslan", "Depo Sorumlusu", "deniz.arslan@demo.varyaone.com", "40000.00", -460},
+	{"PER-005", "Emre", "Koç", "Saha Teknisyeni", "emre.koc@demo.varyaone.com", "42000.00", -300},
+	{"PER-006", "Funda", "Aksoy", "İnsan Kaynakları Uzmanı", "funda.aksoy@demo.varyaone.com", "48000.00", -180},
 }
 
 func (r *Runner) seedHR(ctx context.Context, session identity.Session, svc *services, built *catalogue) error {
 	for _, spec := range employeeSpecs {
+		hireDate := r.day(spec.hireOffset).Format("2006-01-02")
 		if _, err := svc.employee.Create(ctx, session, employee.Input{
 			EmployeeCode: spec.code, FirstName: spec.first, LastName: spec.last,
 			Status: "ACTIVE", PositionTitle: spec.title, WorkEmail: spec.email,
+			Employment: &employee.EmploymentSetup{
+				StartDate: hireDate,
+				GrossWage: spec.grossWage,
+				Currency:  "TRY",
+				WorkType:  "FULL_TIME",
+				SgkStatus: "4A",
+			},
 		}, seedMeta("employee-"+spec.code)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// seedTimesheet finalizes one full month of puantaj (attendance) for the
+// previous calendar month, so a payroll run has a finalized timesheet period
+// to point at right after seeding — payroll refuses to run against one that
+// isn't finalized (payroll/run.ErrTimesheetNotFinal upstream).
+func (r *Runner) seedTimesheet(ctx context.Context, session identity.Session, svc *services, built *catalogue) error {
+	prevMonth := time.Date(r.opts.Now().UTC().Year(), r.opts.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0)
+	period, err := svc.timesheet.CreatePeriod(ctx, session, timesheet.PeriodInput{
+		PeriodYear: prevMonth.Year(), PeriodMonth: int(prevMonth.Month()),
+	}, seedMeta("timesheet-period"))
+	if err != nil {
+		return err
+	}
+	period, err = svc.timesheet.Generate(ctx, session, period.ID, seedMeta("timesheet-generate"))
+	if err != nil {
+		return err
+	}
+	if _, err := svc.timesheet.Finalize(ctx, session, period.ID, period.Version, seedMeta("timesheet-finalize")); err != nil {
+		return err
 	}
 	return nil
 }

@@ -99,12 +99,12 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawP
 	if err != nil {
 		return fmt.Errorf("initialize SMTP settings service: %w", err)
 	}
-	hrEmployeeService, err := employee.NewService(pool, cfg.MasterKey)
+	fixedAssetService := fixedasset.NewService(pool)
+	legislationRepository := legislation.NewRepository(pool)
+	hrEmployeeService, err := employee.NewService(pool, cfg.MasterKey, legislationRepository)
 	if err != nil {
 		return fmt.Errorf("initialize HR employee service: %w", err)
 	}
-	fixedAssetService := fixedasset.NewService(pool)
-	legislationRepository := legislation.NewRepository(pool)
 	payrollLegislationService := legislation.NewService(pool)
 	hrEmploymentService := employment.NewService(pool, legislationRepository)
 	hrAdvanceService := advance.NewService(pool, financeService)

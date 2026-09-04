@@ -34,6 +34,9 @@
     description: '',
     notes: ''
   });
+  type Branch = { id: string; code: string; name: string; is_active: boolean };
+  let branches = $state<Branch[]>([]);
+  let branchesFailed = $state(false);
   let openingAmount = $state('');
   // Set once the account itself is created. A failed opening balance must not
   // make the next attempt create a second account, so a retry posts only the
@@ -67,6 +70,22 @@
       }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Oturum bilgisi alınamadı.';
+    }
+  }
+
+  // Şube elle yazılamaz, seçilir. Liste alınamazsa alan gizlenir ve kayıtlı
+  // değer olduğu gibi gönderilir; kullanıcıdan kimlik istenmez.
+  async function loadBranches() {
+    try {
+      // Düzenlemede hesabın mevcut şubesi pasifleşmiş olabilir; seçili değeri
+      // listede tutabilmek için pasif şubeler de isteniyor.
+      const response = await api<{ items?: Branch[] }>(
+        isEdit ? '/branches?include_inactive=true' : '/branches'
+      );
+      branches = response.items ?? [];
+    } catch {
+      branches = [];
+      branchesFailed = true;
     }
   }
 
@@ -198,7 +217,16 @@
 
   $effect(() => {
     void (async () => {
-      await Promise.all([loadSession(), loadAccount()]);
+      await Promise.all([loadSession(), loadAccount(), loadBranches()]);
+      // Kayıtlı şube listede yoksa (silinmiş ya da erişim kapsamı dışında)
+      // seçim boşa düşer ve kaydetmek şubeyi sessizce siler. Değeri listeye
+      // geri koyarak bunu engelliyoruz.
+      if (form.branch_id && !branches.some((branch) => branch.id === form.branch_id)) {
+        branches = [
+          ...branches,
+          { id: form.branch_id, code: 'Mevcut şube', name: 'listede yok', is_active: false }
+        ];
+      }
       loading = false;
     })();
   });
@@ -260,13 +288,24 @@
             ariaLabel="Para birimi"
           />
         </label>
-        <label>
-          <span>Şube kimliği (opsiyonel)</span>
-          <Input bind:value={form.branch_id} placeholder="UUID" disabled={isEdit && hasMovements} />
-          {#if isEdit && hasMovements}<small class="hint"
-              >Hareket görmüş hesabın şubesi değiştirilemez.</small
-            >{/if}
-        </label>
+        {#if branches.length || !branchesFailed}
+          <label>
+            <span>Şube (opsiyonel)</span>
+            <select
+              bind:value={form.branch_id}
+              disabled={(isEdit && hasMovements) || !branches.length}
+              aria-label="Şube"
+            >
+              <option value="">Şube seçilmedi</option>
+              {#each branches as branch (branch.id)}
+                <option value={branch.id}>{branch.code} · {branch.name}</option>
+              {/each}
+            </select>
+            {#if isEdit && hasMovements}<small class="hint"
+                >Hareket görmüş hesabın şubesi değiştirilemez.</small
+              >{/if}
+          </label>
+        {/if}
         {#if type === 'BANK'}
           <label><span>Banka</span><Input bind:value={form.bank_name} maxlength={120} /></label>
           <label
@@ -373,6 +412,14 @@
   }
   .wide {
     grid-column: 1 / -1;
+  }
+  select {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    padding: 8px 10px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
   }
   .type-toggle {
     display: flex;

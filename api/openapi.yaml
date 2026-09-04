@@ -515,6 +515,22 @@ paths:
                   { schema: { $ref: "#/components/schemas/ErrorResponse" } },
               },
           }
+  /api/v1/branches:
+    get:
+      operationId: listBranches
+      summary: List the branches of the selected company the caller may use
+      parameters:
+        - {
+            name: include_inactive,
+            in: query,
+            schema: { type: boolean, default: false },
+          }
+      responses:
+        "200":
+          {
+            description: Company branches,
+            content: { application/json: { schema: { type: object } } },
+          }
   /api/v1/users:
     get:
       operationId: listUsers
@@ -4855,6 +4871,8 @@ paths:
   /api/v1/hr/employees:
     get: { operationId: listEmployees, summary: Cursor-list employees, x-varya-permission: hr.employee.read, responses: { "200": { description: Employee page } } }
     post: { operationId: createEmployee, summary: Create an employee, x-varya-permission: hr.employee.edit, responses: { "201": { description: Employee created } } }
+  /api/v1/hr/employees/readiness:
+    get: { operationId: listEmployeeReadiness, summary: Report what each employee card is missing for a period, x-varya-permission: hr.employee.read, parameters: [{ name: year, in: query, schema: { type: integer } }, { name: month, in: query, schema: { type: integer } }], responses: { "200": { description: Readiness per employee } } }
   /api/v1/hr/employees/{employeeID}:
     parameters: [{ name: employeeID, in: path, required: true, schema: { type: string, format: uuid } }]
     get: { operationId: getEmployee, summary: Read employee and derived employment dates, x-varya-permission: hr.employee.read, responses: { "200": { description: Employee } } }
@@ -4923,6 +4941,9 @@ paths:
   /api/v1/hr/timesheet-periods:
     get: { operationId: listTimesheetPeriods, summary: List timesheet periods, x-varya-permission: hr.timesheet.read, responses: { "200": { description: Timesheet periods } } }
     post: { operationId: createTimesheetPeriod, summary: Create a monthly timesheet period, x-varya-permission: hr.timesheet.edit, responses: { "201": { description: Timesheet period created } } }
+  /api/v1/hr/timesheet-periods/{periodID}/readiness:
+    parameters: [{ name: periodID, in: path, required: true, schema: { type: string, format: uuid } }]
+    get: { operationId: listTimesheetReadiness, summary: Report which employees may be entered on this period, x-varya-permission: hr.timesheet.read, responses: { "200": { description: Readiness per employee } } }
   /api/v1/hr/timesheet-periods/{periodID}/generate:
     parameters: [{ name: periodID, in: path, required: true, schema: { type: string, format: uuid } }]
     post: { operationId: generateTimesheet, summary: Generate days while preserving MANUAL rows, x-varya-permission: hr.timesheet.edit, responses: { "200": { description: Timesheet generated }, "422": { description: Public holiday calendar missing } } }

@@ -30,9 +30,11 @@
     max-width: 44rem;
     margin: clamp(2rem, 8vh, 6rem) auto 0;
     padding: 0 1rem;
+    /* Başlık ve gövde bunu miras alır; .main bir metin rengi vermiyor, o yüzden
+       burada verilmezse koyu temada siyah metin kalır. */
+    color: var(--text);
   }
   .coming-mark {
-    color: var(--foreground, #111);
     margin-bottom: 0.5rem;
   }
   .eyebrow {
@@ -40,7 +42,7 @@
     letter-spacing: 0.08em;
     font-size: 0.75rem;
     font-weight: 600;
-    color: var(--muted-foreground, #6b7280);
+    color: var(--text-muted);
   }
   h1 {
     margin: 0;
@@ -51,7 +53,6 @@
     margin-top: 1.25rem;
     text-align: left;
     line-height: 1.65;
-    color: var(--foreground, #1f2937);
   }
   .coming-body :global(h2) {
     font-size: 1.05rem;
@@ -73,8 +74,8 @@
     margin-top: 1.5rem;
     padding: 0.6rem 1.1rem;
     border-radius: 0.5rem;
-    background: var(--primary, #c1272d);
-    color: #fff;
+    background: var(--primary);
+    color: var(--primary-foreground);
     font-weight: 600;
     text-decoration: none;
   }

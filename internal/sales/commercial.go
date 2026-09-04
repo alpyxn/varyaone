@@ -1363,6 +1363,14 @@ func (s *Service) DeleteCommercialDraft(ctx context.Context, session identity.Se
 	if _, err = tx.Exec(ctx, `DELETE FROM commercial_line_allocations WHERE company_id=$1 AND target_line_id IN (SELECT id FROM `+spec.lineTable+` WHERE company_id=$1 AND document_id=$2)`, session.CurrentCompanyID, id); err != nil {
 		return err
 	}
+	// The lines go first, while the header still exists and still says DRAFT.
+	// Left to the header's ON DELETE CASCADE they would be removed after the
+	// parent row is gone, and the line immutability trigger reads that parent's
+	// status: it finds nothing and refuses the delete as if the document were
+	// posted. Purchasing deletes its lines the same way.
+	if _, err = tx.Exec(ctx, `DELETE FROM `+spec.lineTable+` WHERE company_id=$1 AND document_id=$2`, session.CurrentCompanyID, id); err != nil {
+		return mapSalesConstraint(err)
+	}
 	result, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s WHERE company_id=$1 AND id=$2 AND status='DRAFT' AND version=$3`, spec.table), session.CurrentCompanyID, id, expectedVersion)
 	if err != nil {
 		return mapSalesConstraint(err)
@@ -1595,7 +1603,7 @@ func (s *Service) TransitionCommercial(ctx context.Context, session identity.Ses
 			if kind == SalesReturn {
 				financeType = "SALES_RETURN_INVOICE"
 			}
-			posting, postErr := s.finance.PostInvoiceTx(ctx, tx, session, finance.InvoicePostingInput{DocumentID: item.DocumentID, DocumentType: financeType, PartyID: item.PartyID, Currency: item.CurrencyCode, Amount: item.PayableTotal, ExchangeRate: item.ExchangeRate, DocumentDate: item.DocumentDate, DueDate: item.DueDate, Description: invoicePostingDescription(item.DocumentTypeCode, item.DocumentNo, item.Notes), IdempotencyKey: meta.IdempotencyKey})
+			posting, postErr := s.finance.PostInvoiceTx(ctx, tx, session, finance.InvoicePostingInput{DocumentID: item.DocumentID, DocumentType: financeType, DocumentNo: item.DocumentNo, PartyID: item.PartyID, Currency: item.CurrencyCode, Amount: item.PayableTotal, ExchangeRate: item.ExchangeRate, DocumentDate: item.DocumentDate, DueDate: item.DueDate, Description: invoicePostingDescription(item.DocumentTypeCode, item.DocumentNo, item.Notes), IdempotencyKey: meta.IdempotencyKey})
 			if postErr != nil {
 				return CommercialDocument{}, mapCommercialError(postErr)
 			}

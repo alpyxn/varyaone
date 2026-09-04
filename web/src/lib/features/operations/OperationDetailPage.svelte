@@ -31,53 +31,16 @@
   import { ph, printDocument } from '$lib/design/print';
   import { deleteWarehouse, updateWarehouse } from '$lib/features/warehouses/api';
   import type { WarehouseType } from '$lib/features/warehouses/types';
+  import {
+    configFor,
+    firstValue,
+    hasValue,
+    textValue,
+    type Field,
+    type OperationDetailKind,
+    type RecordValue
+  } from './operation-detail-config';
 
-  export type OperationDetailKind =
-    | 'party-movement'
-    | 'collection'
-    | 'payment'
-    | 'stock-movement'
-    | 'warehouse'
-    | 'transfer'
-    | 'count'
-    | 'lot'
-    | 'serial'
-    | 'account'
-    | 'account-movement'
-    | 'finance-transfer'
-    | 'document';
-
-  type RecordValue = Record<string, unknown>;
-  type Field = {
-    key: string | string[];
-    label: string;
-    kind?: 'text' | 'date' | 'datetime' | 'money' | 'quantity' | 'decimal';
-    currencyKey?: string | string[];
-    linkPath?: string;
-    linkKey?: string | string[];
-    linkQueryKey?: string | string[];
-    appendInactiveLabel?: boolean;
-    hideOnPrint?: boolean;
-  };
-  type TableColumn = Field;
-  type Table = {
-    key: string;
-    title: string;
-    columns: TableColumn[];
-    hideOnPrint?: boolean;
-  };
-  type Config = {
-    title: string;
-    listPath: string;
-    endpoint: string;
-    numberKeys: string[];
-    statusKeys: string[];
-    subjectKeys: string[];
-    metaKeys: string[];
-    fields: Field[];
-    tables?: Table[];
-    print?: boolean;
-  };
   type OperationListResponse = { items?: RecordValue[] };
 
   type Props = { kind: OperationDetailKind; endpoint?: string; listPath?: string; title?: string };
@@ -114,26 +77,6 @@
     address: '',
     is_active: true
   });
-
-  function firstValue(item: RecordValue | undefined, keys: string | string[]) {
-    if (!item) return undefined;
-    const candidates = Array.isArray(keys) ? keys : [keys];
-    for (const key of candidates) {
-      const value = key.split('.').reduce<unknown>((current, part) => {
-        if (!current || typeof current !== 'object') return undefined;
-        return (current as RecordValue)[part];
-      }, item);
-      if (value !== undefined && value !== null && value !== '') return value;
-    }
-    return undefined;
-  }
-
-  function textValue(value: unknown) {
-    if (value === undefined || value === null || value === '') return '—';
-    if (typeof value === 'boolean') return value ? 'Evet' : 'Hayır';
-    if (typeof value === 'object') return JSON.stringify(value);
-    return String(value);
-  }
 
   function hasStockMovementDetails(value: unknown) {
     if (!value || typeof value !== 'object') return false;
@@ -197,10 +140,6 @@
     return firstValue(item, field.key);
   }
 
-  function hasValue(value: unknown) {
-    return value !== undefined && value !== null && value !== '';
-  }
-
   function isVariantActive(item: RecordValue) {
     const value = firstValue(item, ['variant_is_active', 'variant.is_active']);
     return value !== false && String(value).toLowerCase() !== 'false';
@@ -243,6 +182,18 @@
     const text = localizedEnum(value, field.key);
     if (field.appendInactiveLabel && !isVariantActive(item)) return `${text} · Pasif`;
     return text;
+  }
+
+  // Ref alanlarında değerin kendisi (UUID) değil, sabit bir ifade gösterilir.
+  // Bağlantı kurulamadıysa gösterilecek bir şey yoktur.
+  function cellText(item: RecordValue, field: Field, href: string | undefined) {
+    if (field.kind === 'ref') return href ? (field.refText ?? 'Kaydı aç') : '—';
+    return fieldText(item, field);
+  }
+
+  function linkAriaLabel(item: RecordValue, field: Field) {
+    if (field.kind === 'ref') return `${field.label} bağlantısını aç`;
+    return `${fieldText(item, field)} bağlantısını aç`;
   }
 
   function stockSourceDocumentHref(item: RecordValue) {
@@ -294,544 +245,6 @@
     const queryKey = Array.isArray(field.linkQueryKey) ? field.linkQueryKey[0] : field.linkQueryKey;
     const separator = href.includes('?') ? '&' : '?';
     return `${href}${separator}${encodeURIComponent(queryKey)}=${encodeURIComponent(String(queryValue))}`;
-  }
-
-  function configFor(value: OperationDetailKind): Config {
-    const commonPosted: Field[] = [
-      { key: ['posted_at', 'created_at'], label: 'Oluşturma zamanı', kind: 'datetime' },
-      { key: ['actor_name', 'created_by_name', 'actor_user_id'], label: 'Kaydı oluşturan' }
-    ];
-    switch (value) {
-      case 'party-movement':
-        return {
-          title: 'Cari Hareket',
-          listPath: '/cari/hareketler',
-          endpoint: '/party-movements',
-          numberKeys: ['document_no', 'business_number', 'id'],
-          statusKeys: ['status', 'state'],
-          subjectKeys: ['party_name', 'party.display_name', 'party_id'],
-          metaKeys: ['currency', 'document_date', 'transaction_date'],
-          fields: [
-            {
-              key: ['party_name', 'party.display_name'],
-              label: 'Cari',
-              linkPath: '/cari/kartlar/{id}',
-              linkKey: ['party_id', 'party.id']
-            },
-            { key: ['party_code', 'party.code'], label: 'Cari Kodu' },
-            { key: ['entry_type', 'movement_type'], label: 'Hareket türü' },
-            { key: 'debit', label: 'Borç', kind: 'money' },
-            { key: 'credit', label: 'Alacak', kind: 'money' },
-            { key: 'currency', label: 'Para birimi' },
-            { key: 'exchange_rate', label: 'Kur', kind: 'decimal' },
-            {
-              key: ['base_amount', 'try_amount'],
-              label: 'TRY karşılığı',
-              kind: 'money',
-              currencyKey: 'base_currency'
-            },
-            { key: ['document_date', 'transaction_date'], label: 'İşlem tarihi', kind: 'date' },
-            { key: 'due_date', label: 'Vade tarihi', kind: 'date' },
-            { key: ['reference_no', 'reference'], label: 'Referans no' },
-            { key: 'description', label: 'Açıklama' },
-            { key: ['source_label', 'source_type', 'source.type'], label: 'Kaynak' },
-            { key: 'reversal_of_id', label: 'Ters çevrilen kayıt' },
-            ...commonPosted
-          ]
-        };
-      case 'collection':
-      case 'payment':
-        return {
-          title: value === 'collection' ? 'Tahsilat' : 'Ödeme',
-          listPath: value === 'collection' ? '/cari/tahsilatlar' : '/cari/odemeler',
-          endpoint: '/finance/payments',
-          numberKeys: ['document_no', 'business_number', 'id'],
-          statusKeys: ['status', 'state'],
-          subjectKeys: ['party_name', 'party.display_name', 'party_id'],
-          metaKeys: ['payment_method', 'currency', 'transaction_date'],
-          print: true,
-          fields: [
-            {
-              key: ['party_name', 'party.display_name'],
-              label: 'Cari',
-              linkPath: '/cari/kartlar/{id}',
-              linkKey: ['party_id', 'party.id']
-            },
-            { key: ['party_code', 'party.code'], label: 'Cari Kodu' },
-            { key: 'payment_method', label: 'Tahsilat yöntemi' },
-            { key: ['account_name', 'account.name'], label: 'Kasa / banka hesabı' },
-            { key: 'account_id', label: 'Hesap', linkPath: '/finans/hesaplar/{id}' },
-            { key: 'amount', label: 'Tutar', kind: 'money' },
-            { key: 'currency', label: 'Para birimi' },
-            { key: 'exchange_rate', label: 'Kur', kind: 'decimal' },
-            {
-              key: ['base_amount', 'try_amount'],
-              label: 'TRY karşılığı',
-              kind: 'money',
-              currencyKey: 'base_currency'
-            },
-            { key: ['transaction_date', 'document_date'], label: 'Tarih', kind: 'date' },
-            { key: ['reference_no', 'reference'], label: 'Referans no' },
-            { key: 'description', label: 'Açıklama' },
-            {
-              key: 'party_ledger_entry_id',
-              label: 'Cari hareketi',
-              linkPath: '/cari/hareketler/{id}'
-            },
-            {
-              key: 'movement_id',
-              label: 'Kasa / banka hareketi',
-              linkPath: '/finans/hareketler/{id}'
-            },
-            ...commonPosted
-          ],
-          tables: [
-            {
-              key: 'allocations',
-              title: 'Fatura Dağılımları',
-              columns: [
-                { key: ['document_no', 'target_id', 'open_item_id'], label: 'Fatura' },
-                { key: 'due_date', label: 'Vade', kind: 'date' },
-                {
-                  key: ['invoice_amount', 'original_amount'],
-                  label: 'Fatura tutarı',
-                  kind: 'money'
-                },
-                { key: 'amount', label: 'Uygulanan tutar', kind: 'money' },
-                { key: ['remaining_amount', 'open_amount'], label: 'Kalan', kind: 'money' }
-              ]
-            }
-          ]
-        };
-      case 'stock-movement':
-        return {
-          title: 'Stok Hareketi',
-          listPath: '/stok/hareketler',
-          endpoint: '/stock-movement-operations',
-          numberKeys: ['movement_no', 'document_no', 'business_number', 'id'],
-          statusKeys: ['status', 'state'],
-          subjectKeys: ['product_name', 'product.name', 'product_code', 'product_id'],
-          metaKeys: ['warehouse_name', 'movement_date', 'posted_at'],
-          fields: [
-            {
-              key: ['product_name', 'product.name'],
-              label: 'Stok',
-              linkPath: '/stok/urunler/{id}',
-              linkKey: ['product_id', 'product.id']
-            },
-            { key: ['product_code', 'product.code', 'sku'], label: 'SKU' },
-            {
-              key: ['variant_name', 'variant.name', 'variant_code', 'variant_id'],
-              label: 'Varyant / SKU',
-              linkPath: '/stok/urunler/{id}',
-              linkKey: ['product_id', 'product.id'],
-              linkQueryKey: ['variant_id'],
-              appendInactiveLabel: true
-            },
-            { key: 'direction', label: 'Türü' },
-            { key: 'movement_type', label: 'Hareket türü' },
-            { key: ['entered_quantity', 'quantity'], label: 'Miktar', kind: 'quantity' },
-            { key: ['unit_code', 'unit'], label: 'Birim' },
-            { key: 'stock_unit', label: 'Stok kartı birimi' },
-            { key: ['source_document_no', 'source.document_no'], label: 'Kaynak belge' },
-            { key: ['source_document_type', 'source.document_type'], label: 'Kaynak belge türü' },
-            { key: 'base_quantity', label: 'Temel miktar', kind: 'quantity' },
-            { key: 'quantity_delta', label: 'Stok etkisi', kind: 'quantity' },
-            {
-              key: ['warehouse_name', 'warehouse.name'],
-              label: 'Depo',
-              linkPath: '/stok/depolar/{id}',
-              linkKey: ['warehouse_id', 'warehouse.id']
-            },
-            {
-              key: ['lot_number', 'lot.lot_number', 'lot_id'],
-              label: 'Lot',
-              linkPath: '/stok/lot-seri/lot/{id}',
-              linkKey: ['lot_id', 'lot.id']
-            },
-            {
-              key: ['serial_number', 'serial.serial_number', 'serial_id'],
-              label: 'Seri',
-              linkPath: '/stok/lot-seri/seri/{id}',
-              linkKey: ['serial_id', 'serial.id']
-            },
-            { key: ['total_cost', 'total_amount'], label: 'Toplam maliyet', kind: 'money' },
-            { key: 'currency', label: 'Para birimi' },
-            { key: ['reason_code', 'reason'], label: 'Neden' },
-            { key: 'reason_description', label: 'Neden açıklaması' },
-            { key: ['reference_no', 'reference'], label: 'Referans' },
-            {
-              key: ['posted_at', 'movement_date', 'transaction_date'],
-              label: 'Tarih',
-              kind: 'datetime'
-            },
-            { key: 'description', label: 'Açıklama' },
-            ...commonPosted
-          ]
-        };
-      case 'warehouse':
-        return {
-          title: 'Depo',
-          listPath: '/stok/depolar',
-          endpoint: '/warehouses',
-          numberKeys: ['code', 'id'],
-          statusKeys: ['status', 'is_active'],
-          subjectKeys: ['name'],
-          metaKeys: ['type', 'warehouse_type'],
-          fields: [
-            { key: 'code', label: 'Depo kodu' },
-            { key: 'name', label: 'Depo adı' },
-            { key: ['type', 'warehouse_type'], label: 'Depo türü' },
-            {
-              key: ['responsible_name', 'responsible_user_name', 'responsible_user_id'],
-              label: 'Sorumlu'
-            },
-            { key: ['is_active', 'active'], label: 'Aktif' },
-            { key: 'address', label: 'Adres' },
-            { key: ['created_at'], label: 'Oluşturma zamanı', kind: 'datetime' },
-            { key: ['updated_at'], label: 'Son güncelleme', kind: 'datetime' }
-          ],
-          tables: [
-            {
-              key: 'stock_positions',
-              title: 'Stok Durumu',
-              columns: [
-                { key: ['sku', 'product_code'], label: 'SKU' },
-                { key: ['product_name', 'product.name'], label: 'Stok' },
-                { key: ['physical_quantity', 'physical'], label: 'Fiziki', kind: 'quantity' },
-                { key: ['reserved_quantity', 'reserved'], label: 'Rezerve', kind: 'quantity' },
-                {
-                  key: ['available_quantity', 'available'],
-                  label: 'Kullanılabilir',
-                  kind: 'quantity'
-                },
-                { key: ['unit_code', 'unit'], label: 'Birim' }
-              ]
-            }
-          ]
-        };
-      case 'transfer':
-        return {
-          title: 'Transfer',
-          listPath: '/stok/transferler',
-          endpoint: '/warehouse-transfers',
-          numberKeys: ['transfer_no', 'business_number', 'id'],
-          statusKeys: ['state', 'status'],
-          subjectKeys: [
-            'from_warehouse_name',
-            'source_warehouse_name',
-            'source_warehouse.name',
-            'source_warehouse_id'
-          ],
-          metaKeys: [
-            'to_warehouse_name',
-            'destination_warehouse_name',
-            'destination_warehouse.name',
-            'created_at'
-          ],
-          print: true,
-          fields: [
-            {
-              key: ['source_warehouse_name', 'from_warehouse_name', 'source_warehouse.name'],
-              label: 'Çıkış deposu',
-              linkPath: '/stok/depolar/{id}',
-              linkKey: ['source_warehouse_id', 'from_warehouse_id', 'source_warehouse.id']
-            },
-            {
-              key: [
-                'destination_warehouse_name',
-                'to_warehouse_name',
-                'destination_warehouse.name'
-              ],
-              label: 'Varış deposu',
-              linkPath: '/stok/depolar/{id}',
-              linkKey: ['destination_warehouse_id', 'to_warehouse_id', 'destination_warehouse.id']
-            },
-            { key: ['transfer_type', 'type'], label: 'Transfer tipi', hideOnPrint: true },
-            { key: '__transfer_status', label: 'Sevk durumu' },
-            { key: 'created_at', label: 'Oluşturma tarihi', kind: 'date' },
-            { key: 'arrival_at', label: 'Varış tarihi', kind: 'date' },
-            { key: 'description', label: 'Açıklama' },
-            { key: 'requested_at', label: 'Talep zamanı', kind: 'datetime' },
-            { key: 'approved_at', label: 'Onay zamanı', kind: 'datetime' }
-          ],
-          tables: [
-            {
-              key: 'lines',
-              title: 'Stoklar',
-              columns: [
-                {
-                  key: ['product_name', 'product.name'],
-                  label: 'Stok',
-                  linkPath: '/stok/urunler/{id}',
-                  linkKey: ['product_id', 'product.id']
-                },
-                {
-                  key: ['variant_code', 'variant.variant_code', 'variant_id'],
-                  label: 'Varyant / SKU',
-                  linkPath: '/stok/urunler/{id}',
-                  linkKey: ['product_id', 'product.id'],
-                  linkQueryKey: ['variant_id'],
-                  appendInactiveLabel: true
-                },
-                { key: ['sent_quantity', 'quantity'], label: 'Miktar', kind: 'quantity' },
-                { key: '__transfer_status', label: 'Sevk durumu' }
-              ]
-            },
-            {
-              key: 'events',
-              title: 'Geçmiş',
-              hideOnPrint: true,
-              columns: [
-                { key: ['occurred_at', 'created_at'], label: 'Zaman', kind: 'datetime' },
-                { key: ['event', 'type', 'state'], label: 'İşlem' },
-                { key: ['actor_name', 'actor_user_id'], label: 'Kullanıcı' }
-              ]
-            }
-          ]
-        };
-      case 'count':
-        return {
-          title: 'Sayım',
-          listPath: '/stok/sayim',
-          endpoint: '/stock-counts',
-          numberKeys: ['count_no', 'business_number', 'id'],
-          statusKeys: ['state', 'status'],
-          subjectKeys: ['warehouse_name', 'warehouse.name', 'warehouse_id'],
-          metaKeys: ['count_type', 'snapshot_at'],
-          print: true,
-          fields: [
-            {
-              key: ['warehouse_name', 'warehouse.name'],
-              label: 'Depo',
-              linkPath: '/stok/depolar/{id}',
-              linkKey: ['warehouse_id', 'warehouse.id']
-            },
-            { key: ['count_type', 'type'], label: 'Sayım türü' },
-            { key: ['count_date', 'document_date'], label: 'Sayım tarihi', kind: 'date' },
-            { key: 'snapshot_at', label: 'Snapshot zamanı', kind: 'datetime' },
-            { key: ['scope_description', 'scope'], label: 'Kapsam' },
-            { key: 'description', label: 'Açıklama' }
-          ],
-          tables: [
-            {
-              key: 'lines',
-              title: 'Sayım Satırları',
-              columns: [
-                { key: ['product_name', 'product.name', 'product_id'], label: 'Stok' },
-                {
-                  key: ['system_quantity', 'snapshot_quantity', 'expected_quantity'],
-                  label: 'Sistem',
-                  kind: 'quantity'
-                },
-                { key: ['counted_quantity', 'counted'], label: 'Sayılan', kind: 'quantity' },
-                { key: ['difference', 'difference_quantity'], label: 'Fark', kind: 'quantity' },
-                { key: ['unit_code', 'unit'], label: 'Birim' }
-              ]
-            }
-          ]
-        };
-      case 'lot':
-        return {
-          title: 'Lot',
-          listPath: '/stok/lot-seri',
-          endpoint: '/lots',
-          numberKeys: ['lot_number', 'code', 'id'],
-          statusKeys: ['status', 'state'],
-          subjectKeys: ['product_name', 'product.name', 'product_id'],
-          metaKeys: ['expires_at', 'expiry_date'],
-          fields: [
-            { key: ['lot_number', 'code'], label: 'Lot no' },
-            {
-              key: ['product_name', 'product.name'],
-              label: 'Stok',
-              linkPath: '/stok/urunler/{id}',
-              linkKey: ['product_id', 'product.id']
-            },
-            { key: ['product_code', 'product.code', 'product_id'], label: 'Stok kodu' },
-            { key: ['manufactured_at', 'manufactured_date'], label: 'Üretim tarihi', kind: 'date' },
-            { key: ['expires_at', 'expiry_date'], label: 'SKT', kind: 'date' },
-            { key: ['supplier_reference', 'supplier_lot_no'], label: 'Tedarikçi lot no' },
-            { key: ['total_quantity', 'quantity'], label: 'Toplam', kind: 'quantity' },
-            { key: ['reserved_quantity', 'reserved'], label: 'Rezerve', kind: 'quantity' },
-            { key: ['available_quantity', 'available'], label: 'Kullanılabilir', kind: 'quantity' }
-          ],
-          tables: [
-            {
-              key: 'warehouse_distribution',
-              title: 'Depo Dağılımı',
-              columns: [
-                { key: ['warehouse_name', 'warehouse.name'], label: 'Depo' },
-                { key: ['quantity', 'available_quantity'], label: 'Miktar', kind: 'quantity' }
-              ]
-            },
-            {
-              key: 'movements',
-              title: 'Hareketler',
-              columns: [
-                { key: ['posted_at', 'movement_date'], label: 'Tarih', kind: 'datetime' },
-                { key: ['direction', 'movement_type'], label: 'İşlem' },
-                { key: ['quantity', 'quantity_delta'], label: 'Miktar', kind: 'quantity' },
-                { key: ['movement_id', 'id'], label: 'Hareket' }
-              ]
-            }
-          ]
-        };
-      case 'serial':
-        return {
-          title: 'Seri Numarası',
-          listPath: '/stok/lot-seri',
-          endpoint: '/serial-numbers',
-          numberKeys: ['serial_number', 'code', 'id'],
-          statusKeys: ['status', 'state'],
-          subjectKeys: ['product_name', 'product.name', 'product_id'],
-          metaKeys: ['warehouse_name', 'active_warehouse_name', 'updated_at'],
-          fields: [
-            { key: ['serial_number', 'code'], label: 'Seri no' },
-            {
-              key: ['product_name', 'product.name'],
-              label: 'Stok',
-              linkPath: '/stok/urunler/{id}',
-              linkKey: ['product_id', 'product.id']
-            },
-            { key: ['product_code', 'product.code', 'product_id'], label: 'SKU' },
-            { key: ['status', 'state'], label: 'Durum' },
-            {
-              key: ['warehouse_name', 'active_warehouse_name', 'active_warehouse_id'],
-              label: 'Depo',
-              linkPath: '/stok/depolar/{id}',
-              linkKey: ['active_warehouse_id', 'warehouse_id']
-            },
-            { key: ['created_at', 'inbound_at'], label: 'Giriş tarihi', kind: 'datetime' },
-            { key: ['source_document_no', 'source.document_no'], label: 'Kaynak belge' },
-            { key: ['updated_at'], label: 'Son güncelleme', kind: 'datetime' }
-          ],
-          tables: [
-            {
-              key: 'timeline',
-              title: 'Seri Geçmişi',
-              columns: [
-                { key: ['occurred_at', 'created_at'], label: 'Tarih', kind: 'datetime' },
-                { key: ['event', 'movement_type', 'type'], label: 'İşlem' },
-                { key: ['from_warehouse_name', 'source_warehouse_name'], label: 'Kaynak' },
-                { key: ['to_warehouse_name', 'destination_warehouse_name'], label: 'Hedef' },
-                { key: ['document_no', 'source_document_no'], label: 'Belge' },
-                { key: ['party_name', 'party.display_name'], label: 'Cari' }
-              ]
-            }
-          ]
-        };
-      case 'account':
-        return {
-          title: 'Finans Hesabı',
-          listPath: '/finans/hesaplar',
-          endpoint: '/finance/accounts',
-          numberKeys: ['code', 'id'],
-          statusKeys: ['status', 'is_active'],
-          subjectKeys: ['name'],
-          metaKeys: ['account_type', 'currency'],
-          fields: [
-            { key: 'code', label: 'Hesap kodu' },
-            { key: 'name', label: 'Hesap adı' },
-            { key: 'account_type', label: 'Hesap türü' },
-            { key: 'currency', label: 'Para birimi' },
-            { key: ['bank_name', 'bank'], label: 'Banka' },
-            { key: 'iban', label: 'IBAN' },
-            { key: 'account_number', label: 'Hesap no' },
-            { key: 'description', label: 'Açıklama' },
-            { key: ['created_at'], label: 'Oluşturma zamanı', kind: 'datetime' }
-          ]
-        };
-      case 'account-movement':
-        return {
-          title: 'Hesap Hareketi',
-          listPath: '/finans/hareketler',
-          endpoint: '/finance/movements',
-          numberKeys: ['id'],
-          statusKeys: ['movement_kind'],
-          subjectKeys: ['description'],
-          metaKeys: ['transaction_date', 'currency'],
-          fields: [
-            { key: 'movement_kind', label: 'Hareket türü' },
-            { key: 'direction', label: 'Yön' },
-            { key: 'amount', label: 'Tutar', kind: 'money' },
-            { key: 'currency', label: 'Para birimi' },
-            { key: 'transaction_date', label: 'İşlem tarihi', kind: 'date' },
-            { key: 'description', label: 'Açıklama' },
-            { key: 'external_reference', label: 'Dış referans' },
-            { key: ['source_label', 'source_type'], label: 'Kaynak' },
-            { key: 'reversal_of_id', label: 'Ters kayıt ilişkisi' },
-            ...commonPosted
-          ]
-        };
-      case 'finance-transfer':
-        return {
-          title: 'Hesap Transferi',
-          listPath: '/finans/transferler',
-          endpoint: '/finance/transfers',
-          numberKeys: ['document_no', 'id'],
-          statusKeys: ['status'],
-          subjectKeys: ['description'],
-          metaKeys: ['transaction_date', 'currency'],
-          fields: [
-            { key: 'document_no', label: 'Belge no' },
-            {
-              key: ['from_account_name', 'from_account_id'],
-              label: 'Kaynak hesap',
-              linkPath: '/finans/hesaplar/{id}',
-              linkKey: ['from_account_id']
-            },
-            {
-              key: ['to_account_name', 'to_account_id'],
-              label: 'Hedef hesap',
-              linkPath: '/finans/hesaplar/{id}',
-              linkKey: ['to_account_id']
-            },
-            { key: 'amount', label: 'Tutar', kind: 'money' },
-            { key: 'currency', label: 'Para birimi' },
-            { key: 'transaction_date', label: 'İşlem tarihi', kind: 'date' },
-            { key: 'external_reference', label: 'Dış referans' },
-            { key: 'description', label: 'Açıklama' },
-            { key: 'reversal_of_id', label: 'Ters kayıt ilişkisi' },
-            ...commonPosted
-          ]
-        };
-      case 'document':
-        return {
-          title: 'Belge',
-          listPath: '/belgeler',
-          endpoint: '/documents',
-          numberKeys: ['document_no', 'number', 'id'],
-          statusKeys: ['status', 'state'],
-          subjectKeys: ['document_type_name', 'document_type_code', 'party_name', 'party_id'],
-          metaKeys: ['document_date', 'currency'],
-          fields: [
-            { key: ['document_no', 'number'], label: 'Belge no' },
-            { key: ['document_type_name', 'document_type_code'], label: 'Belge türü' },
-            {
-              key: ['party_name', 'party.display_name'],
-              label: 'Cari',
-              linkPath: '/cari/kartlar/{id}',
-              linkKey: ['party_id', 'party.id']
-            },
-            { key: ['document_date', 'transaction_date'], label: 'Belge tarihi', kind: 'date' },
-            { key: 'currency', label: 'Para birimi' },
-            { key: ['grand_total', 'total'], label: 'Toplam', kind: 'money' },
-            { key: ['notes', 'description'], label: 'Açıklama' }
-          ],
-          tables: [
-            {
-              key: 'lines',
-              title: 'Satırlar',
-              columns: [
-                { key: ['product_name', 'product.name', 'product_id'], label: 'Stok' },
-                { key: ['quantity', 'amount'], label: 'Miktar', kind: 'quantity' },
-                { key: ['line_total', 'total'], label: 'Tutar', kind: 'money' }
-              ]
-            }
-          ]
-        };
-    }
   }
 
   const config = $derived.by(() => {
@@ -1550,7 +963,7 @@
 
     printDocument({
       title: heading,
-      subtitle: `${partyName} · ${documentNo}`,
+      subtitle: [partyName, documentNo].filter((part) => part && part !== '—').join(' · '),
       company: {
         name: company?.trade_name || company?.legal_name || companyName || 'Şirket',
         logo: company?.logo || undefined,
@@ -1642,6 +1055,23 @@
     return String(value);
   }
 
+  // Başlık: numara varsa numara, yoksa kaydı tarif eden bir ifade. Asla UUID.
+  function headingNumber(item: RecordValue) {
+    const value = firstValue(item, config.numberKeys);
+    if (hasValue(value)) return textValue(value);
+    return config.numberFallback?.(item) || config.title;
+  }
+
+  // Alt satır: özne ve meta değerleri, boş olanlar atlanarak birleştirilir —
+  // özne yoksa satır ayırıcıyla başlamaz.
+  function metaLine(item: RecordValue) {
+    const parts = [
+      String(firstValue(item, config.subjectKeys) ?? ''),
+      ...config.metaKeys.map((key) => metaValue(item, key))
+    ];
+    return parts.filter((part) => part && part !== '—').join(' · ');
+  }
+
   function metaValue(item: RecordValue, key: string) {
     const value = firstValue(item, key);
     if (!value) return '';
@@ -1674,10 +1104,7 @@
   });
 </script>
 
-<svelte:head
-  ><title
-    >{record ? textValue(firstValue(record, config.numberKeys)) : config.title} · Varya One</title
-  ></svelte:head
+<svelte:head><title>{record ? headingNumber(record) : config.title} · Varya One</title></svelte:head
 >
 
 {#if loading}
@@ -1695,8 +1122,8 @@
   </section>
 {:else}
   {@const status = statusValue(record)}
-  {@const number = textValue(firstValue(record, config.numberKeys))}
-  {@const subject = textValue(firstValue(record, config.subjectKeys))}
+  {@const number = headingNumber(record)}
+  {@const meta = metaLine(record)}
   {@const incomingTransfers = kind === 'warehouse' ? warehouseTransfers : []}
   <header class="page-header">
     <div>
@@ -1712,10 +1139,7 @@
             >{:else}<DocumentStatus {status} />{/if}
         {/if}
       </div>
-      <p class="meta">
-        {subject}{#each config.metaKeys as key}{#if metaValue(record, key)}
-            · {metaValue(record, key)}{/if}{/each}
-      </p>
+      {#if meta}<p class="meta">{meta}</p>{/if}
     </div>
     <div class="page-actions">
       {#if kind === 'warehouse' && permissions.includes('organization.warehouse.manage') && !warehouseIsSystem(record)}
@@ -1776,10 +1200,13 @@
           Bu bir ters kayıt hareketidir ve yeniden ters çevrilemez.
         </p>
       {:else if kind === 'stock-movement' && isDocumentOriginMovement()}
+        {@const sourceNo = firstValue(record, ['source_document_no'])}
         <p class="document-origin-note">
-          Bu stok hareketi{#if firstValue(record, ['source_document_no'])}
-            <strong>{firstValue(record, ['source_document_no'])}</strong>{/if}
-          belgesinden oluşturuldu. Hareketi geri almak için kaynak belgeyi iptal edin.
+          <!-- Belge no bloğunun kendi boşluklarını taşıması gerekiyor: blok
+               etiketine bitişik yazılan boşluk render'da kayboluyor. -->
+          {#if sourceNo}Bu stok hareketi <strong>{sourceNo}</strong> belgesinden oluşturuldu.{:else}Bu
+            stok hareketi bir belgeden oluşturuldu.{/if} Hareketi geri almak için kaynak belgeyi iptal
+          edin.
         </p>
       {/if}
     </div>
@@ -1919,16 +1346,19 @@
       {#each config.fields as field}
         {@const value = fieldValue(record, field)}
         {@const href = hrefFor(record, field)}
-        {#if hasValue(value)}<div class="field" class:print-hidden={field.hideOnPrint}>
+        {#if hasValue(value) && (field.kind !== 'ref' || href)}<div
+            class="field"
+            class:print-hidden={field.hideOnPrint}
+          >
             <dt>{field.label}</dt>
             <dd>
-              {#if href}<a {href} aria-label={`${fieldText(record, field)} bağlantısını aç`}
-                  ><span>{fieldText(record, field)}</span><ExternalLink
+              {#if href}<a {href} aria-label={linkAriaLabel(record, field)}
+                  ><span>{cellText(record, field, href)}</span><ExternalLink
                     size={12}
                     aria-hidden="true"
                   /></a
                 >
-              {:else}{fieldText(record, field)}{/if}
+              {:else}{cellText(record, field, href)}{/if}
             </dd>
           </div>{/if}
       {/each}
@@ -2037,9 +1467,9 @@
                   >{#each table.columns as column}{@const href = hrefFor(row, column)}<td
                       class:print-hidden={column.hideOnPrint}
                     >
-                      {#if href}<a {href} aria-label={`${fieldText(row, column)} bağlantısını aç`}
-                          >{fieldText(row, column)}</a
-                        >{:else}{fieldText(row, column)}{/if}
+                      {#if href}<a {href} aria-label={linkAriaLabel(row, column)}
+                          >{cellText(row, column, href)}</a
+                        >{:else}{cellText(row, column, href)}{/if}
                     </td>{/each}</tr
                 >{/each}</tbody
             >

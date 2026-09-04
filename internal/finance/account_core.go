@@ -48,6 +48,11 @@ type AccountMovement struct {
 	// originating record instead of showing a raw source_type token.
 	SourceLabel string `json:"source_label,omitempty"`
 	SourceHref  string `json:"source_href,omitempty"`
+	// SourceDocumentNo is the human-facing number the movement is referred to
+	// by: its own KH- number when it was entered by hand, otherwise the
+	// document number of the tahsilat/ödeme/transfer it came from. Empty for
+	// movements posted before numbering existed.
+	SourceDocumentNo string `json:"source_document_no,omitempty"`
 }
 
 type AccountMovementInput struct {
@@ -544,11 +549,9 @@ func (s *Service) AccountStatement(ctx context.Context, session identity.Session
 	items := make([]AccountMovement, 0)
 	for rows.Next() {
 		var item AccountMovement
-		var advanceID *string
-		if err = rows.Scan(&item.ID, &item.AccountID, &item.AccountType, &item.MovementKind, &item.Direction, &item.Currency, &item.Amount, &item.TransactionDate, &item.SourceType, &item.SourceID, &item.Description, &item.ExternalReference, &item.ReversalOfID, &item.ExchangeRate, &item.BaseCurrency, &item.BaseAmount, &item.PostedAt, &advanceID); err != nil {
+		if err = scanAccountMovement(rows, &item); err != nil {
 			return AccountStatement{}, err
 		}
-		decorateMovementSource(&item, advanceID)
 		items = append(items, item)
 	}
 	if err = rows.Err(); err != nil {
@@ -728,8 +731,15 @@ func (s *Service) postAccountMovement(ctx context.Context, session identity.Sess
 		return AccountMovement{}, fmt.Errorf("%w: temel para birimine çevrilen tutar dört ondalıkta sıfıra yuvarlanamaz", identity.ErrValidation)
 	}
 	id := uuid.NewString()
+	// Kaynağı kendisi olan hareketin (manuel giriş, açılış bakiyesi) anılacak
+	// bir belge numarası yoktur; tahsilat/ödeme ile aynı sayaçtan bir tane
+	// alır ki kullanıcı kaydı kimliğiyle değil numarasıyla arasın.
+	documentNo, err := nextPaymentNumberTx(ctx, tx, session.CurrentCompanyID, "KH", input.TransactionDate)
+	if err != nil {
+		return AccountMovement{}, err
+	}
 	snapshot := jsonBytes(map[string]any{"account_type": accountType, "currency": currency, "amount": amountString(amount, 4), "exchange_rate": rate, "override_reason": strings.TrimSpace(input.OverrideReason)})
-	_, err = tx.Exec(ctx, `INSERT INTO finance_account_movements(id,company_id,account_id,movement_kind,direction,currency,amount,transaction_date,source_type,source_id,idempotency_key,description,external_reference,actor_user_id,snapshot,exchange_rate,base_currency,base_amount) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'finance_account_movement',$1,$9,$10,$11,$12,$13,$14,$15,ROUND($7::numeric*$14::numeric,4))`, id, session.CurrentCompanyID, input.AccountID, kind, input.Direction, currency, amountString(amount, 4), input.TransactionDate, input.IdempotencyKey, input.Description, input.ExternalReference, nullableUUID(session.User.ID), snapshot, rate, baseCurrency)
+	_, err = tx.Exec(ctx, `INSERT INTO finance_account_movements(id,company_id,account_id,movement_kind,direction,currency,amount,transaction_date,source_type,source_id,idempotency_key,description,external_reference,actor_user_id,snapshot,exchange_rate,base_currency,base_amount,document_no) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'finance_account_movement',$1,$9,$10,$11,$12,$13,$14,$15,ROUND($7::numeric*$14::numeric,4),$16)`, id, session.CurrentCompanyID, input.AccountID, kind, input.Direction, currency, amountString(amount, 4), input.TransactionDate, input.IdempotencyKey, input.Description, input.ExternalReference, nullableUUID(session.User.ID), snapshot, rate, baseCurrency, documentNo)
 	if err != nil {
 		return AccountMovement{}, mapFinanceConstraint(err)
 	}
@@ -742,11 +752,17 @@ func (s *Service) postAccountMovement(ctx context.Context, session identity.Sess
 	return s.loadAccountMovement(ctx, session, id, false)
 }
 
-const accountMovementSelect = `SELECT m.id,m.account_id,a.account_type,m.movement_kind,m.direction,m.currency,m.amount::text,m.transaction_date,m.source_type,m.source_id,m.description,m.external_reference,m.reversal_of_id,m.exchange_rate::text,m.base_currency,m.base_amount::text,m.posted_at,(SELECT eat.advance_id::text FROM employee_advance_transactions eat WHERE eat.company_id=m.company_id AND eat.id=m.source_id AND m.source_type='employee_advance_transaction') AS source_advance_id FROM finance_account_movements m JOIN finance_accounts a ON a.company_id=m.company_id AND a.id=m.account_id`
+// sourceDocumentNoExpr, hareketin anılacağı belge numarasını verir: elle
+// girilen hareket kendi numarasını (KH-) taşır, bir tahsilat/ödeme veya
+// transferden doğan hareket ise kaynak belgesinin numarasını gösterir. Böylece
+// arayüz hareketi kimliğiyle (UUID) değil numarasıyla adlandırabilir.
+const sourceDocumentNoExpr = `COALESCE(NULLIF(m.document_no,''),CASE m.source_type WHEN 'finance_payment' THEN (SELECT p.document_no FROM finance_payments p WHERE p.company_id=m.company_id AND p.id=m.source_id) WHEN 'finance_transfer' THEN (SELECT t.document_no FROM finance_transfers t WHERE t.company_id=m.company_id AND t.id=m.source_id) END,'')`
+
+const accountMovementSelect = `SELECT m.id,m.account_id,a.account_type,m.movement_kind,m.direction,m.currency,m.amount::text,m.transaction_date,m.source_type,m.source_id,m.description,m.external_reference,m.reversal_of_id,m.exchange_rate::text,m.base_currency,m.base_amount::text,m.posted_at,(SELECT eat.advance_id::text FROM employee_advance_transactions eat WHERE eat.company_id=m.company_id AND eat.id=m.source_id AND m.source_type='employee_advance_transaction') AS source_advance_id,` + sourceDocumentNoExpr + ` AS source_document_no FROM finance_account_movements m JOIN finance_accounts a ON a.company_id=m.company_id AND a.id=m.account_id`
 
 func scanAccountMovement(row pgx.Row, item *AccountMovement) error {
 	var advanceID *string
-	if err := row.Scan(&item.ID, &item.AccountID, &item.AccountType, &item.MovementKind, &item.Direction, &item.Currency, &item.Amount, &item.TransactionDate, &item.SourceType, &item.SourceID, &item.Description, &item.ExternalReference, &item.ReversalOfID, &item.ExchangeRate, &item.BaseCurrency, &item.BaseAmount, &item.PostedAt, &advanceID); err != nil {
+	if err := row.Scan(&item.ID, &item.AccountID, &item.AccountType, &item.MovementKind, &item.Direction, &item.Currency, &item.Amount, &item.TransactionDate, &item.SourceType, &item.SourceID, &item.Description, &item.ExternalReference, &item.ReversalOfID, &item.ExchangeRate, &item.BaseCurrency, &item.BaseAmount, &item.PostedAt, &advanceID, &item.SourceDocumentNo); err != nil {
 		return err
 	}
 	decorateMovementSource(item, advanceID)
@@ -862,11 +878,9 @@ func (s *Service) ListAccountMovements(ctx context.Context, session identity.Ses
 	items := make([]AccountMovement, 0)
 	for rows.Next() {
 		var item AccountMovement
-		var advanceID *string
-		if err = rows.Scan(&item.ID, &item.AccountID, &item.AccountType, &item.MovementKind, &item.Direction, &item.Currency, &item.Amount, &item.TransactionDate, &item.SourceType, &item.SourceID, &item.Description, &item.ExternalReference, &item.ReversalOfID, &item.ExchangeRate, &item.BaseCurrency, &item.BaseAmount, &item.PostedAt, &advanceID); err != nil {
+		if err = scanAccountMovement(rows, &item); err != nil {
 			return nil, err
 		}
-		decorateMovementSource(&item, advanceID)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -956,11 +970,9 @@ func (s *Service) ListAllAccountMovements(ctx context.Context, session identity.
 	items := make([]AccountMovement, 0)
 	for rows.Next() {
 		var item AccountMovement
-		var advanceID *string
-		if err = rows.Scan(&item.ID, &item.AccountID, &item.AccountType, &item.MovementKind, &item.Direction, &item.Currency, &item.Amount, &item.TransactionDate, &item.SourceType, &item.SourceID, &item.Description, &item.ExternalReference, &item.ReversalOfID, &item.ExchangeRate, &item.BaseCurrency, &item.BaseAmount, &item.PostedAt, &advanceID); err != nil {
+		if err = scanAccountMovement(rows, &item); err != nil {
 			return AccountMovementPage{}, err
 		}
-		decorateMovementSource(&item, advanceID)
 		items = append(items, item)
 	}
 	if err = rows.Err(); err != nil {

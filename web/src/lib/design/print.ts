@@ -288,8 +288,32 @@ export function printDocument(input: PrintDocumentInput): void {
   win.document.write(html);
   win.document.close();
   win.focus();
-  // Give the browser a tick to lay out (and decode the logo) before printing.
-  win.setTimeout(() => {
-    win.print();
-  }, 250);
+  // print() freezes the page as it stands, so a logo that has not decoded yet is
+  // simply missing from the paper and from a "save as PDF". Wait for the images
+  // to settle, with a ceiling so a broken one cannot hold the dialog back.
+  void imagesSettled(win, 3000).then(() => {
+    win.setTimeout(() => {
+      win.print();
+    }, 100);
+  });
+}
+
+/** Resolve once every image in the window has loaded or failed, or on timeout. */
+function imagesSettled(win: Window, timeoutMs: number): Promise<void> {
+  const images = Array.from(win.document?.images ?? []).filter((image) => !image.complete);
+  if (images.length === 0) return Promise.resolve();
+  return Promise.race([
+    Promise.all(
+      images.map(
+        (image) =>
+          new Promise<void>((resolve) => {
+            image.addEventListener('load', () => resolve(), { once: true });
+            image.addEventListener('error', () => resolve(), { once: true });
+          })
+      )
+    ).then(() => undefined),
+    new Promise<void>((resolve) => {
+      win.setTimeout(resolve, timeoutMs);
+    })
+  ]);
 }

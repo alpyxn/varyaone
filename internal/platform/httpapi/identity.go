@@ -44,6 +44,7 @@ func mountIdentityRoutes(router chi.Router, service *identity.Service, secureCoo
 			r.Get("/permissions", handler.listPermissions)
 			r.Get("/roles", handler.listRoles)
 			r.Get("/users", handler.listMembers)
+			r.Get("/branches", handler.listBranches)
 			r.Get("/company", handler.getCompany)
 			r.Group(func(r chi.Router) {
 				r.Use(handler.requireCSRF)
@@ -485,6 +486,15 @@ func (h identityHandler) listMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": members})
+}
+
+func (h identityHandler) listBranches(w http.ResponseWriter, r *http.Request) {
+	branches, err := h.service.ListBranches(r.Context(), sessionFromRequest(r), r.URL.Query().Get("include_inactive") == "true")
+	if err != nil {
+		h.writeAuthorizedError(w, r, err, "Şubeler okunamadı.")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": branches})
 }
 
 func (h identityHandler) addMember(w http.ResponseWriter, r *http.Request) {

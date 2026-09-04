@@ -506,6 +506,48 @@ func (s *Service) UpdateRole(ctx context.Context, session Session, roleID, name 
 	return Role{ID: roleID, Name: name, Version: expectedVersion + 1, Permissions: permissions}, nil
 }
 
+// Branch is the read model behind the branch pickers. A branch is only ever
+// chosen, never typed: without this list a screen that needs a branch has no
+// way to offer one and ends up asking the user for a raw id.
+type Branch struct {
+	ID       string `json:"id"`
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+	IsActive bool   `json:"is_active"`
+}
+
+// ListBranches returns the branches of the current company the caller may use.
+// A membership scoped to specific branches sees only those; an unscoped
+// membership sees all of them, which mirrors how branch access is enforced
+// everywhere else (see the membership_branch_scopes checks in the document
+// services).
+func (s *Service) ListBranches(ctx context.Context, session Session, includeInactive bool) ([]Branch, error) {
+	if session.CurrentCompanyID == "" {
+		return nil, ErrForbidden
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT b.id::text,b.code,b.name,b.is_active
+		FROM branches b
+		WHERE b.company_id=$1
+		  AND ($2 OR b.is_active)
+		  AND (NOT EXISTS (SELECT 1 FROM membership_branch_scopes s WHERE s.company_id=$1 AND s.user_id=$3)
+		       OR EXISTS (SELECT 1 FROM membership_branch_scopes s WHERE s.company_id=$1 AND s.user_id=$3 AND s.branch_id=b.id))
+		ORDER BY b.code`, session.CurrentCompanyID, includeInactive, session.User.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	branches := []Branch{}
+	for rows.Next() {
+		var branch Branch
+		if err := rows.Scan(&branch.ID, &branch.Code, &branch.Name, &branch.IsActive); err != nil {
+			return nil, err
+		}
+		branches = append(branches, branch)
+	}
+	return branches, rows.Err()
+}
+
 func (s *Service) ListMembers(ctx context.Context, session Session) ([]Member, error) {
 	if session.CurrentCompanyID == "" || !session.HasPermission("security.user.read") {
 		return nil, ErrForbidden

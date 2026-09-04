@@ -328,11 +328,25 @@ func validateContext(ctx Context) error {
 	default:
 		return calculationError(ErrSGKStatusNotSupported, "sgk_status", "", "tanımsız sigortalılık statüsü")
 	}
-	if ctx.WageType != "GROSS" || ctx.WagePeriod != "MONTHLY" || ctx.Currency != "TRY" || ctx.WorkType != "FULL_TIME" || ctx.ContributionScheme == nil || ctx.ContributionScheme.Code == "" {
-		return calculationError(ErrPopulationNotSupported, "employment_term", "", "çalışan v1 bordro kapsamı dışında")
+	// Each of these used to collapse into one "çalışan v1 bordro kapsamı dışında",
+	// which told the user nothing about which field to go and fix.
+	if ctx.Currency != "TRY" {
+		return calculationError(ErrPopulationNotSupported, "currency", "", "ücret TRY dışında bir para biriminde; bordro yalnız TRY hesaplar")
 	}
-	if ctx.SGKDays < 0 || ctx.SGKDays > 30 || ctx.PaidDays.Sign() < 0 || ctx.MonthlyGross.Sign() < 0 {
-		return calculationError(ErrPopulationNotSupported, "attendance", "", "ücret veya gün bilgisi geçersiz")
+	if ctx.WorkType != "FULL_TIME" {
+		return calculationError(ErrPopulationNotSupported, "work_type", "", "çalışma türü tam zamanlı değil; bu çalışanın bordrosu otomatik hesaplanmaz")
+	}
+	if ctx.WageType != "GROSS" || ctx.WagePeriod != "MONTHLY" {
+		return calculationError(ErrPopulationNotSupported, "wage_basis", "", "ücret aylık brüt olarak tanımlanmalı")
+	}
+	if ctx.ContributionScheme == nil || ctx.ContributionScheme.Code == "" {
+		return calculationError(ErrPopulationNotSupported, "contribution_scheme", "", "SGK teşvik/indirim kodu tanımlı değil")
+	}
+	if ctx.MonthlyGross.Sign() <= 0 {
+		return calculationError(ErrPopulationNotSupported, "gross_wage", "", "brüt ücret tanımlı değil")
+	}
+	if ctx.SGKDays < 0 || ctx.SGKDays > 30 || ctx.PaidDays.Sign() < 0 {
+		return calculationError(ErrPopulationNotSupported, "attendance", "", "puantajdaki gün sayısı geçersiz")
 	}
 	if ctx.HasUnresolvedSickLeave {
 		return calculationError(ErrSickLeaveTreatment, "leave", "", "rapor/hastalık uygulaması açıklığa kavuşturulmalı")

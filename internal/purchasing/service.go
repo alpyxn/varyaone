@@ -307,6 +307,7 @@ type PurchaseInvoiceInput struct {
 
 type PurchaseInvoicePostingInput struct {
 	InvoiceID    string
+	InvoiceNo    string
 	SupplierID   string
 	Currency     string
 	Amount       string
@@ -1592,7 +1593,7 @@ func (s *Service) FinalizePurchaseInvoice(ctx context.Context, session identity.
 	if s.financePost == nil {
 		return PurchaseInvoice{}, validation("alış faturası için finans posting servisi hazır değil")
 	}
-	postingID, err := s.financePost.PostPurchaseInvoiceTx(ctx, tx, session, PurchaseInvoicePostingInput{InvoiceID: id, SupplierID: supplierID, Currency: currency, Amount: payable, ExchangeRate: exchangeRate, InvoiceDate: invoiceDate, DueDate: dueDate, Description: "Alış faturası " + invoiceNo})
+	postingID, err := s.financePost.PostPurchaseInvoiceTx(ctx, tx, session, PurchaseInvoicePostingInput{InvoiceID: id, InvoiceNo: invoiceNo, SupplierID: supplierID, Currency: currency, Amount: payable, ExchangeRate: exchangeRate, InvoiceDate: invoiceDate, DueDate: dueDate, Description: "Alış faturası " + invoiceNo})
 	if err != nil {
 		return PurchaseInvoice{}, err
 	}
@@ -1722,7 +1723,7 @@ func (s *Service) FinalizePurchaseReturn(ctx context.Context, session identity.S
 	if s.financePost == nil {
 		return PurchaseReturn{}, validation("satın alma iadesi için finans posting servisi hazır değil")
 	}
-	postingID, err := s.financePost.PostPurchaseReturnTx(ctx, tx, session, PurchaseInvoicePostingInput{InvoiceID: id, SupplierID: supplierID, Currency: currency, Amount: total, ExchangeRate: exchangeRate, InvoiceDate: returnDate, Description: "Satın alma iadesi " + returnNo})
+	postingID, err := s.financePost.PostPurchaseReturnTx(ctx, tx, session, PurchaseInvoicePostingInput{InvoiceID: id, InvoiceNo: returnNo, SupplierID: supplierID, Currency: currency, Amount: total, ExchangeRate: exchangeRate, InvoiceDate: returnDate, Description: "Satın alma iadesi " + returnNo})
 	if err != nil {
 		return PurchaseReturn{}, err
 	}

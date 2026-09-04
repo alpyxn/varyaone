@@ -467,11 +467,15 @@
 
   function variantDisplay(variant: VariantOption): Record<string, unknown> {
     if (variant.values?.length) {
+      // Adı da kodu da gelmeyen bir özellik gösterilemez; kimliğini basmak
+      // yerine satırı atlıyoruz.
       return Object.fromEntries(
-        variant.values.map((value) => [
-          value.definition_name || value.definition_code || value.definition_id,
-          value.option_name || value.option_code || value.option_id
-        ])
+        variant.values
+          .map((value) => [
+            value.definition_name || value.definition_code,
+            value.option_name || value.option_code
+          ])
+          .filter(([definition, option]) => definition && option)
       );
     }
     return variant.attributes ?? {};
@@ -1182,7 +1186,10 @@
         return;
       }
       const byID = new Map(
-        (result.allocations ?? []).map((item) => [item.open_item_id, item.amount])
+        (result.allocations ?? []).map((item) => [
+          item.open_item_id,
+          trimDecimalZeros(item.amount) || '0'
+        ])
       );
       allocationRows = allocationRows.map((row) => ({ ...row, applied: byID.get(row.id) ?? '0' }));
       autoAllocateRequested = true;
@@ -1874,7 +1881,7 @@
           {#if productID}
             <label
               ><span>Stok kartı <b>*</b></span><input
-                value={selectedProductLabel || productID}
+                value={selectedProductLabel || 'Seçili stok kartı'}
                 disabled
                 aria-label="Stok kartı"
               /></label

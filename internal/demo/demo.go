@@ -24,9 +24,11 @@ import (
 	"github.com/alpyxn/varyaone/internal/finance"
 	"github.com/alpyxn/varyaone/internal/fixedasset"
 	"github.com/alpyxn/varyaone/internal/hr/employee"
+	"github.com/alpyxn/varyaone/internal/hr/timesheet"
 	"github.com/alpyxn/varyaone/internal/identity"
 	"github.com/alpyxn/varyaone/internal/inventory"
 	"github.com/alpyxn/varyaone/internal/party"
+	"github.com/alpyxn/varyaone/internal/payroll/legislation"
 	"github.com/alpyxn/varyaone/internal/platform/database"
 	"github.com/alpyxn/varyaone/internal/platform/posting"
 	"github.com/alpyxn/varyaone/internal/products"
@@ -209,6 +211,7 @@ type services struct {
 	purchasing *purchasing.Service
 	sales      *sales.Service
 	employee   *employee.Service
+	timesheet  *timesheet.Service
 	fixedAsset *fixedasset.Service
 }
 
@@ -219,7 +222,8 @@ func (r *Runner) services() (*services, error) {
 	pool := database.NewScoped(r.pool)
 	financeService := finance.NewService(pool)
 	inventoryService := inventory.NewService(pool)
-	employeeService, err := employee.NewService(pool, r.opts.MasterKey)
+	legislationRepository := legislation.NewRepository(pool)
+	employeeService, err := employee.NewService(pool, r.opts.MasterKey, legislationRepository)
 	if err != nil {
 		return nil, fmt.Errorf("initialize HR employee service: %w", err)
 	}
@@ -231,6 +235,7 @@ func (r *Runner) services() (*services, error) {
 		purchasing: purchasing.NewService(pool, posting.InventoryStockPoster{Service: inventoryService}, posting.FinancePurchasePoster{Service: financeService}),
 		sales:      sales.NewService(pool, financeService, posting.InventoryStockPoster{Service: inventoryService}),
 		employee:   employeeService,
+		timesheet:  timesheet.NewService(pool),
 		fixedAsset: fixedasset.NewService(pool),
 	}, nil
 }

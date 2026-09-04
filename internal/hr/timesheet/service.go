@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alpyxn/varyaone/internal/hr/employee"
 	"github.com/alpyxn/varyaone/internal/identity"
 	"github.com/alpyxn/varyaone/internal/platform/database"
 	"github.com/google/uuid"
@@ -24,7 +25,25 @@ var (
 	ErrNotFinalized   = errors.New("TIMESHEET_PERIOD_NOT_FINALIZED")
 	ErrUsedByPayroll  = errors.New("TIMESHEET_USED_BY_FINALIZED_PAYROLL")
 	ErrPeriodExists   = errors.New("TIMESHEET_PERIOD_EXISTS")
+	// ErrEmployeeNotReady guards the puantaj against half-filled employee cards.
+	// It is reported through *NotReadyError, which carries the concrete reason
+	// ("işe giriş tarihi girilmemiş", …) all the way to the user.
+	ErrEmployeeNotReady = errors.New("TIMESHEET_EMPLOYEE_NOT_READY")
 )
+
+// NotReadyError says which employee cannot be put on the puantaj and why.
+type NotReadyError struct {
+	EmployeeName string
+	Reason       string
+}
+
+func (e *NotReadyError) Error() string {
+	if e.EmployeeName == "" {
+		return e.Reason
+	}
+	return e.EmployeeName + ": " + e.Reason
+}
+func (e *NotReadyError) Is(target error) bool { return target == ErrEmployeeNotReady }
 
 type Service struct{ pool database.Querier }
 
@@ -362,6 +381,12 @@ func (s *Service) UpsertDay(ctx context.Context, session identity.Session, perio
 	if derr != nil || date.Year() != period.PeriodYear || int(date.Month()) != period.PeriodMonth {
 		return Period{}, fmt.Errorf("%w: gün, puantaj dönemi içinde olmalı", identity.ErrValidation)
 	}
+	// Refuse a half-filled employee card up front. Without this a çalışan with no
+	// çalışma dönemi can be marked day by day here and then vanish from the
+	// bordro without a word.
+	if err := s.checkEmployee(ctx, session, input.EmployeeID, period); err != nil {
+		return Period{}, err
+	}
 
 	leaveTypeID := ""
 	if input.LeaveTypeID != nil {
@@ -453,6 +478,43 @@ func (s *Service) UpsertDay(ctx context.Context, session identity.Session, perio
 		return Period{}, err
 	}
 	return s.GetPeriod(ctx, session, periodID)
+}
+
+// checkEmployee refuses an employee whose card cannot carry a puantaj for this
+// period, naming the missing piece.
+func (s *Service) checkEmployee(ctx context.Context, session identity.Session, employeeID string, period Period) error {
+	from := time.Date(period.PeriodYear, time.Month(period.PeriodMonth), 1, 0, 0, 0, 0, time.UTC)
+	ready, err := employee.CheckOne(ctx, s.pool, session.CurrentCompanyID, employeeID, from, from.AddDate(0, 1, -1))
+	if errors.Is(err, employee.ErrNotFound) {
+		return &NotReadyError{Reason: "Çalışan bulunamadı ya da aktif değil."}
+	}
+	if err != nil {
+		return err
+	}
+	if blocker := ready.TimesheetBlocker(); blocker != "" {
+		return &NotReadyError{EmployeeName: ready.Name, Reason: blocker}
+	}
+	return nil
+}
+
+// Readiness reports, for every ACTIVE employee, whether the period can be
+// entered for them and what is missing. The puantaj screen uses it to grey the
+// employee out with a reason rather than failing on the first click.
+func (s *Service) Readiness(ctx context.Context, session identity.Session, periodID string) ([]employee.Readiness, error) {
+	if !session.HasPermission("hr.timesheet.read") {
+		return nil, identity.ErrForbidden
+	}
+	var year, month int
+	err := s.pool.QueryRow(ctx, `SELECT period_year,period_month FROM timesheet_periods WHERE company_id=$1 AND id=NULLIF($2,'')::uuid`,
+		session.CurrentCompanyID, periodID).Scan(&year, &month)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrPeriodNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	from := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
+	return employee.CheckPeriod(ctx, s.pool, session.CurrentCompanyID, from, from.AddDate(0, 1, -1))
 }
 
 // DeleteDay removes a timesheet day (the day is then treated as unrecorded).

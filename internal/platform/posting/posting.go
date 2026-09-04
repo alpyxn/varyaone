@@ -135,7 +135,7 @@ func (a FinancePurchasePoster) ReversePurchaseReturnTx(ctx context.Context, tx p
 
 func (a FinancePurchasePoster) post(ctx context.Context, tx pgx.Tx, session identity.Session, input purchasing.PurchaseInvoicePostingInput, documentType, keyPrefix string) (string, error) {
 	posting, err := a.Service.PostInvoiceTx(ctx, tx, session, finance.InvoicePostingInput{
-		DocumentID: input.InvoiceID, DocumentType: documentType, PartyID: input.SupplierID,
+		DocumentID: input.InvoiceID, DocumentType: documentType, DocumentNo: input.InvoiceNo, PartyID: input.SupplierID,
 		Currency: input.Currency, Amount: input.Amount, ExchangeRate: input.ExchangeRate, DocumentDate: input.InvoiceDate,
 		DueDate: input.DueDate, Description: input.Description,
 		IdempotencyKey: keyPrefix + input.InvoiceID,

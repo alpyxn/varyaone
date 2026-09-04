@@ -27,7 +27,40 @@ export type EmployeeInput = {
   personal_email: string;
   phone: string;
   occupation_code?: string;
+  /** Zorunlu (aktif çalışan için): işe giriş ve ücret aynı istekte yazılır. */
+  employment?: EmployeeEmploymentSetup;
 };
+
+export type EmployeeEmploymentSetup = {
+  start_date: string;
+  is_minimum_wage: boolean;
+  gross_wage: string;
+  work_type?: string;
+  sgk_status?: string;
+  contribution_scheme_code?: string;
+};
+
+/** Bir çalışan kartının puantaj/bordro için eksikleri. */
+export type EmployeeReadinessIssue = {
+  code: string;
+  message: string;
+  blocks: 'TIMESHEET' | 'PAYROLL';
+  tab: string;
+};
+
+export type EmployeeReadiness = {
+  employee_id: string;
+  employee_code: string;
+  name: string;
+  issues: EmployeeReadinessIssue[];
+  timesheet_ready: boolean;
+  payroll_ready: boolean;
+};
+
+/** Çalışanın puantaja girilmesini engelleyen ilk sebep, yoksa boş. */
+export function timesheetBlocker(r: EmployeeReadiness | undefined): string {
+  return r?.issues.find((i) => i.blocks === 'TIMESHEET')?.message ?? '';
+}
 
 export type OccupationCode = { code: string; name: string };
 
@@ -452,6 +485,62 @@ const PAYROLL_ERROR_MAP: Record<string, { title: string; hint: string }> = {
   PAYROLL_OPENING_BALANCE_REQUIRED: {
     title: 'Kümülatif vergi matrahı açılışı eksik',
     hint: 'Bu çalışan için yıl içi kümülatif gelir vergisi matrahı bilgisi eksik.'
+  },
+  // Çalışan kartındaki eksikler (hr/employee readiness ile aynı kurallar).
+  'PAYROLL_POPULATION_NOT_SUPPORTED:employee_no_wage': {
+    title: 'Ücret tanımı yok',
+    hint:
+      'Çalışanın bu dönemi kapsayan bir ücret kaydı yok, bu yüzden bordrosu hesaplanamaz. ' +
+      'Çalışan kartının Ücret sekmesinden brüt ücreti girin ve bordroyu yeniden hesaplayın.'
+  },
+  'PAYROLL_POPULATION_NOT_SUPPORTED:employee_wage_zero': {
+    title: 'Brüt ücret sıfır',
+    hint: 'Ücret sekmesinden geçerli bir brüt tutar girin ve bordroyu yeniden hesaplayın.'
+  },
+  'PAYROLL_POPULATION_NOT_SUPPORTED:employee_wage_currency': {
+    title: 'Ücret TRY değil',
+    hint: 'Otomatik bordro yalnız TRY hesaplar. Ücret sekmesinden ücreti TRY olarak tanımlayın.'
+  },
+  'PAYROLL_POPULATION_NOT_SUPPORTED:employee_work_type': {
+    title: 'Çalışma türü tam zamanlı değil',
+    hint:
+      'Yarı zamanlı, stajyer ve sözleşmeli kayıtların bordrosu otomatik üretilmez. ' +
+      'Kayıt hatalıysa Ücret sekmesinden düzeltin; değilse bordroyu manuel hazırlayın.'
+  },
+  'PAYROLL_POPULATION_NOT_SUPPORTED:employee_no_scheme': {
+    title: 'SGK teşvik/indirim kodu seçilmemiş',
+    hint: 'Ücret sekmesinden bir teşvik/indirim kodu seçin (teşvik yoksa “indirim yok”).'
+  },
+  'PAYROLL_POPULATION_NOT_SUPPORTED:contribution_scheme': {
+    title: 'SGK teşvik/indirim kodu tanımsız',
+    hint:
+      'Çalışanın ücret kaydındaki teşvik/indirim kodu bu dönemin mevzuat paketinde yok. ' +
+      'Ücret sekmesinden geçerli bir kod seçin.'
+  },
+  // Motor tarafındaki eşdeğer alan adları (bordro hesaplanırken üretilir).
+  'PAYROLL_POPULATION_NOT_SUPPORTED:gross_wage': {
+    title: 'Brüt ücret tanımlı değil',
+    hint: 'Ücret sekmesinden geçerli bir brüt tutar girin ve bordroyu yeniden hesaplayın.'
+  },
+  'PAYROLL_POPULATION_NOT_SUPPORTED:currency': {
+    title: 'Ücret TRY değil',
+    hint: 'Otomatik bordro yalnız TRY hesaplar. Ücret sekmesinden ücreti TRY olarak tanımlayın.'
+  },
+  'PAYROLL_POPULATION_NOT_SUPPORTED:work_type': {
+    title: 'Çalışma türü tam zamanlı değil',
+    hint:
+      'Yarı zamanlı, stajyer ve sözleşmeli kayıtların bordrosu otomatik üretilmez. ' +
+      'Kayıt hatalıysa Ücret sekmesinden düzeltin; değilse bordroyu manuel hazırlayın.'
+  },
+  'PAYROLL_POPULATION_NOT_SUPPORTED:wage_basis': {
+    title: 'Ücret aylık brüt tanımlanmalı',
+    hint: 'Otomatik bordro aylık brüt ücretle çalışır. Ücret sekmesindeki kaydı düzeltin.'
+  },
+  'PAYROLL_POPULATION_NOT_SUPPORTED:attendance': {
+    title: 'Puantaj eksik',
+    hint:
+      'Çalışanın bu dönemde kullanılabilir puantaj kaydı yok. Puantaj ekranından ayı doldurup ' +
+      'kesinleştirin, sonra bordroyu yeniden hesaplayın.'
   },
   PAYROLL_LEGISLATION_NOT_FOUND: {
     title: 'Dönem için mevzuat paketi yok',

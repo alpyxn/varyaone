@@ -111,26 +111,14 @@ veritabanı kurmanız gerekmez.
 
 ---
 
-## Güncelleme
-
-Yeni bir sürüm çıktığında güncelleme, uygulamanın yönetim panelinde otomatik
-olarak görünür. Yönetici buradan başlatabilir. Sistem önce tam yedek alır, yeni
-sürümü kurar ve sağlık kontrolünü gerçekleştirir. Güncelleme başarıyla
-tamamlanamazsa önceki çalışan sürüme geri döner.
-
-Sunucuya bağlanmanıza veya komut çalıştırmanıza gerek yoktur.
-
----
-
 ## Yedekleme
 
 Yedekleme ve geri yükleme işlemleri yönetim panelinden yapılır. Tek tıklamayla
 alınan `.varya` yedeği; veritabanını, logoları, belge eklerini ve yüklenen diğer
 dosyaları birlikte saklar. Aynı dosya daha sonra yine panelden geri yüklenebilir.
 
-Sistem her güncellemeden önce otomatik yedek alır. Bunun yanında düzenli
-aralıklarla manuel yedek indirmeniz ve bu dosyaları farklı bir cihazda saklamanız
-önerilir.
+Düzenli aralıklarla yedek indirmeniz ve bu dosyaları farklı bir cihazda
+saklamanız önerilir.
 
 ---
 

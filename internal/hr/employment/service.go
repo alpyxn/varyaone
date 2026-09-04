@@ -381,6 +381,11 @@ func (s *Service) getTerm(ctx context.Context, session identity.Session, termID 
 	return t, err
 }
 
+// NormalizeTerm fills in the wage defaults and validates the rest. It is
+// exported so a new employee's first wage (written with the card, in one
+// transaction) goes through exactly the same rules as one entered later.
+func NormalizeTerm(input *TermInput) error { return validateTerm(input) }
+
 func validateTerm(input *TermInput) error {
 	// Ücret formu sadeleştirildi: para birimi her zaman TRY, çalışma türü/SGK
 	// kodu/önceki işveren politikası/haftalık süre girilmezse makul varsayılan.

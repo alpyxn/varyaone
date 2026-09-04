@@ -48,7 +48,8 @@ func TestHRPayrollEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	employeeService, err := employee.NewService(pool, masterKey)
+	legislationRepo := legislation.NewRepository(pool)
+	employeeService, err := employee.NewService(pool, masterKey, legislationRepo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +58,6 @@ func TestHRPayrollEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	documentService := document.NewService(pool, storageProvider)
-	legislationRepo := legislation.NewRepository(pool)
 	deliveryService, err := delivery.NewService(pool, storageProvider, masterKey)
 	if err != nil {
 		t.Fatal(err)
@@ -98,13 +98,25 @@ func TestHRPayrollEndToEnd(t *testing.T) {
 		return out
 	}
 
+	// An ACTIVE employee is created with their çalışma dönemi and ücret in one
+	// request; without them the card would be invisible to the puantaj and
+	// silently absent from the bordro.
+	if bad := do(http.MethodPost, "/api/v1/hr/employees",
+		`{"first_name":"Eksik","last_name":"Kayıt","status":"ACTIVE"}`, nil); bad.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("employee without employment: %d %s", bad.Code, bad.Body.String())
+	}
 	emp := mustJSON(t, do(http.MethodPost, "/api/v1/hr/employees",
-		`{"employee_code":"","first_name":"Ali","last_name":"Veli","status":"ACTIVE","position_title":"Uzman","work_email":"","personal_email":"","phone":""}`, nil), http.StatusCreated)
+		`{"employee_code":"","first_name":"Ali","last_name":"Veli","status":"ACTIVE","position_title":"Uzman","work_email":"","personal_email":"","phone":"",
+ "employment":{"start_date":"2026-03-15","gross_wage":"40000"}}`, nil), http.StatusCreated)
 	employeeID, _ := emp["id"].(string)
 
-	empl := mustJSON(t, do(http.MethodPost, "/api/v1/hr/employees/"+employeeID+"/employments",
-		`{"start_date":"2026-03-15"}`, nil), http.StatusCreated)
-	employmentID, _ := empl["id"].(string)
+	employments := mustJSON(t, do(http.MethodGet, "/api/v1/hr/employees/"+employeeID+"/employments", "", nil), http.StatusOK)
+	employmentRows, _ := employments["items"].([]any)
+	if len(employmentRows) != 1 {
+		t.Fatalf("expected the create to open one çalışma dönemi, got %s", toJSON(employments))
+	}
+	employmentRow, _ := employmentRows[0].(map[string]any)
+	employmentID, _ := employmentRow["id"].(string)
 
 	do(http.MethodPost, "/api/v1/hr/employees/"+employeeID+"/employments/"+employmentID+"/terms",
 		`{"effective_from":"2026-01-05","gross_wage":"40000"}`, nil)
@@ -257,6 +269,45 @@ func TestHRPayrollEndToEnd(t *testing.T) {
 		t.Fatalf("delete day: %d %s", del.Code, del.Body.String())
 	}
 
+	// A card with no çalışma dönemi may not be put on the puantaj at all: it used
+	// to accept the days and then vanish from the bordro without a word.
+	brokenEmp := mustJSON(t, do(http.MethodPost, "/api/v1/hr/employees",
+		`{"first_name":"Bozuk","last_name":"Kart","status":"INACTIVE"}`, nil), http.StatusCreated)
+	brokenID, _ := brokenEmp["id"].(string)
+	brokenCode, _ := brokenEmp["employee_code"].(string)
+	brokenVersion := int64(numberField(brokenEmp, "version"))
+	if act := do(http.MethodPatch, "/api/v1/hr/employees/"+brokenID,
+		`{"employee_code":"`+brokenCode+`","first_name":"Bozuk","last_name":"Kart","status":"ACTIVE"}`,
+		map[string]string{"If-Match": itoaQuote(brokenVersion)}); act.Code != http.StatusOK {
+		t.Fatalf("activate broken employee: %d %s", act.Code, act.Body.String())
+	}
+	notReady := do(http.MethodPut, "/api/v1/hr/timesheet-periods/"+periodID+"/days",
+		`{"employee_id":"`+brokenID+`","work_date":"2026-03-10","kind":"WORKED"}`, nil)
+	if notReady.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(notReady.Body.String(), "TIMESHEET_EMPLOYEE_NOT_READY") ||
+		!strings.Contains(notReady.Body.String(), "İşe giriş tarihi") {
+		t.Fatalf("expected the puantaj to name the missing işe giriş tarihi: %d %s", notReady.Code, notReady.Body.String())
+	}
+	readiness := mustJSON(t, do(http.MethodGet, "/api/v1/hr/timesheet-periods/"+periodID+"/readiness", "", nil), http.StatusOK)
+	readyRows, _ := readiness["items"].([]any)
+	var brokenRow map[string]any
+	for _, row := range readyRows {
+		item, _ := row.(map[string]any)
+		if item["employee_id"] == brokenID {
+			brokenRow = item
+		}
+	}
+	if brokenRow == nil || brokenRow["timesheet_ready"] != false {
+		t.Fatalf("readiness must flag the broken card: %s", toJSON(readiness))
+	}
+	// Park it again so the rest of the run keeps its single-employee population.
+	brokenVersion = int64(numberField(mustJSON(t, do(http.MethodGet, "/api/v1/hr/employees/"+brokenID, "", nil), http.StatusOK), "version"))
+	if off := do(http.MethodPatch, "/api/v1/hr/employees/"+brokenID,
+		`{"employee_code":"`+brokenCode+`","first_name":"Bozuk","last_name":"Kart","status":"INACTIVE"}`,
+		map[string]string{"If-Match": itoaQuote(brokenVersion)}); off.Code != http.StatusOK {
+		t.Fatalf("deactivate broken employee: %d %s", off.Code, off.Body.String())
+	}
+
 	genOut := mustJSON(t, do(http.MethodGet, "/api/v1/hr/timesheet-periods/"+periodID, "", nil), http.StatusOK)
 	pv := int64(numberField(genOut, "version"))
 	fin := do(http.MethodPost, "/api/v1/hr/timesheet-periods/"+periodID+"/finalize", "", map[string]string{"If-Match": itoaQuote(pv)})
@@ -327,6 +378,48 @@ func TestHRPayrollEndToEnd(t *testing.T) {
 	}
 	if s, _ := vars0["firma"].(string); s == "" {
 		t.Fatalf("email preview {{firma}} variable is empty: %s", preview.Body.String())
+	}
+
+	// An employee employed this month with no ücret tanımı used to be dropped by
+	// an inner join, so the bordro simply came out one person short. They now
+	// appear on their own row and say what is missing.
+	wagelessEmp := mustJSON(t, do(http.MethodPost, "/api/v1/hr/employees",
+		`{"first_name":"Ücretsiz","last_name":"Kayıt","status":"INACTIVE"}`, nil), http.StatusCreated)
+	wagelessID, _ := wagelessEmp["id"].(string)
+	wagelessCode, _ := wagelessEmp["employee_code"].(string)
+	if e := do(http.MethodPost, "/api/v1/hr/employees/"+wagelessID+"/employments",
+		`{"start_date":"2026-03-01"}`, nil); e.Code != http.StatusCreated {
+		t.Fatalf("wageless employment: %d %s", e.Code, e.Body.String())
+	}
+	wagelessVersion := int64(numberField(mustJSON(t, do(http.MethodGet, "/api/v1/hr/employees/"+wagelessID, "", nil), http.StatusOK), "version"))
+	if act := do(http.MethodPatch, "/api/v1/hr/employees/"+wagelessID,
+		`{"employee_code":"`+wagelessCode+`","first_name":"Ücretsiz","last_name":"Kayıt","status":"ACTIVE"}`,
+		map[string]string{"If-Match": itoaQuote(wagelessVersion)}); act.Code != http.StatusOK {
+		t.Fatalf("activate wageless employee: %d %s", act.Code, act.Body.String())
+	}
+	secondRun := mustJSON(t, do(http.MethodPost, "/api/v1/hr/payroll-runs",
+		`{"run_number":"","period_year":2026,"period_month":3,"payment_date":"2026-04-05","timesheet_period_id":"`+periodID+`","legislation_pack_id":"`+packID+`"}`, nil),
+		http.StatusCreated)
+	secondRunID, _ := secondRun["id"].(string)
+	secondCalc := do(http.MethodPost, "/api/v1/hr/payroll-runs/"+secondRunID+"/calculate", "", nil)
+	secondOut := mustJSON(t, secondCalc, http.StatusOK)
+	if secondOut["status"] != "CALCULATION_FAILED" {
+		t.Fatalf("a wageless employee must fail the run, got %v: %s", secondOut["status"], secondCalc.Body.String())
+	}
+	secondPayrolls, _ := secondOut["employee_payrolls"].([]any)
+	found := false
+	for _, row := range secondPayrolls {
+		item, _ := row.(map[string]any)
+		if item["employee_id"] != wagelessID {
+			continue
+		}
+		found = true
+		if item["status"] != "FAILED" || !strings.Contains(toJSON(item["error_details"]), "employee_no_wage") {
+			t.Fatalf("wageless employee row does not name the missing wage: %s", toJSON(item))
+		}
+	}
+	if !found {
+		t.Fatalf("wageless employee missing from the bordro entirely: %s", secondCalc.Body.String())
 	}
 }
 

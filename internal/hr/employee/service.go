@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alpyxn/varyaone/internal/hr/employment"
 	"github.com/alpyxn/varyaone/internal/identity"
+	"github.com/alpyxn/varyaone/internal/payroll/legislation"
 	"github.com/alpyxn/varyaone/internal/platform/codeseq"
 	"github.com/alpyxn/varyaone/internal/platform/database"
 	"github.com/alpyxn/varyaone/internal/platform/secrets"
@@ -22,21 +24,26 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-var ErrNotFound = errors.New("EMPLOYEE_NOT_FOUND")
+var (
+	ErrNotFound           = errors.New("EMPLOYEE_NOT_FOUND")
+	ErrInvalidPeriod      = errors.New("EMPLOYEE_PERIOD_INVALID")
+	ErrLegislationMissing = errors.New("PAYROLL_LEGISLATION_NOT_FOUND")
+)
 
 var occupationCodePattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]{2}$`)
 
 type Service struct {
-	pool database.Querier
-	box  *secrets.Box
+	pool        database.Querier
+	box         *secrets.Box
+	legislation *legislation.Repository
 }
 
-func NewService(pool database.Querier, masterKey []byte) (*Service, error) {
+func NewService(pool database.Querier, masterKey []byte, legislationRepo *legislation.Repository) (*Service, error) {
 	box, err := secrets.NewBox(masterKey)
 	if err != nil {
 		return nil, err
 	}
-	return &Service{pool: pool, box: box}, nil
+	return &Service{pool: pool, box: box, legislation: legislationRepo}, nil
 }
 
 type Employee struct {
@@ -66,6 +73,26 @@ type Input struct {
 	PersonalEmail  string `json:"personal_email"`
 	Phone          string `json:"phone"`
 	OccupationCode string `json:"occupation_code"`
+	// Employment is the çalışma dönemi + ücret the card starts with. It is
+	// mandatory for an ACTIVE employee: without it the employee is invisible to
+	// the puantaj generator and silently absent from every bordro, which is only
+	// noticed when a payslip goes missing.
+	Employment *EmploymentSetup `json:"employment,omitempty"`
+}
+
+// EmploymentSetup carries the first employment period and wage of a new
+// employee. It is written in the same transaction as the card, so a half-made
+// employee can never exist.
+type EmploymentSetup struct {
+	StartDate              string `json:"start_date"`
+	IsMinimumWage          bool   `json:"is_minimum_wage"`
+	GrossWage              string `json:"gross_wage"`
+	Currency               string `json:"currency"`
+	WorkType               string `json:"work_type"`
+	WeeklyMinutes          int    `json:"weekly_minutes"`
+	ContributionSchemeCode string `json:"contribution_scheme_code"`
+	PriorEmployerTaxPolicy string `json:"prior_employer_tax_policy"`
+	SgkStatus              string `json:"sgk_status"`
 }
 
 type OccupationCode struct {
@@ -187,6 +214,10 @@ func (s *Service) Create(ctx context.Context, session identity.Session, input In
 	if err := validateInput(input, input.EmployeeCode == ""); err != nil {
 		return Employee{}, err
 	}
+	term, startDate, err := s.resolveSetup(ctx, session.CurrentCompanyID, input)
+	if err != nil {
+		return Employee{}, err
+	}
 	id := uuid.NewString()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -202,6 +233,21 @@ func (s *Service) Create(ctx context.Context, session identity.Session, input In
 	if err != nil {
 		return Employee{}, mapOccupationFK(err)
 	}
+	if term != nil {
+		employmentID := uuid.NewString()
+		if _, err = tx.Exec(ctx, `INSERT INTO employments(id,company_id,employee_id,start_date) VALUES($1,$2,$3::uuid,$4::date)`,
+			employmentID, session.CurrentCompanyID, id, startDate); err != nil {
+			return Employee{}, mapConstraint(err)
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO employment_terms(id,company_id,employment_id,employee_id,effective_from,
+ wage_type,wage_period,gross_wage,currency,work_type,weekly_minutes,contribution_scheme_code,prior_employer_tax_policy,sgk_status,is_minimum_wage)
+ VALUES($1,$2,$3::uuid,$4::uuid,$5::date,'GROSS','MONTHLY',$6::numeric,$7,$8,$9,$10,$11,$12,$13)`,
+			uuid.NewString(), session.CurrentCompanyID, employmentID, id, startDate,
+			term.GrossWage, term.Currency, term.WorkType, term.WeeklyMinutes,
+			term.ContributionSchemeCode, term.PriorEmployerTaxPolicy, term.SgkStatus, input.Employment.IsMinimumWage); err != nil {
+			return Employee{}, mapConstraint(err)
+		}
+	}
 	if err = writeEvent(ctx, tx, session, meta, "EMPLOYEE_CREATED", "hr.employee.created", id, []string{"employee_code", "name", "status"}); err != nil {
 		return Employee{}, err
 	}
@@ -210,6 +256,59 @@ func (s *Service) Create(ctx context.Context, session identity.Session, input In
 	}
 	return s.Get(ctx, session, id)
 }
+
+// resolveSetup validates the çalışma dönemi + ücret block a new employee is
+// created with. An ACTIVE employee must have one: an employee with no employment
+// never reaches the puantaj, and one with no ücret tanımı is dropped from every
+// bordro without a word. INACTIVE/ARCHIVED cards (historical records) may skip it.
+func (s *Service) resolveSetup(ctx context.Context, companyID string, input Input) (*employment.TermInput, string, error) {
+	setup := input.Employment
+	if setup == nil {
+		if input.Status == "ACTIVE" {
+			return nil, "", fmt.Errorf("%w: aktif çalışan için işe giriş tarihi ve brüt ücret zorunlu", identity.ErrValidation)
+		}
+		return nil, "", nil
+	}
+	startDate := strings.TrimSpace(setup.StartDate)
+	start, err := time.Parse("2006-01-02", startDate)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: işe giriş tarihi geçersiz", identity.ErrValidation)
+	}
+	term := &employment.TermInput{
+		EffectiveFrom:          startDate,
+		GrossWage:              strings.TrimSpace(setup.GrossWage),
+		Currency:               setup.Currency,
+		WorkType:               setup.WorkType,
+		WeeklyMinutes:          setup.WeeklyMinutes,
+		ContributionSchemeCode: setup.ContributionSchemeCode,
+		PriorEmployerTaxPolicy: setup.PriorEmployerTaxPolicy,
+		SgkStatus:              setup.SgkStatus,
+		IsMinimumWage:          setup.IsMinimumWage,
+	}
+	if setup.IsMinimumWage {
+		// Never trust a client-sent gross for a "minimum wage" term — pin it to
+		// the legislation pack covering the hire date.
+		if s.legislation == nil {
+			return nil, "", fmt.Errorf("%w: asgari ücret bilgisi okunamadı", identity.ErrValidation)
+		}
+		pack, err := s.legislation.ActivePack(ctx, companyID, start)
+		if errors.Is(err, legislation.ErrPackNotFound) {
+			return nil, "", ErrLegislationMissing
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		term.GrossWage = pack.MinimumMonthlyGross.String()
+	}
+	// employment.NormalizeTerm fills the defaults (TRY, tam zamanlı, 4A,
+	// NO_DISCOUNT, 45 saat) and rejects the rest, so the wage a new employee
+	// starts with obeys exactly the same rules as one entered from the Ücret tab.
+	if err := employment.NormalizeTerm(term); err != nil {
+		return nil, "", err
+	}
+	return term, startDate, nil
+}
+
 func (s *Service) Update(ctx context.Context, session identity.Session, id string, version int64, input Input, meta identity.RequestMeta) (Employee, error) {
 	if !session.HasPermission("hr.employee.edit") {
 		return Employee{}, identity.ErrForbidden
@@ -483,6 +582,23 @@ func validatePrivate(input PrivateProfileInput) error {
 	}
 	return nil
 }
+
+// mapConstraint turns the employment/term constraint failures raised while
+// creating an employee into validation errors.
+func mapConstraint(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return err
+	}
+	switch {
+	case pgErr.Code == "23P01" || pgErr.Code == "23505":
+		return fmt.Errorf("%w: çalışma dönemi ya da ücret kaydı çakışıyor", identity.ErrValidation)
+	case pgErr.Code == "23514":
+		return fmt.Errorf("%w: %s", identity.ErrValidation, pgErr.Message)
+	}
+	return err
+}
+
 func mapOccupationFK(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23503" && strings.Contains(pgErr.ConstraintName, "occupation_code") {

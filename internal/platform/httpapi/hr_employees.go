@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/alpyxn/varyaone/internal/hr/employee"
 	"github.com/alpyxn/varyaone/internal/identity"
@@ -17,6 +18,7 @@ func mountHREmployeeRoutes(router chi.Router, identityService *identity.Service,
 	handler := hrEmployeeHandler{service: service}
 	read := router.With(auth.requireSession)
 	read.Get("/api/v1/hr/employees", handler.list)
+	read.Get("/api/v1/hr/employees/readiness", handler.readiness)
 	read.Get("/api/v1/hr/employees/{employeeID}", handler.get)
 	read.Get("/api/v1/hr/employees/{employeeID}/private-profile", handler.getPrivate)
 	read.Get("/api/v1/hr/employees/{employeeID}/address", handler.getAddress)
@@ -36,6 +38,24 @@ func (h hrEmployeeHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, result)
 }
+
+// readiness reports what is missing on each employee card before the given
+// month can be put on the puantaj or run through the bordro.
+func (h hrEmployeeHandler) readiness(w http.ResponseWriter, r *http.Request) {
+	year, _ := strconv.Atoi(r.URL.Query().Get("year"))
+	month, _ := strconv.Atoi(r.URL.Query().Get("month"))
+	if year == 0 || month == 0 {
+		now := time.Now().UTC()
+		year, month = now.Year(), int(now.Month())
+	}
+	items, err := h.service.ListReadiness(r.Context(), sessionFromRequest(r), year, month)
+	if err != nil {
+		writeHREmployeeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (h hrEmployeeHandler) get(w http.ResponseWriter, r *http.Request) {
 	item, err := h.service.Get(r.Context(), sessionFromRequest(r), chi.URLParam(r, "employeeID"))
 	if err != nil {
@@ -161,6 +181,11 @@ func writeHREmployeeError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, http.StatusPreconditionFailed, "VERSION_CONFLICT", "Çalışan kaydı başka bir kullanıcı tarafından değiştirildi.")
 	case errors.Is(err, employee.ErrNotFound):
 		writeError(w, r, http.StatusNotFound, "EMPLOYEE_NOT_FOUND", "Çalışan bulunamadı.")
+	case errors.Is(err, employee.ErrInvalidPeriod):
+		writeError(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Dönem yıl/ay geçersiz.")
+	case errors.Is(err, employee.ErrLegislationMissing):
+		writeError(w, r, http.StatusUnprocessableEntity, "PAYROLL_LEGISLATION_NOT_FOUND",
+			"İşe giriş tarihini kapsayan aktif bordro mevzuatı yok; asgari ücret okunamadı.")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "Çalışan işlemi tamamlanamadı.")
 	}

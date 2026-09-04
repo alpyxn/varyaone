@@ -394,8 +394,12 @@ type PartyTransfer struct {
 }
 
 type InvoicePostingInput struct {
-	DocumentID     string
-	DocumentType   string
+	DocumentID   string
+	DocumentType string
+	// DocumentNo is the invoice number the ledger entry is referred to by.
+	// Without it the cari hareket has no name of its own and the UI has to
+	// fall back to describing it.
+	DocumentNo     string
 	PartyID        string
 	Currency       string
 	Amount         string
@@ -780,7 +784,7 @@ func (s *Service) postPayment(ctx context.Context, session identity.Session, inp
 	if amountString(baseAmount, 4) == "0.0000" {
 		return Payment{}, fmt.Errorf("%w: temel para birimine çevrilen ödeme tutarı dört ondalıkta sıfıra yuvarlanamaz", identity.ErrValidation)
 	}
-	snapshot := jsonBytes(map[string]any{"transaction_currency": input.Currency, "amount": amountString(amount, 4), "base_currency": baseCurrency, "base_amount": amountString(baseAmount, 4), "exchange_rate": amountString(rate, 10), "payment_method": input.PaymentMethod, "override_reason": input.OverrideReason, "request_hash": requestHash, "party_code": partyCode, "party_name": partyName, "account_code": accountCode, "account_name": accountName})
+	snapshot := jsonBytes(map[string]any{"transaction_currency": input.Currency, "amount": amountString(amount, 4), "base_currency": baseCurrency, "base_amount": amountString(baseAmount, 4), "exchange_rate": amountString(rate, 10), "document_no": strings.TrimSpace(input.DocumentNo), "payment_method": input.PaymentMethod, "override_reason": input.OverrideReason, "request_hash": requestHash, "party_code": partyCode, "party_name": partyName, "account_code": accountCode, "account_name": accountName})
 	if accountID != nil {
 		movementIDValue := uuid.NewString()
 		movementID = &movementIDValue
@@ -2264,7 +2268,7 @@ func (s *Service) PostInvoiceTx(ctx context.Context, tx pgx.Tx, session identity
 		side, debit, credit = "PAYABLE", amountString(amount, 4), "0"
 	}
 	ledgerID, openItemID, postingID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	snapshot := jsonBytes(map[string]any{"document_id": input.DocumentID, "document_type": input.DocumentType, "transaction_currency": input.Currency, "amount": amountString(amount, 4), "base_currency": baseCurrency, "exchange_rate": amountString(rate, 10)})
+	snapshot := jsonBytes(map[string]any{"document_id": input.DocumentID, "document_type": input.DocumentType, "document_no": strings.TrimSpace(input.DocumentNo), "transaction_currency": input.Currency, "amount": amountString(amount, 4), "base_currency": baseCurrency, "exchange_rate": amountString(rate, 10)})
 	if _, err = tx.Exec(ctx, `INSERT INTO party_ledger_entries(id,company_id,party_id,currency,entry_type,source_type,source_id,idempotency_key,description,debit,credit,exchange_rate,document_date,actor_user_id,snapshot) VALUES($1,$2,$3,$4,$5,'document',$6,$7,$8,$9,$10,$11,$12,$13,$14)`, ledgerID, session.CurrentCompanyID, input.PartyID, input.Currency, side, input.DocumentID, "invoice:"+input.IdempotencyKey+":party", input.Description, debit, credit, amountString(rate, 10), input.DocumentDate, nullableUUID(session.User.ID), snapshot); err != nil {
 		return InvoicePosting{}, mapFinanceConstraint(err)
 	}

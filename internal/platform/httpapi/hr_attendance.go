@@ -315,6 +315,7 @@ func mountHRTimesheetRoutes(router chi.Router, identityService *identity.Service
 	write := router.With(auth.requireSession, auth.requireCSRF)
 	read.Get("/api/v1/hr/timesheet-periods", h.list)
 	read.Get("/api/v1/hr/timesheet-periods/{periodID}", h.get)
+	read.Get("/api/v1/hr/timesheet-periods/{periodID}/readiness", h.readiness)
 	write.Post("/api/v1/hr/timesheet-periods", h.create)
 	write.Post("/api/v1/hr/timesheet-periods/{periodID}/generate", h.generate)
 	write.Put("/api/v1/hr/timesheet-periods/{periodID}/days", h.upsertDay)
@@ -341,6 +342,17 @@ func (h hrTimesheetHandler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("ETag", `"`+strconv.FormatInt(item.Version, 10)+`"`)
 	writeJSON(w, http.StatusOK, item)
+}
+
+// readiness lists, per employee, what stops this period from being entered or
+// calculated for them, so the puantaj screen can say so before the first click.
+func (h hrTimesheetHandler) readiness(w http.ResponseWriter, r *http.Request) {
+	items, err := h.service.Readiness(r.Context(), sessionFromRequest(r), chi.URLParam(r, "periodID"))
+	if err != nil {
+		writeHRTimesheetError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h hrTimesheetHandler) create(w http.ResponseWriter, r *http.Request) {
@@ -461,6 +473,10 @@ func writeHRTimesheetError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, http.StatusConflict, "TIMESHEET_PERIOD_NOT_FINALIZED", "Yalnızca kesinleşmiş puantaj yeniden açılabilir.")
 	case errors.Is(err, timesheet.ErrUsedByPayroll):
 		writeError(w, r, http.StatusConflict, "TIMESHEET_USED_BY_FINALIZED_PAYROLL", "Kesinleşmiş bordroda kullanılan puantaj yeniden açılamaz.")
+	case errors.Is(err, timesheet.ErrEmployeeNotReady):
+		// The employee card is missing something the puantaj needs; err.Error()
+		// already names the employee and the exact gap.
+		writeError(w, r, http.StatusUnprocessableEntity, "TIMESHEET_EMPLOYEE_NOT_READY", err.Error())
 	case errors.Is(err, timesheet.ErrPeriodExists):
 		writeError(w, r, http.StatusConflict, "TIMESHEET_PERIOD_EXISTS", "Bu dönem için puantaj zaten var.")
 	default:

@@ -27,7 +27,6 @@
     ayarlar: 'Ayarlar',
     firma: 'Şirket',
     tanimlar: 'Tanımlar',
-    'sistem-durumu': 'Sistem Durumu',
     yeni: 'Yeni',
     raporlar: 'Raporlar',
     'vadesi-gecen-alacaklar': 'Vadesi Geçen Alacaklar',

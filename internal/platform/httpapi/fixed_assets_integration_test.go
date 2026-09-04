@@ -16,6 +16,7 @@ import (
 	"github.com/alpyxn/varyaone/internal/fixedasset"
 	"github.com/alpyxn/varyaone/internal/hr/employee"
 	"github.com/alpyxn/varyaone/internal/identity"
+	"github.com/alpyxn/varyaone/internal/payroll/legislation"
 	"github.com/alpyxn/varyaone/internal/platform/migrations"
 )
 
@@ -39,7 +40,7 @@ func TestFixedAssetAssignmentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	employeeService, err := employee.NewService(pool, masterKey)
+	employeeService, err := employee.NewService(pool, masterKey, legislation.NewRepository(pool))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +59,8 @@ func TestFixedAssetAssignmentLifecycle(t *testing.T) {
 		return response
 	}
 
-	empResp := do(http.MethodPost, "/api/v1/hr/employees", `{"employee_code":"E001","first_name":"Ada","last_name":"Yılmaz","status":"ACTIVE","position_title":"Mühendis","work_email":"","personal_email":"","phone":""}`)
+	empResp := do(http.MethodPost, "/api/v1/hr/employees", `{"employee_code":"E001","first_name":"Ada","last_name":"Yılmaz","status":"ACTIVE","position_title":"Mühendis","work_email":"","personal_email":"","phone":"",
+ "employment":{"start_date":"2026-01-02","gross_wage":"40000"}}`)
 	if empResp.Code != http.StatusCreated {
 		t.Fatalf("employee create %d: %s", empResp.Code, empResp.Body.String())
 	}

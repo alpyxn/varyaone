@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alpyxn/varyaone/internal/hr/employee"
 	"github.com/alpyxn/varyaone/internal/identity"
 	"github.com/alpyxn/varyaone/internal/money"
 	"github.com/alpyxn/varyaone/internal/payroll/calculation"
@@ -29,6 +30,7 @@ type populationRow struct {
 	ContributionSchemeCode string
 	PriorEmployerTaxPolicy string
 	SgkStatus              string
+	HasWage                bool
 	EarliestStart          time.Time
 }
 
@@ -202,7 +204,24 @@ func (s *Service) Calculate(ctx context.Context, session identity.Session, runID
 func (s *Service) calculateEmployee(ctx context.Context, tx pgx.Tx, companyID, runID string, p populationRow, pack *legislation.Pack,
 	defs map[string]legislation.ComponentDefinition, year, month, daysInMonth int, periodDate, monthEnd time.Time) (calculation.Result, calculation.Context, error) {
 
+	// The employee card is checked before anything is calculated, and it is
+	// checked with the same rules the çalışan kartı and the puantaj use, so the
+	// bordro says "Ücret tanımı yok" rather than dropping the person or
+	// reporting "kapsam dışında".
+	if issues := employee.WageIssues(employee.Wage{
+		Defined: p.HasWage, GrossWage: p.GrossWage, Currency: p.Currency, WorkType: p.WorkType,
+		SchemeCode: p.ContributionSchemeCode, SgkStatus: sgkStatusOrDefault(p.SgkStatus),
+		WageType: "GROSS", WagePeriod: "MONTHLY",
+	}); len(issues) > 0 {
+		return calculation.Result{}, calculation.Context{}, wageIssueError(issues[0])
+	}
+
 	scheme, err := s.repo.ContributionScheme(ctx, companyID, pack.ID, p.ContributionSchemeCode)
+	if errors.Is(err, legislation.ErrPackNotFound) {
+		return calculation.Result{}, calculation.Context{}, &calculation.CalculationError{
+			Code: calculation.ErrPopulationNotSupported, Field: "contribution_scheme",
+			Message: "Çalışanın SGK teşvik/indirim kodu (" + p.ContributionSchemeCode + ") bu dönemin mevzuat paketinde tanımlı değil."}
+	}
 	if err != nil {
 		return calculation.Result{}, calculation.Context{}, err
 	}
@@ -410,15 +429,21 @@ func (s *Service) loadPopulation(ctx context.Context, companyID string, periodDa
 	// would otherwise be returned twice and collide on the
 	// (generation_id, employee_id) unique key, failing the whole run; the most
 	// recently started employment wins.
+	// The wage is joined LEFT: an employee employed this month but with no ücret
+	// tanımı stays in the population and fails with "Ücret tanımı yok" on their
+	// own row. An inner join used to drop them, so the bordro came out short by
+	// one person with nothing anywhere saying why.
 	rows, err := s.pool.Query(ctx, `SELECT DISTINCT ON (e.id) e.id::text,e.employee_code,e.first_name||' '||e.last_name,e.position_title,
- t.gross_wage::text,t.currency,t.work_type,t.contribution_scheme_code,t.prior_employer_tax_policy,t.sgk_status,
+ t.employment_id IS NOT NULL,
+ COALESCE(t.gross_wage::text,''),COALESCE(t.currency,''),COALESCE(t.work_type,''),
+ COALESCE(t.contribution_scheme_code,''),COALESCE(t.prior_employer_tax_policy,'SEPARATE'),COALESCE(t.sgk_status,''),
  (SELECT min(start_date) FROM employments x WHERE x.company_id=$1 AND x.employee_id=e.id
    AND (x.end_date IS NULL OR x.end_date > x.start_date))
  FROM employees e
  JOIN employments emp ON emp.company_id=e.company_id AND emp.employee_id=e.id
    AND daterange(emp.start_date,COALESCE(emp.end_date,'infinity'::date),'[]') && daterange($2::date,$3::date,'[]')
- JOIN LATERAL (
-   SELECT term.gross_wage,term.currency,term.work_type,term.contribution_scheme_code,term.prior_employer_tax_policy,term.sgk_status
+ LEFT JOIN LATERAL (
+   SELECT term.employment_id,term.gross_wage,term.currency,term.work_type,term.contribution_scheme_code,term.prior_employer_tax_policy,term.sgk_status
    FROM employment_terms term
    WHERE term.company_id=e.company_id AND term.employment_id=emp.id
      AND daterange(term.effective_from,COALESCE(term.effective_to,'infinity'::date),'[]')
@@ -436,7 +461,7 @@ func (s *Service) loadPopulation(ctx context.Context, companyID string, periodDa
 	for rows.Next() {
 		var p populationRow
 		var earliest *time.Time
-		if err := rows.Scan(&p.EmployeeID, &p.Code, &p.Name, &p.PositionTitle, &p.GrossWage, &p.Currency, &p.WorkType,
+		if err := rows.Scan(&p.EmployeeID, &p.Code, &p.Name, &p.PositionTitle, &p.HasWage, &p.GrossWage, &p.Currency, &p.WorkType,
 			&p.ContributionSchemeCode, &p.PriorEmployerTaxPolicy, &p.SgkStatus, &earliest); err != nil {
 			return nil, err
 		}
@@ -771,6 +796,17 @@ func overtimeComponent(monthlyGross money.Decimal, minutes int, defs map[string]
 		IncomeTax: legislation.TreatmentFor(def, "INCOME_TAX"),
 		StampTax:  legislation.TreatmentFor(def, "STAMP_TAX"),
 	}, true
+}
+
+// wageIssueError reports one employee-card gap as a calculation failure. The
+// issue code travels as the error's field so the UI can key a longer
+// explanation off it, and the Turkish sentence is already user-facing.
+func wageIssueError(issue employee.Issue) error {
+	code := calculation.ErrPopulationNotSupported
+	if issue.Code == "EMPLOYEE_SGK_STATUS" {
+		code = calculation.ErrSGKStatusNotSupported
+	}
+	return &calculation.CalculationError{Code: code, Field: strings.ToLower(issue.Code), Message: issue.Message}
 }
 
 // checkAttendance rejects a period the timesheet says nothing usable about.

@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { api, type APIError, type Company, type Session } from '$lib/api';
   import { FileDrop } from '$lib/components/varya/file-drop';
+  import { resetPrintableCompany } from '$lib/features/settings/company-profile';
   import { ConfirmDialog } from '$lib/components/varya/confirm-dialog';
   import DemoResetAction from '$lib/components/varya/demo/DemoResetAction.svelte';
 
@@ -70,6 +71,8 @@
           logo: company.logo ?? ''
         })
       });
+      // Printed documents cache the profile for their header logo.
+      resetPrintableCompany();
       message = 'Şirket ayarları kaydedildi.';
       messageTone = 'success';
     } catch (error) {

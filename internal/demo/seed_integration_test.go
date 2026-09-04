@@ -63,7 +63,10 @@ func assertSeeded(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 		query string
 		min   int
 	}{
-		"demo company":             {`SELECT count(*) FROM companies WHERE id=$1 AND is_demo`, 1},
+		"demo company": {`SELECT count(*) FROM companies WHERE id=$1 AND is_demo`, 1},
+		// The placeholder logo reaches the payslip PDF and the app header; a
+		// demo with an empty logo hides both.
+		"company logo":             {`SELECT count(*) FROM companies WHERE id=$1 AND logo LIKE 'data:image/png;base64,%'`, 1},
 		"parties":                  {`SELECT count(*) FROM parties WHERE company_id=$1`, 11},
 		"products":                 {`SELECT count(*) FROM products WHERE company_id=$1`, 14},
 		"stock movements":          {`SELECT count(*) FROM stock_movements WHERE company_id=$1`, 1},
@@ -100,6 +103,40 @@ func assertSeeded(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 		if actual < check.min {
 			t.Errorf("%s: got %d, want at least %d", name, actual, check.min)
 		}
+	}
+
+	// Seeded cashflow must read like a possible business history. In
+	// particular, an automatically allocated collection may not predate the
+	// invoice it settles, and the showcase should include a genuinely partial
+	// settlement rather than only fully paid and untouched invoices.
+	var futureDatedAllocations int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM finance_payment_allocations a
+		JOIN finance_payments p ON p.company_id=a.company_id AND p.id=a.payment_id
+		JOIN finance_invoice_open_items oi ON oi.company_id=a.company_id AND oi.id=a.open_item_id
+		WHERE a.company_id=$1 AND a.reversal_of_id IS NULL AND p.transaction_date < oi.document_date`, CompanyID).Scan(&futureDatedAllocations); err != nil {
+		t.Fatalf("future-dated payment allocations: %v", err)
+	}
+	if futureDatedAllocations != 0 {
+		t.Errorf("found %d payment allocations dated before their invoices", futureDatedAllocations)
+	}
+
+	var partiallyPaidInvoices int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM (
+			SELECT oi.id
+			FROM finance_invoice_open_items oi
+			JOIN finance_payment_allocations a ON a.company_id=oi.company_id AND a.open_item_id=oi.id AND a.reversal_of_id IS NULL
+			WHERE oi.company_id=$1
+			GROUP BY oi.id, oi.original_amount
+			HAVING SUM(a.amount) > 0 AND SUM(a.amount) < oi.original_amount
+		) partial`, CompanyID).Scan(&partiallyPaidInvoices); err != nil {
+		t.Fatalf("partially paid invoices: %v", err)
+	}
+	if partiallyPaidInvoices == 0 {
+		t.Error("seed produced no partially paid invoice")
 	}
 }
 

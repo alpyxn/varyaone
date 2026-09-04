@@ -7,7 +7,7 @@
   import { Badge } from '$lib/components/ui/badge';
   import { TimeInput } from '$lib/components/varya/time-input';
   import * as hr from '$lib/features/hr/api';
-  import type { Employee, LeaveType } from '$lib/features/hr/types';
+  import type { Employee, EmployeeReadiness, LeaveType } from '$lib/features/hr/types';
   import {
     MONTH_NAMES,
     periodLabel,
@@ -21,7 +21,8 @@
     TR_PUBLIC_HOLIDAYS,
     type TimesheetDay,
     type TimesheetDayKind,
-    type TimesheetPeriod
+    type TimesheetPeriod,
+    timesheetBlocker
   } from '$lib/features/hr/types';
 
   // İzin, ayrı bir talep/onay akışı yerine doğrudan burada — puantaj gününde
@@ -59,11 +60,22 @@
   let reopening = $state(false);
   let reopenReason = $state('');
 
+  // Eksik kartlar: puantaja hiç girilemeyen çalışanlar ve bordroyu durduracak
+  // eksikler burada, ilk tıklamadan önce görünür.
+  let readiness = $state<EmployeeReadiness[]>([]);
+  const readinessByID = $derived(new Map(readiness.map((r) => [r.employee_id, r])));
+
   const canEdit = $derived(permissions.includes('hr.timesheet.edit'));
   const canFinalize = $derived(permissions.includes('hr.timesheet.finalize'));
   const canReopen = $derived(permissions.includes('hr.timesheet.reopen'));
   const isDraft = $derived(selected?.status === 'DRAFT');
-  const canPick = $derived(!!selected && isDraft && canEdit);
+  const activeBlocker = $derived(timesheetBlocker(readinessByID.get(activeEmployeeID)));
+  const canPick = $derived(!!selected && isDraft && canEdit && !activeBlocker);
+  // Bordroyu durduracak eksikler (ücret, SGK kodu…) puantajı engellemez ama
+  // ay kapanmadan düzeltilmeli.
+  const payrollGaps = $derived(
+    readiness.filter((r) => r.timesheet_ready && !r.payroll_ready && r.issues.length)
+  );
 
   const filteredEmployees = $derived(
     employees.filter((e) =>
@@ -177,11 +189,13 @@
     const match = periods.find((p) => p.period_year === viewYear && p.period_month === viewMonth);
     if (!match) {
       selected = null;
+      readiness = [];
       return;
     }
     if (selected?.id === match.id && selected.version === match.version) return;
     try {
       selected = await hr.getTimesheetPeriod(match.id);
+      await loadReadiness(match.id);
       if (selected.status === 'DRAFT' && !(selected.days ?? []).length && canEdit) {
         try {
           selected = await hr.generateTimesheet(selected.id);
@@ -191,6 +205,16 @@
       }
     } catch (cause) {
       actionError = cause instanceof APIRequestError ? cause.message : 'Dönem açılamadı.';
+    }
+  }
+
+  // Dönem her açıldığında eksik kartları da tazele: bir çalışanın işe giriş
+  // tarihi bu ekrandan görünmez, ama puantaja girilip girilemeyeceğini belirler.
+  async function loadReadiness(periodID: string) {
+    try {
+      readiness = (await hr.listTimesheetReadiness(periodID)).items;
+    } catch {
+      readiness = [];
     }
   }
 
@@ -412,6 +436,19 @@
 
   {#if msg}<p class="notice ok" role="status">{msg}</p>{/if}
   {#if actionError}<p class="notice error" role="alert">{actionError}</p>{/if}
+  {#if payrollGaps.length}
+    <div class="notice gaps">
+      <strong>{payrollGaps.length} çalışanın bordrosu bu haliyle hesaplanamaz.</strong>
+      <ul>
+        {#each payrollGaps as gap}
+          <li>
+            <a href={`/personel/calisanlar/${gap.employee_id}`}>{gap.name}</a>
+            — {gap.issues[0].message}
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
   {#if error}<p class="notice error" role="alert">{error}</p>{/if}
 
   {#if loading}
@@ -451,10 +488,13 @@
           />
           <ul class="emp-list">
             {#each filteredEmployees as e}
+              {@const blocker = timesheetBlocker(readinessByID.get(e.id))}
               <li>
                 <button
                   class="emp"
                   class:active={activeEmployeeID === e.id}
+                  class:blocked={!!blocker}
+                  title={blocker}
                   onclick={() => {
                     activeEmployeeID = e.id;
                     selection = [];
@@ -462,6 +502,7 @@
                 >
                   {e.first_name}
                   {e.last_name}
+                  {#if blocker}<span class="flag" aria-label="Eksik kayıt">eksik</span>{/if}
                 </button>
               </li>
             {/each}
@@ -493,7 +534,12 @@
             {/if}
           </div>
 
-          {#if canPick}
+          {#if activeBlocker}
+            <p class="notice error blocker" role="alert">
+              {activeBlocker}
+              <a href={`/personel/calisanlar/${activeEmployeeID}`}>Çalışan kartını aç</a>
+            </p>
+          {:else if canPick}
             <p class="pick-hint">
               Bir veya birden çok güne tıklayıp seçin, sonra aşağıdan durum atayın.
             </p>
@@ -667,6 +713,25 @@
 {/if}
 
 <style>
+  .emp.blocked {
+    color: var(--text-muted);
+    text-decoration: line-through;
+  }
+  .flag {
+    margin-left: 6px;
+    font-size: 10px;
+    text-decoration: none;
+    color: var(--danger, #b42318);
+  }
+  .blocker a {
+    margin-left: 8px;
+  }
+  .gaps ul {
+    margin: 6px 0 0;
+    padding-left: 18px;
+    font-size: 12px;
+  }
+
   .card {
     padding: 16px;
     margin-top: 14px;

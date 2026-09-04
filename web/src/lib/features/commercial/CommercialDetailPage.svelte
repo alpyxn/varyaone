@@ -37,6 +37,7 @@
   import { getParty, listParties } from '$lib/features/parties/api';
   import type { Party } from '$lib/features/parties/types';
   import { printDocument } from '$lib/design/print';
+  import { printableCompany } from '$lib/features/settings/company-profile';
   import { buildCommercialDocument } from './commercial-print';
   import { getExchangeRateDashboard, listPricingCurrencies } from '$lib/features/pricing/api';
   import type { ExchangeRateDashboard, PricingCurrency } from '$lib/features/pricing/types';
@@ -1457,6 +1458,9 @@
           partyDetail = undefined;
         }
       }
+      // The session's company record carries no logo or tax number; the printed
+      // header wants both.
+      const profile = (await printableCompany()) ?? company;
       printDocument(
         buildCommercialDocument({
           config,
@@ -1471,7 +1475,7 @@
             additionalTax: text(displayAdditionalTaxTotal, '0'),
             grand: text(displayGrandTotal, '0')
           },
-          company,
+          company: profile,
           party: partyDetail
         })
       );

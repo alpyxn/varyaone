@@ -4,6 +4,7 @@ import type {
   Employee,
   EmployeeDocument,
   EmployeeInput,
+  EmployeeReadiness,
   EmployeePayroll,
   Employment,
   EmploymentTerm,
@@ -36,6 +37,10 @@ export const searchOccupationCodes = (q: string) =>
   api<List<import('./types').OccupationCode>>(
     `/hr/occupation-codes?limit=50${q ? `&q=${encodeURIComponent(q)}` : ''}`
   );
+export const listEmployeeReadiness = (year: number, month: number) =>
+  api<List<EmployeeReadiness>>(`/hr/employees/readiness?year=${year}&month=${month}`);
+export const listTimesheetReadiness = (periodID: string) =>
+  api<List<EmployeeReadiness>>(`/hr/timesheet-periods/${periodID}/readiness`);
 export const createEmployee = (input: EmployeeInput) =>
   api<Employee>('/hr/employees', { method: 'POST', body: JSON.stringify(input) });
 export const updateEmployee = (id: string, version: number, input: EmployeeInput) =>

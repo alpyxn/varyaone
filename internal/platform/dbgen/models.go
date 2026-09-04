@@ -995,6 +995,7 @@ type FinanceAccountMovement struct {
 	ExternalReference    string
 	BankStatementLineID  pgtype.Text
 	ReconciliationStatus pgtype.Text
+	DocumentNo           string
 }
 
 type FinanceInstrument struct {

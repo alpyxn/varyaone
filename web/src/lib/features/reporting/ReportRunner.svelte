@@ -7,6 +7,7 @@
   import { formatDate, formatMoney, formatQuantity } from '$lib/design/formatters';
   import { downloadXls } from '$lib/design/spreadsheet';
   import { printDocument, ph } from '$lib/design/print';
+  import { printableCompany } from '$lib/features/settings/company-profile';
   import { fetchReport, type ReportFilterValues, type ReportRow } from './api';
   import type { ReportColumn, ReportDef } from './registry';
 
@@ -150,7 +151,10 @@
     downloadXls(`${def.id}${stamp}`, def.label, body, header);
   }
 
-  function printReport() {
+  async function printReport() {
+    // The session's company record carries no logo or tax number; the printed
+    // header wants both.
+    const profile = (await printableCompany()) ?? company;
     const head = def.columns
       .map((c) => `<th${c.align === 'right' ? ' class="right"' : ''}>${ph(c.label)}</th>`)
       .join('');
@@ -169,9 +173,9 @@
       title: def.label,
       subtitle: filterSummary(),
       company: {
-        name: company?.trade_name || company?.legal_name || 'Şirket',
-        logo: company?.logo,
-        taxNumber: company?.tax_number
+        name: profile?.trade_name || profile?.legal_name || 'Şirket',
+        logo: profile?.logo,
+        taxNumber: profile?.tax_number
       },
       bodyHtml: `<table><thead><tr>${head}</tr></thead><tbody>${bodyRows}</tbody></table>`,
       bodyStyles:

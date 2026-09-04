@@ -642,7 +642,7 @@ func (s *Service) PostInvoice(ctx context.Context, session identity.Session, id,
 	if err = validateStockLinesTx(ctx, tx, session.CurrentCompanyID, stockEffect, item.Lines); err != nil {
 		return Document{}, err
 	}
-	posting, err := s.finance.PostInvoiceTx(ctx, tx, session, finance.InvoicePostingInput{DocumentID: id, DocumentType: item.DocumentTypeCode, PartyID: item.PartyID, Currency: item.CurrencyCode, Amount: item.GrandTotal, ExchangeRate: item.ExchangeRate, DocumentDate: item.DocumentDate, DueDate: item.DueDate, Description: invoicePostingDescription(item.DocumentTypeCode, item.DocumentNo, item.Notes), IdempotencyKey: idempotencyKey})
+	posting, err := s.finance.PostInvoiceTx(ctx, tx, session, finance.InvoicePostingInput{DocumentID: id, DocumentType: item.DocumentTypeCode, DocumentNo: item.DocumentNo, PartyID: item.PartyID, Currency: item.CurrencyCode, Amount: item.GrandTotal, ExchangeRate: item.ExchangeRate, DocumentDate: item.DocumentDate, DueDate: item.DueDate, Description: invoicePostingDescription(item.DocumentTypeCode, item.DocumentNo, item.Notes), IdempotencyKey: idempotencyKey})
 	if err != nil {
 		return Document{}, err
 	}

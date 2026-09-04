@@ -209,8 +209,7 @@ export const navigation: NavigationGroup[] = [
         permission: 'organization.module.manage'
       },
       { label: 'Güvenlik', href: '/ayarlar/guvenlik' },
-      { label: 'Yedekleme', href: '/ayarlar/yedekleme', permission: 'system.backup.manage' },
-      { label: 'Sistem Durumu', href: '/sistem-durumu' }
+      { label: 'Yedekleme', href: '/ayarlar/yedekleme', permission: 'system.backup.manage' }
     ]
   }
 ];
