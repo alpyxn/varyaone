@@ -18,6 +18,7 @@
     applyUpdate,
     snoozeUpdate,
     ackUpdate,
+    setUpdateChecks,
     renderNotes,
     phaseLabel,
     type UpdateStatus
@@ -40,6 +41,20 @@
       error = '';
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Durum alınamadı.';
+    }
+  }
+
+  async function toggleChecks() {
+    if (!status) return;
+    busy = 'toggle';
+    error = '';
+    try {
+      status = await setUpdateChecks(status.checks_disabled);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Ayar kaydedilemedi.';
+      await refresh();
+    } finally {
+      busy = '';
     }
   }
 
@@ -118,7 +133,7 @@
   <div>
     <h1>Güncelleme</h1>
   </div>
-  {#if !loading && !denied}
+  {#if !loading && !denied && !status?.checks_disabled}
     <Button type="button" variant="ghost" onclick={checkNow} disabled={!!busy}>
       <RefreshCw size={15} />
       {busy === 'check' ? 'Kontrol ediliyor…' : 'Kontrol et'}
@@ -158,7 +173,31 @@
           <span class="v mono">{status.latest.version}</span>
         </div>
       {/if}
+      <div class="row upd-toggle-row">
+        <span class="k">Güncelleme kontrolü</span>
+        <label class="upd-toggle">
+          <input
+            type="checkbox"
+            checked={!status.checks_disabled}
+            disabled={!!busy || inProgress}
+            onchange={toggleChecks}
+          />
+          <span>{status.checks_disabled ? 'Kapalı' : 'Açık'}</span>
+        </label>
+      </div>
     </section>
+
+    {#if status.checks_disabled}
+      <section class="card upd-off">
+        <ShieldCheck size={18} />
+        <div>
+          <strong>Güncelleme kontrolü kapalı</strong>
+          <span class="muted"
+            >Yeni sürümler aranmıyor ve önerilmiyor. Açtığınızda kontrol yeniden başlar.</span
+          >
+        </div>
+      </section>
+    {/if}
 
     {#if inProgress}
       <section class="card upd-progress">
@@ -345,14 +384,33 @@
     gap: 12px;
   }
   .upd-done,
+  .upd-off,
   .upd-current {
     display: flex;
     gap: 10px;
     align-items: center;
   }
   .upd-done div,
+  .upd-off div,
   .upd-current div {
     flex: 1;
+  }
+  .upd-off div {
+    display: grid;
+    gap: 2px;
+  }
+  .upd-toggle-row {
+    align-items: center;
+  }
+  .upd-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .upd-toggle input {
+    cursor: pointer;
   }
   .upd-note,
   .upd-err {

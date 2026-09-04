@@ -50,6 +50,7 @@ const (
 	keySnoozeUntil   = "update.snooze_until"
 	keyCheckedAt     = "update.checked_at"
 	keyCheckFailures = "update.check_failures"
+	keyChecksOff     = "update.checks_disabled"
 )
 
 // Lifecycle states. The happy path is idle -> apply_requested -> in_progress ->
@@ -78,6 +79,9 @@ var (
 	ErrMandatory = errors.New("this update is mandatory and cannot be snoozed")
 	// ErrCheckTooSoon is returned by CheckNow when a check ran moments ago.
 	ErrCheckTooSoon = errors.New("an update check ran too recently")
+	// ErrChecksDisabled is returned when the operator has turned update checking
+	// off on the settings screen.
+	ErrChecksDisabled = errors.New("update checking is turned off")
 	// ErrNotConfigured is returned by CheckNow when this installation has no
 	// release catalog to check against.
 	ErrNotConfigured = errors.New("update checking is not configured")
@@ -170,10 +174,15 @@ type Status struct {
 	UpdateAvailable bool        `json:"update_available"`
 	Mandatory       bool        `json:"mandatory"`
 	Snoozed         bool        `json:"snoozed"`
-	SnoozeUntil     *time.Time  `json:"snooze_until,omitempty"`
-	Progress        *Progress   `json:"progress,omitempty"`
-	Result          *Result     `json:"result,omitempty"`
-	Applied         *Applied    `json:"applied,omitempty"`
+	// ChecksDisabled is the operator's own switch on the settings screen. While
+	// it is on nothing contacts the catalog and no update is offered, however
+	// urgent the release marks itself: an installation that must not move is the
+	// operator's call, not the catalog's.
+	ChecksDisabled bool       `json:"checks_disabled"`
+	SnoozeUntil    *time.Time `json:"snooze_until,omitempty"`
+	Progress       *Progress  `json:"progress,omitempty"`
+	Result         *Result    `json:"result,omitempty"`
+	Applied        *Applied   `json:"applied,omitempty"`
 }
 
 /* -------------------------------------------------------------- reading --- */
@@ -193,9 +202,13 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	if t := meta.time(keyCheckedAt); t != nil {
 		st.CheckedAt = t
 	}
+	st.ChecksDisabled = meta.flag(keyChecksOff)
+	// The last release seen before the switch was turned off is still shown, so
+	// the screen can say what is being declined - but nothing is offered and
+	// nothing is mandatory while the operator has updates turned off.
 	if latest := meta.latest(); latest != nil {
 		st.Latest = latest
-		st.UpdateAvailable = compareVersions(s.release, latest.Version) < 0
+		st.UpdateAvailable = !st.ChecksDisabled && compareVersions(s.release, latest.Version) < 0
 		if st.UpdateAvailable {
 			st.Mandatory = latest.Mandatory ||
 				(latest.MinVersion != "" && compareVersions(s.release, latest.MinVersion) < 0)
@@ -264,6 +277,26 @@ func (s *Service) Snooze(ctx context.Context) error {
 		return ErrMandatory
 	}
 	return s.setRaw(ctx, keySnoozeUntil, quote(s.now().UTC().Add(snoozeWindow).Format(time.RFC3339)))
+}
+
+// SetChecksEnabled turns the operator's update switch on or off. Turning it off
+// stops the scheduled check, the manual button and any offer of a new release;
+// it does not touch a release already seen or an apply already queued.
+func (s *Service) SetChecksEnabled(ctx context.Context, enabled bool) error {
+	value := "true"
+	if enabled {
+		value = "false"
+	}
+	return s.setRaw(ctx, keyChecksOff, quote(value))
+}
+
+// ChecksEnabled reports whether update checking is currently allowed.
+func (s *Service) ChecksEnabled(ctx context.Context) (bool, error) {
+	meta, err := s.readAll(ctx)
+	if err != nil {
+		return false, err
+	}
+	return !meta.flag(keyChecksOff), nil
 }
 
 // Ack clears a finished (done/failed) apply back to idle. The UI calls it once
@@ -461,7 +494,8 @@ func (s *Service) RecordResult(ctx context.Context, in ResultInput) error {
 // endpoint every tick.
 func (s *Service) CheckDue(ctx context.Context) error {
 	err := s.check(ctx, false)
-	if errors.Is(err, ErrCheckTooSoon) || errors.Is(err, ErrNotConfigured) {
+	if errors.Is(err, ErrCheckTooSoon) || errors.Is(err, ErrNotConfigured) ||
+		errors.Is(err, ErrChecksDisabled) {
 		return nil // the worker's normal "nothing to do yet" outcome
 	}
 	return err
@@ -487,6 +521,12 @@ func (s *Service) check(ctx context.Context, manual bool) error {
 	meta, err := s.readAll(ctx)
 	if err != nil {
 		return err
+	}
+	// The operator's switch wins over both the schedule and the manual button,
+	// and it is checked before checked_at is touched so turning it back on does
+	// not start inside a cooldown the disabled period created.
+	if meta.flag(keyChecksOff) {
+		return ErrChecksDisabled
 	}
 	failures := meta.int(keyCheckFailures)
 	shift := failures
@@ -629,6 +669,10 @@ func (m metaMap) int(key string) int {
 	return n
 }
 
+// flag reads a stored boolean. Missing reads as false, which is what every
+// caller wants for a switch nobody has touched yet.
+func (m metaMap) flag(key string) bool { return m.text(key) == "true" }
+
 func (m metaMap) latest() *LatestInfo     { return jsonInto[LatestInfo](m[keyLatest]) }
 func (m metaMap) targetInfo() *LatestInfo { return jsonInto[LatestInfo](m[keyTargetInfo]) }
 func (m metaMap) progress() *Progress     { return jsonInto[Progress](m[keyProgress]) }
@@ -650,6 +694,7 @@ func (s *Service) readAll(ctx context.Context) (metaMap, error) {
 	keys := []string{
 		keyLatest, keyState, keyTarget, keyTargetInfo, keyProgress, keyResult,
 		keyApplied, keySnoozeUntil, keyCheckedAt, keyCheckFailures,
+		keyChecksOff,
 	}
 	rows, err := s.pool.Query(ctx,
 		`SELECT key, value::text FROM platform_metadata WHERE key = ANY($1)`, keys)

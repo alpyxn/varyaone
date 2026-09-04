@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -31,6 +32,7 @@ func mountSystemUpdateRoutes(router chi.Router, identityService *identity.Servic
 			r.Use(auth.requireCSRF)
 			r.Post("/check", handler.check)
 			r.Post("/apply", handler.apply)
+			r.Post("/checks", handler.setChecks)
 			r.Post("/snooze", handler.snooze)
 			r.Post("/ack", handler.ack)
 		})
@@ -86,6 +88,9 @@ func (h updateHandler) check(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, update.ErrNotConfigured):
 		writeError(w, r, http.StatusConflict, "UPDATE_NOT_CONFIGURED", "Bu kurulumda güncelleme kontrolü kapalı.")
 		return
+	case errors.Is(err, update.ErrChecksDisabled):
+		writeError(w, r, http.StatusConflict, "UPDATE_CHECKS_DISABLED", "Güncelleme kontrolü kapalı.")
+		return
 	case errors.Is(err, update.ErrCheckTooSoon):
 		w.Header().Set("Retry-After", "60")
 		writeError(w, r, http.StatusTooManyRequests, "UPDATE_CHECK_TOO_SOON", "Az önce kontrol edildi, biraz sonra tekrar deneyin.")
@@ -121,6 +126,25 @@ func (h updateHandler) snooze(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
+}
+
+// setChecks is the operator's own switch on the settings screen. An
+// installation that must not move - a demo, a frozen deployment, one behind a
+// change window - can turn update checking off entirely, and nothing contacts
+// the catalog or offers a release until it is turned back on.
+func (h updateHandler) setChecks(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil || body.Enabled == nil {
+		writeError(w, r, http.StatusBadRequest, "VALIDATION", "enabled alanı gereklidir.")
+		return
+	}
+	if err := h.service.SetChecksEnabled(r.Context(), *body.Enabled); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "INTERNAL", "Ayar kaydedilemedi.")
+		return
+	}
+	h.status(w, r)
 }
 
 func (h updateHandler) ack(w http.ResponseWriter, r *http.Request) {

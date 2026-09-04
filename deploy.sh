@@ -927,6 +927,7 @@ install_stack() {
 
   ensure_prereqs
   create_env
+  sync_release_env
 
   if interactive; then
     # Terminalde: adım adım sihirbaz.
@@ -975,6 +976,25 @@ show_status() {
   fi
 }
 
+# Calisan surumu git etiketinden turetip .env'e yazar.
+#
+# Bunu yapmazsak VARYAONE_RELEASE bos kalir ve sunucu kendini "dev" olarak
+# raporlar. Surum karsilastirmasi ayristirilamayan bir surumu EN ESKI sayar,
+# yani git clone ile kurulmus ve en yeni etiketin ONUNDE olan bir kurulum
+# kendisine surekli daha eski bir surume "guncelleme" teklif eder.
+#
+# `git describe` ciktisi (ornek: v0.1.7-alpha-1-gf106e8a) surum ayristiricisi
+# tarafindan 0.1.7 olarak okunur, dolayisiyla karsilastirma dogru calisir:
+# etiketle ayni noktadaysak guncelleme teklif edilmez, yeni etiket cikinca
+# edilir.
+sync_release_env() {
+  _rel=$(current_release)
+  case "$_rel" in
+    ""|unknown) return 0 ;;
+  esac
+  env_set VARYAONE_RELEASE "$_rel"
+}
+
 rebuild() {
   require_docker
   banner "Yeniden Derleme"
@@ -985,6 +1005,7 @@ rebuild() {
     *) echo "Bilinmeyen seçenek: $1" >&2; usage ;;
   esac
   [ -f .env ] || { echo ".env yok; önce ./deploy.sh install çalıştırın." >&2; exit 1; }
+  sync_release_env
   echo "  Görüntüler derleniyor${no_cache:+ (önbelleksiz)}..."
   compose build $no_cache
   echo "  Servisler yeniden başlatılıyor..."

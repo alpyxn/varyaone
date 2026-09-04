@@ -41,6 +41,8 @@ export type UpdateStatus = {
   update_available: boolean;
   mandatory: boolean;
   snoozed: boolean;
+  /** The operator turned update checking off on this screen. */
+  checks_disabled: boolean;
   snooze_until?: string;
   progress?: UpdateProgress;
   result?: UpdateResult;
@@ -78,6 +80,18 @@ export function getUpdateStatus(): Promise<UpdateStatus> {
  */
 export function checkForUpdates(): Promise<UpdateStatus> {
   return api<UpdateStatus>('/system/update/check', { method: 'POST', body: '{}' });
+}
+
+/**
+ * Turns update checking on or off for this installation. While it is off
+ * nothing contacts the catalog and no release is offered, so a deployment that
+ * must not move stays where it is.
+ */
+export function setUpdateChecks(enabled: boolean): Promise<UpdateStatus> {
+  return api<UpdateStatus>('/system/update/checks', {
+    method: 'POST',
+    body: JSON.stringify({ enabled })
+  });
 }
 
 export function applyUpdate(): Promise<{ ok: boolean }> {
