@@ -253,3 +253,32 @@ func TestCatalogDoc_NotesForChannelAndHistory(t *testing.T) {
 		t.Fatalf("notesFor(unknown) = %q, want empty", got)
 	}
 }
+
+// TestFetchCatalog_HostContentTypes pins the content types the two catalog
+// hosts in the shipped default actually send. GitHub serves a release asset as
+// application/octet-stream and raw.githubusercontent.com serves a .json file as
+// text/plain; a fetch that insists on "json" rejects both, which is what kept
+// every installation from ever seeing a published release.
+func TestFetchCatalog_HostContentTypes(t *testing.T) {
+	body := `{"schema_version": 1, "channels": {"stable": {"version": "v1.5.0"}}}`
+	for _, contentType := range []string{
+		"application/octet-stream",  // github.com/.../releases/latest/download/
+		"text/plain; charset=utf-8", // raw.githubusercontent.com
+		"application/json",          // a host that labels it correctly
+		"",                          // no header at all
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if contentType != "" {
+				w.Header().Set("content-type", contentType)
+			}
+			_, _ = w.Write([]byte(body))
+		}))
+		doc, err := fetchCatalog(context.Background(), srv.Client(), []string{srv.URL}, "test")
+		if err != nil {
+			t.Errorf("content-type %q: %v", contentType, err)
+		} else if doc.Channels["stable"].Version != "v1.5.0" {
+			t.Errorf("content-type %q: got version %q", contentType, doc.Channels["stable"].Version)
+		}
+		srv.Close()
+	}
+}

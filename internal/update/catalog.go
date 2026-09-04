@@ -159,7 +159,15 @@ func fetchCatalogFrom(ctx context.Context, client *http.Client, catalogURL, user
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("catalog %s returned %s", catalogURL, resp.Status)
 	}
-	if ct := resp.Header.Get("content-type"); ct != "" && !strings.Contains(ct, "json") {
+	// Only HTML is refused up front. Neither host that actually serves this
+	// catalog labels it as JSON — a release asset comes back as
+	// application/octet-stream and raw.githubusercontent.com as text/plain —
+	// so demanding "json" here rejected every real catalog and no installation
+	// ever saw a release. HTML is still worth refusing early: a captive portal
+	// or a GitHub error page is the one body whose parse error would otherwise
+	// be reported as a malformed catalog. Everything else is settled by the
+	// strict JSON decode below, which is the real gate.
+	if ct := resp.Header.Get("content-type"); strings.Contains(strings.ToLower(ct), "text/html") {
 		return nil, fmt.Errorf("catalog %s returned content-type %q", catalogURL, ct)
 	}
 
