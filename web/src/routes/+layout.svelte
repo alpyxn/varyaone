@@ -80,7 +80,6 @@
 
 <svelte:head>
   <title>Varya One</title>
-  <meta name="description" content="Modern işletmeler için açık kaynak ön muhasebe ve ERP" />
 </svelte:head>
 
 {#if checking}
