@@ -5,7 +5,7 @@
   <img src="assets/logo-light.svg" alt="Varya One" width="300">
 </picture>
 
-### Türkiye için. Açık kaynak. Tamamen ücretsiz.
+### Açık kaynak. Tamamen ücretsiz.
 
 </div>
 
@@ -136,4 +136,4 @@ aralıklarla manuel yedek indirmeniz ve bu dosyaları farklı bir cihazda saklam
 
 ## Lisans
 
-Varya One, [GNU AGPL‑3.0](LICENSE) lisansıyla yayımlanır.
+[GNU AGPL-3.0](LICENSE)
