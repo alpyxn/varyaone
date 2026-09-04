@@ -1,0 +1,88 @@
+STOK KARTINDA ALIŞ / SATIŞ VERGİ AYRIMI
+=======================================
+
+DURUM
+-----
+Veritabanı ve sunucu zaten yön bazlı:
+  - product_tax_profiles(direction = PURCHASE | SALES)
+  - product_tax_profile_components(direction)
+  - commerce.ResolveLineDefaults / AdditionalComponents yönü parametre alıyor
+  - GET /products satırları purchase_tax_components ve sales_tax_components'i ayrı döndürüyor
+
+Ayrımı yapmayan tek yer stok kartı formu:
+  web/src/lib/features/products/ProductForm.svelte -> writeSharedTaxes()
+  aynı KDV oranını ve aynı ek vergi listesini iki yöne birden yazıyor.
+
+Ayrıca formda "fiyat vergi dahil" (tax_included) için hiçbir kontrol yok; alan yalnızca
+içe aktarım tarafından yazılabiliyor. Sunucu bu bayrağı artık karttan otoriter okuyor
+(internal/sales/commercial.go resolveCommercialLineDefaults, internal/purchasing/pricing.go),
+yani kullanıcı KDV dahil çalışan bir kartı arayüzden tanımlayamıyor.
+
+NEDEN AYIRIYORUZ
+----------------
+KDV oranı          : yön farkı yok, mala bağlı            -> ORTAK KALSIN
+Fiyata dahil       : tedarikçi dahil verir, biz hariç satarız -> AYRI
+ÖTV                : bayi/perakendeci alışta gömülü alır, satışta hesaplamaz;
+                     ithalatçı/üretici tam tersi           -> AYRI
+Tevkifat           : satışta kesilir, aynı malın alışında olmayabilir -> AYRI (2. adım)
+İstisna / muafiyet : ihracat istisnası satışta, alışta değil -> AYRI (2. adım)
+
+Risk: bugün kart ÖTV'yi iki yöne de yazdığı için bayi senaryosunda satış faturasına
+olmaması gereken bir ÖTV çıkar. Hesaplama artık gerçekten çalıştığı için bu görünür.
+
+ADIM 1 - EK VERGİLERDE YÖN AYRIMI (ana iş)
+------------------------------------------
+Dosya: web/src/lib/features/products/ProductForm.svelte
+
+1. Durum: `let taxLinked = $state(true)` - "Alış ve satışta aynı" onay kutusu.
+   Kart açılışında başlangıç değeri veriden gelsin: alış ve satış bileşen listeleri
+   (kod + oran + hesaplama türü + matraha dahil) birebir aynıysa true, değilse false.
+2. sharedComponents() / sharedProfile() yerine yön alan yardımcılar:
+   componentsFor(side), writeComponents(side, components).
+3. writeSharedTaxes(): taxLinked ise iki yöne, değilse yalnızca ilgili yöne yazsın.
+   KDV oranı (updateVatRate) her hâlükârda iki yöne yazılmaya devam etsin.
+4. Onay kutusu işaretlenirken: satış listesi alışa kopyalansın (tek kaynak seçimi),
+   kaldırılırken: mevcut liste iki yöne de kopyalanıp bağımsız düzenlenebilir olsun.
+5. Markup: bağlıyken bugünkü tek liste; bağlı değilken "Alışta" / "Satışta" başlıklı
+   iki liste (aynı satır bileşeni, aynı butonlar). Yeni bilgilendirme metni YOK.
+6. Fiyat önizlemesi (inclusivePrice / additionalTaxTotals) artık yön parametresi alsın;
+   alış fiyatı önizlemesi alış bileşenlerini, satış fiyatı satış bileşenlerini kullansın.
+   (Bugün additionalTaxTotals parametresiz ve tek liste üzerinden çalışıyor.)
+
+ADIM 2 - "FİYAT VERGİ DAHİL" KUTUSU
+-----------------------------------
+1. ProductForm'da alış fiyatı alanının yanına "Fiyat KDV dahil", satış fiyatı alanının
+   yanına aynısı -> value.purchase_tax_included / sales_tax_included ve ilgili profilin
+   tax_included alanına yazsın (writeProfile bu alanı bugün hiç set etmiyor, eklenecek).
+2. Fiyat başlıkları koşullu olsun: "Satış fiyatı (TRY, vergiler hariç)" yerine dahilse
+   "(vergiler dahil)". Etiket dışında açıklama metni yok.
+3. Fiyat önizlemesi: dahil işaretliyse girilen fiyatın kendisi gösterilsin, tekrar
+   vergi eklenmesin (net_price sunucu tarafında zaten böyle davranıyor,
+   internal/products/service.go sales_tax_summary CASE bloğu).
+4. Test: web/src/lib/features/products/types.test.ts'e normalizeProductInput'un
+   tax_included'ı iki profile de doğru taşıdığına dair vaka.
+
+ADIM 3 - DOĞRULAMA
+------------------
+- npx svelte-check --threshold error   (0 hata)
+- npx vitest run src/lib/features/products
+- Elle: bayi senaryosu -> alışta ÖTV %10, satışta ek vergi yok; satış faturasında
+  yalnız KDV, alış faturasında ÖTV + KDV çıkmalı.
+- Elle: KDV dahil alış kartı -> 132 TL birim fiyat, %20 KDV, ÖTV %10 matraha dahil
+  girildiğinde alış faturası matrahı 100 TL olmalı.
+
+SONRAYA BIRAKILAN
+-----------------
+- Tevkifat ve istisna/muafiyet alanlarının kartta yön bazlı düzenlenmesi.
+  Profil şemasında alanlar var (withholding_rule_id, exemption_id, tax_note) ama
+  ProductForm bunları hiç göstermiyor; ayrı bir iş olarak ele alınacak.
+- Alış tevkifatının fatura ekranında önizlenmesi (sunucu artık hesaplıyor:
+  internal/purchasing/pricing.go, ama editör toplamlarında tevkifat satırı yok -
+  satış tarafında da yok, ikisi birlikte yapılmalı).
+
+NOTLAR
+------
+- Sunucu tarafında yapılacak bir şey yok; bu iş tamamen ProductForm + testleri.
+- Kart iki yönü ayırdığında liste uç noktası zaten ayrı bileşen dizileri döndürdüğü
+  için fatura ekranı otomatik olarak doğru yönün vergilerini gösterir
+  (CommercialDetailPage.svelte, isSales ? sales_tax_components : purchase_tax_components).
