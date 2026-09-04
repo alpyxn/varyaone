@@ -31,7 +31,12 @@ x-backend-environment: &backend-environment
   # (bkz. internal/update/catalog.go). Pulse'tan bagimsizdir — anahtar/rate
   # limit gerekmez, pulse kapali olsa da calisir. Virgulle birden fazla kaynak
   # verilebilir (sirayla denenir); bos birakilirsa guncelleme kontrolu kapanir.
-  VARYAONE_UPDATE_CATALOG_URL: ${VARYAONE_UPDATE_CATALOG_URL:-https://github.com/alpyxn/varyaone/releases/latest/download/latest.json,https://raw.githubusercontent.com/alpyxn/varyaone/main/release/latest.json}
+  # Kendi kendine guncelleme VARSAYILAN KAPALI. Bos birakildiginda ne uc
+  # noktalari mount edilir, ne zamanlanmis kontrol calisir, ne de ayarlarda
+  # bir Guncelleme sayfasi cikar. Acmak icin bu degeri katalog adresleriyle
+  # doldurun:
+  #   https://github.com/alpyxn/varyaone/releases/latest/download/latest.json,https://raw.githubusercontent.com/alpyxn/varyaone/main/release/latest.json
+  VARYAONE_UPDATE_CATALOG_URL: ${VARYAONE_UPDATE_CATALOG_URL:-}
   # Kataloğun windows_artifact_url alaninin kabul edilecegi tek konum; farkli
   # bir depoya isaret eden bir alan sessizce dusurulur (bkz. catalog.go).
   VARYAONE_UPDATE_ARTIFACT_PREFIX: ${VARYAONE_UPDATE_ARTIFACT_PREFIX:-https://github.com/alpyxn/varyaone/releases/download/}

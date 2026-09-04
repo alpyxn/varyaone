@@ -1604,6 +1604,14 @@ uninstall_agent() {
 # Kurulumun son adimi: systemd varsa guncelleme agent'ini sessizce kur.
 # Basarisiz olursa kurulumu bozmaz; sadece uyarir.
 post_install_agent() {
+  # Kendi kendine guncelleme varsayilan kapali: katalog adresi bos ise sunucu
+  # guncelleme uclarini hic mount etmez, dolayisiyla ajan da yoklayacak bir sey
+  # bulamaz ve loglari 404/500 ile doldurur. Acmak isteyen once
+  # VARYAONE_UPDATE_CATALOG_URL'i doldurur, sonra `./deploy.sh install-agent`.
+  if [ -z "$(env_get VARYAONE_UPDATE_CATALOG_URL)" ]; then
+    echo "  Not: güncelleme kapalı — otomatik güncelleme aracı kurulmadı."
+    return 0
+  fi
   have systemctl || { echo "  Not: systemd yok — otomatik güncelleme aracı atlandı."; return 0; }
   if ! elevate 2>/dev/null; then
     echo "  Not: otomatik güncelleme aracı için yetki yok. Sonra: sudo ./deploy.sh install-agent"

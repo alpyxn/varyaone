@@ -210,7 +210,6 @@ export const navigation: NavigationGroup[] = [
       },
       { label: 'Güvenlik', href: '/ayarlar/guvenlik' },
       { label: 'Yedekleme', href: '/ayarlar/yedekleme', permission: 'system.backup.manage' },
-      { label: 'Güncelleme', href: '/ayarlar/guncelleme', permission: 'system.update.manage' },
       { label: 'Sistem Durumu', href: '/sistem-durumu' }
     ]
   }

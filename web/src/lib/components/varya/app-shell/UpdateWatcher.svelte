@@ -23,16 +23,31 @@
   const completed = $derived(
     status?.state === 'done' && status?.applied?.version === status?.current_version
   );
+  // Self-update is opt-in. On an installation that has it turned off the
+  // endpoints are not mounted at all, so the first poll 404s: stop there rather
+  // than asking again every minute for something that will never exist.
+  let unavailable = $state(false);
+
   const failed = $derived(status?.state === 'failed' && !failedDismissed);
   const showBanner = $derived(
-    !!status?.update_available && !status?.snoozed && !applying && !completed && !failed
+    !unavailable &&
+      !!status?.update_available &&
+      !status?.snoozed &&
+      !applying &&
+      !completed &&
+      !failed
   );
 
   async function poll() {
     try {
       status = await getUpdateStatus();
       if (status?.state !== 'failed') failedDismissed = false;
-    } catch {
+    } catch (cause) {
+      if (cause instanceof Error && /404/.test(cause.message)) {
+        unavailable = true;
+        if (timer) clearInterval(timer);
+        return;
+      }
       // API may be briefly unreachable during the restart phase — hold the last
       // state (the overlay stays up) rather than flashing it away.
     }
