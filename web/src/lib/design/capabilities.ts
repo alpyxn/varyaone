@@ -422,12 +422,7 @@ export const CAPABILITY_DOMAINS: CapabilityDomain[] = [
         key: 'full',
         label: 'Sistem yöneticisi',
         phrase: 'modülleri, API anahtarlarını ve yedeklemeyi yönetir',
-        grants: [
-          'organization.module.manage',
-          'security.token.manage',
-          'system.backup.manage',
-          'system.update.manage'
-        ]
+        grants: ['organization.module.manage', 'security.token.manage', 'system.backup.manage']
       }
     ]
   }
@@ -839,8 +834,7 @@ export const PERMISSION_LABELS: Record<string, string> = {
   'settings.email.test': 'E-posta ayarı test etme',
   'communication.email.send': 'E-posta gönderme',
   'communication.email.template.manage': 'E-posta şablonu yönetimi',
-  'system.backup.manage': 'Sistem yedekleme yönetimi',
-  'system.update.manage': 'Sistem güncelleme yönetimi'
+  'system.backup.manage': 'Sistem yedekleme yönetimi'
 };
 
 export function permissionLabel(code: string): string {

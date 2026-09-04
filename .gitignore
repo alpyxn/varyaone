@@ -10,7 +10,6 @@ CLAUDE.md
 versionchanges.md
 bin/
 deploy/.lock-*
-deploy/.update-rollback
 deploy/.deploy-self.*
 build/
 /dist/

@@ -146,7 +146,6 @@ var demoRules = []struct {
 	{"PUT", "/api/v1/settings/email"},
 	{"POST", "/api/v1/email/send"},
 	{"POST", "/api/v1/exchange-rates/refresh"},
-	{"POST", "/api/v1/system/update"},
 }
 
 // demoGuard refuses the operations above and answers "being rebuilt" while a

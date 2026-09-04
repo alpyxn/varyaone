@@ -50,8 +50,3 @@ func (t teeWriter) Write(p []byte) (int, error) {
 func NewStackLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(logWriter(DiscoverLayout(), "stack.log"), nil))
 }
-
-// NewUpdateLogger builds the JSON logger `varyaone update-apply` runs with.
-func NewUpdateLogger() *slog.Logger {
-	return slog.New(slog.NewJSONHandler(logWriter(DiscoverLayout(), "update.log"), nil))
-}

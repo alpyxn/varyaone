@@ -11,10 +11,7 @@ istemci uygulamasından erişir. Docker gerekmez.
 | Windows Service entegrasyonu (`varyaone service …`, `varyaone stack`) | `internal/platform/desktop` | ✅ hazır |
 | Gömülü PostgreSQL yönetimi (`initdb`/`pg_ctl`) | `internal/platform/desktop/postgres.go` | ✅ hazır (pgsql/ paketlenmeli) |
 | mDNS yayını (`_varyaone._tcp`) | `internal/platform/desktop/mdns.go` | ✅ hazır |
-| Windows updater (`varyaone update-apply`) | `internal/platform/desktop/updater.go` | ✅ hazır (uçtan uca test bekliyor) |
-| Updater tetikleyici (Linux systemd ajanı yerine) | `supervisor.go` `runUpdateApplier` + `spawn_windows.go` | ✅ hazır (uçtan uca test bekliyor) |
 | Pulse yapılandırması (kurulum sayacı + geri bildirim) | `settings.go` + `supervisor.go` `config()` | ✅ resmi uç varsayılan, `settings.env` ile geçersiz kılınır — kullanım telemetrisi yok |
-| Güncelleme kataloğu (masaüstü varsayılanı) | `settings.go` + `internal/update/catalog.go` | ✅ resmi GitHub Releases kataloğu varsayılan, pulse'tan bağımsız (bkz. "Updater akışı") |
 | VC++ çalışma zamanı (gömülü PG için şart) | `fetch-tools.ps1` indirir, `installer.iss` `[Code]` sessiz kurar | ✅ yoksa `initdb` `0xC0000135` verir |
 | WebView2 runtime (istemci için şart) | `fetch-tools.ps1` tam x64 Evergreen standalone paketi indirir, installer çevrimdışı kurar | ✅ internet gerektirmez |
 | WebP codec | saf Go codec; Windows binary `CGO_ENABLED=0` kalabilir | ✅ başlangıçta native DLL gerektirmez |
@@ -22,7 +19,7 @@ istemci uygulamasından erişir. Docker gerekmez.
 | Port çakışması ön kontrolü | `supervisor.go` `checkHTTPPortFree` | ✅ "8080 kullanımda" net mesajı |
 | Kod imzalama (SmartScreen) | `installer.iss` SignTool iskeleti | ⏳ sertifika gerek (bkz. aşağı) |
 | SPA static build (`VARYAONE_ADAPTER=static`) | `web/svelte.config.js` | ✅ hazır |
-| Windows artefakt alanları (`latest.json`) | `.github/workflows/desktop-windows.yml` + `release/channel.json` | ✅ hazır — her tag'de otomatik üretilip release'e eklenir |
+| Windows artefaktları (zip + `setup.exe` + sha256) | `.github/workflows/desktop-windows.yml` | ✅ hazır — her tag'de otomatik derlenip release'e eklenir |
 | Ağ modu (`varyaone netmode <local\|lan>`) | `internal/platform/desktop/netmode.go` | ✅ hazır |
 | İstemci + kontrol paneli (WebView2, `--panel`) | `cmd/varyaone-client` | ✅ hazır (uçtan uca test bekliyor) |
 | Inno Setup installer (sihirbaz + servis kaydı + kaldırıcı) | `deploy/windows/installer.iss` | ✅ hazır |
@@ -66,14 +63,12 @@ pwsh deploy/windows/fetch-tools.ps1
 #    Inno Setup: `choco install innosetup` veya https://jrsoftware.org/isdl.php
 deploy/windows/build-bundle.sh v0.3.0
 #    -> dist/windows/VaryaOne-Setup-0.3.0.exe   (çift tıkla kurulum sihirbazı)
-#    -> dist/windows/varyaone-v0.3.0-windows-amd64.zip  (updater artefaktı)
+#    -> dist/windows/varyaone-v0.3.0-windows-amd64.zip  (dağıtım arşivi)
 ```
 
 Elle akışta 3. adım yoktur: `.github/workflows/desktop-windows.yml` bir `v*`
-tag'i push'landığında `dist/windows/latest.json`'ı otomatik üretip release'e
-ekler ve release'i draft olarak açıp her asset yüklendikten sonra yayınlar
-(bkz. "Updater akışı"). Yerelde elle release açıyorsan `latest.json`'ı da aynı
-şemayla ekle — bkz. `internal/update/catalog.go` (`catalogDoc`).
+tag'i push'landığında paketleri derler, release'i draft olarak açar ve her
+asset yüklendikten sonra yayınlar.
 
 `pgsql/` yoksa betik eksik bir zip üretmez, hata ile durur. CI,
 `VARYAONE_REQUIRE_INSTALLER=1` kullandığı için Inno Setup veya installer
@@ -126,71 +121,20 @@ Tek `varyaone-client.exe` (WebView2 penceresi, saf Go — `jchv/go-webview2`):
   ile gömülür (`go-winres make`; `.syso` commit'li, build sırasında varsa
   tazelenir). WebView2 Runtime gerekir (Win10 21H2+/Win11'de hazır).
 
-## Updater akışı (web ile aynı durum makinesi)
+## Güncelleme
 
-`internal/update` durum makinesi ve `/internal/update/*` uçları değişmedi. Fark
-yalnızca taşıyıcıda ve kaynakta:
+Varya One kendi kendini güncellemez. Yeni sürüm, GitHub Release'teki kurulum
+sihirbazı (`setup.exe`) çalıştırılarak kurulur; kurulum mevcut veriyi ve
+ayarları yerinde bırakır.
 
-Güncelleme kontrolü **pulse'tan bağımsızdır** — `internal/update` sürüm
-kataloğunu `varya-pulse` Cloudflare Worker'ından değil, doğrudan her GitHub
-Release'e eklenen genel `latest.json` asset'inden okur
-(`https://github.com/alpyxn/varyaone/releases/latest/download/latest.json`,
-`internal/update/catalog.go`). Ne bir anahtar ne de rate limit gerekir; pulse
-ucu tamamen boşaltılsa bile güncelleme kontrolü çalışmaya devam eder. Kendi
-kataloğunu kullanmak için
-`%ProgramData%\VaryaOne\settings.env`:
+Sunucu (Linux/compose) tarafında karşılığı:
 
 ```
-VARYAONE_UPDATE_CATALOG_URL=https://ornek.com/latest.json
-# birden fazla kaynak virgülle ayrılır, sırayla denenir:
-# VARYAONE_UPDATE_CATALOG_URL=https://a.com/latest.json,https://b.com/latest.json
-# fork/self-host senaryosunda artefakt indirme adresini de sınırla:
-# VARYAONE_UPDATE_ARTIFACT_PREFIX=https://github.com/kendi-hesabin/varyaone/releases/download/
+git pull && ./deploy.sh rebuild
 ```
 
-**Kill switch:** bozuk bir sürüm çıkarsa, aynı release'e düzeltilmiş bir
-`latest.json` yükle — ya `stable.version`'ı önceki sağlam sürüme çevir, ya da
-bozuk sürümü `"yanked": ["v0.3.0"]` listesine ekle (sıraya alınmış ama henüz
-başlamamış apply'ları iptal eder). Tag/indirme linklerine dokunmana gerek yok.
-
-Pulse toplayıcısı (yalnızca kurulum sayacı + kullanıcının gönderdiği geri
-bildirim; güncellemeyle ilgisiz, **kullanım telemetrisi toplanmaz**)
-**varsayılan olarak** resmi uç + paylaşımlı anahtara ayarlıdır (compose.yaml
-ile aynı). Kendi toplayıcını kullanmak için aynı `settings.env`:
-
-```
-VARYAONE_PULSE_ENDPOINT=https://kendi-worker.example.workers.dev
-VARYAONE_PULSE_INGEST_KEY=kendi-anahtarin
-# kurulum ping'ini kapatmak istersen:
-# VARYAONE_PULSE_INSTALL_PING=false
-```
-
-| Web (Linux) | Windows masaüstü |
-|---|---|
-| `deploy/varyaone-update-agent.sh` (systemd) `/internal/update/next` yoklar | `varyaone stack` içindeki döngü (`runUpdateApplier`, 2 dk) DB'den kuyruğu okur → `varyaone update-apply --target <v>`'yi **ayrık süreç** olarak başlatır (servisi durdurup yeniden başlatacağı için çocuk süreç olamaz) |
-| `deploy.sh update`: git checkout + `docker compose build` | zip indir + SHA-256 doğrula + dosya değiştir |
-| PG majör: yeni imajın sürümlü PGDATA'sına initdb + `.varya` restore (eski dizin volume'de kalır) | eski `pgdata` arşivle + yeni majör initdb + `.varya` restore |
-| rollback: `git checkout <prev>` + `backup restore` | `Home\rollback\` geri kopyala + `backup restore` |
-
-Fazlar aynı: `preflight → backup → download → stop → swap → [pg-upgrade] →
-migrate → restart → healthcheck` (hata → `rollback`).
-
-Operatör güncellemeyi kuyruğa aldığı anda hedef sürümün Windows artefakt URL'si
-ve SHA-256 değeri sabitlenir. Katalog daha yeni bir sürüme ilerlese bile çalışan
-iş yanlış zip'e kaymaz. Rollback hem uygulama exe'lerini hem `pgsql/`
-binary'lerini geri getirir; sağlık kontrolü geçmezse “geri alındı” raporlanmaz.
-
-### PostgreSQL majör yükseltmesi (`pg-upgrade` fazı)
-
-Yeni zip'teki `pgsql/` binary'leri veri dizininden (`Home\pgdata\PG_VERSION`) daha
-yeni bir majörse (örn. 18 → 19), cluster o veri dizinine karşı açılamaz. Updater
-`swap`'tan sonra şunu yapar: eski `pgdata`'yı kenara al (`pgdata.pg18-<ts>`) →
-yeni majörde `initdb` → `swap` öncesi alınan `.varya` dökümünü içine geri yükle →
-`migrate`. Herhangi bir hata: yeni `pgdata` silinir, arşivlenen eski cluster
-(tam pre-update hali) geri konur, eski binary'ler `Home\rollback\`'ten döner.
-
-Tetikleyici, çalışan binary'ler ile veri dizininin majör karşılaştırmasıdır;
-`latest.json`'daki `pg_major` alanı yalnızca bilgilendirme içindir.
+Her iki tarafta da önce yedek almak iyi olur (`./deploy.sh backup`, ya da
+Windows'ta Ayarlar → Yedekleme).
 
 ## Kod imzalama (SmartScreen / Defender)
 

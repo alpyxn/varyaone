@@ -83579,7 +83579,6 @@ INSERT INTO permissions VALUES
 	('hr.employee_advance.reverse', 'Personel avansı hareketini ters kaydetme'),
 	('system.backup.manage', 'Sistem yedeği alma ve geri yükleme'),
 	('organization.module.manage', 'Modülleri etkinleştir veya devre dışı bırak'),
-	('system.update.manage', 'Uygulama güncellemesini görüntüleme ve başlatma'),
 	('hr.payroll.pay', 'Bordro ödemesi oluşturma ve geri alma');
 
 --

@@ -972,27 +972,6 @@ rebuild() {
   echo "  Yeniden derleme tamamlandı."
 }
 
-# ===========================================================================
-#  Guncelleme (bulletproof): on kontrol -> yedek -> derle -> migrate ->
-#  yeniden baslat -> saglik; herhangi bir asamada hata -> otomatik geri alma.
-# ===========================================================================
-
-UPD_LOG=""
-UPD_REPORT=0
-UPD_SELF_URL=""
-UPD_TOKEN=""
-UPD_PREV_COMMIT=""
-UPD_PREV_RELEASE=""
-UPD_NEW_RELEASE=""
-UPD_TARGET_VERSION=""
-UPD_PRE_BACKUP=""
-UPD_MIGRATED=0
-UPD_FROM_VERSION=""
-UPD_PRE_MIGRATE_VERSION=""
-UPD_ROLLING_BACK=0
-UPD_PG_UPGRADED=0
-UPD_PG_FROM_MAJOR=""
-
 current_release() {
   git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "unknown"
 }
@@ -1043,7 +1022,7 @@ verify_backup_file() {
   _first=$(tar -tf "$_f" 2>/dev/null | head -n1)
   [ "$_first" = "manifest.json" ] || { echo "geçersiz .varya arşivi (ilk giriş: ${_first:-yok})" >&2; return 1; }
   if compose ps --status running api 2>/dev/null | grep -q api; then
-    compose exec -T api varyaone backup verify - < "$_f" >>"${UPD_LOG:-/dev/null}" 2>&1 \
+    compose exec -T api varyaone backup verify - < "$_f" >/dev/null 2>&1 \
       || { echo "yedek sağlama doğrulaması başarısız: $_f" >&2; return 1; }
   fi
   return 0
@@ -1171,8 +1150,7 @@ doctor() {
   fi
 
   check "Çalışan sürüm"
-  _rel=$(env_get VARYAONE_RELEASE); _git=$(current_release)
-  pass "${_rel:-?} (git: ${_git})"
+  pass "$(current_release)"
 
   check "Yedek dizini"
   if [ -d "$project_dir/backups" ]; then
@@ -1314,7 +1292,7 @@ uninstall() {
   echo "    • Tüm Varya One konteynerleri ve ağları"
   echo "    • Docker volume'leri — PostgreSQL veritabanı ve yüklenen dosyalar DAHİL"
   echo "    • Derlenen image'lar (varyaone-*) + çekilen nginx/certbot/postgres image'ları"
-  echo "    • Üretilen .env (+ geçici kopyaları), nginx yapılandırması, kilitler, güncelleme günlükleri"
+  echo "    • Üretilen .env (+ geçici kopyaları), nginx yapılandırması, kilitler"
   [ "$keep_backups" = 1 ] || echo "    • backups/ dizini (tüm .varya yedekleri)"
   [ "$purge" = 1 ] && echo "    • proje dizininin kendisi: $project_dir"
   echo
@@ -1353,22 +1331,17 @@ uninstall() {
     echo "  Docker erişilemiyor — konteyner/volume temizliği atlanıyor (dosyalar yine silinecek)." >&2
   fi
 
-  # 2) systemd güncelleme aracı.
-
-  # 3) Üretilen dosyalar.
+  # 2) Üretilen dosyalar.
   echo "  Üretilen dosyalar siliniyor..."
   # .env ve yarıda kalmış geçici kopyaları (env_set `.env.tmp.XXXXXX` üretir;
   # bunlar şifreleme anahtarını içerebilir — mutlaka temizle).
   rm -f "$project_dir/.env" "$project_dir/.env.tmp" "$project_dir/.env.partial"
   rm -f "$project_dir"/.env.tmp.*
   rm -f "$NGINX_CONF_DIR"/*.conf
-  rm -f "$project_dir/deploy/.update-rollback"
-  rm -f "$project_dir"/deploy/update-*.log
-  rm -f "$project_dir"/deploy/.deploy-self.*
   rm -rf "$project_dir"/deploy/.lock-*
   [ "$keep_backups" = 1 ] || rm -rf "$project_dir/backups"
 
-  # 4) Proje dizininin kendisi (isteğe bağlı, hiçbir iz bırakmaz).
+  # 3) Proje dizininin kendisi (isteğe bağlı, hiçbir iz bırakmaz).
   if [ "$purge" = 1 ]; then
     echo "  Proje dizini siliniyor: $project_dir"
     echo
