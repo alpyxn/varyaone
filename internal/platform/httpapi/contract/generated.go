@@ -291,8 +291,8 @@ const (
 
 // Defines values for OpenItemSide.
 const (
-	PAYABLE    OpenItemSide = "PAYABLE"
-	RECEIVABLE OpenItemSide = "RECEIVABLE"
+	OpenItemSidePAYABLE    OpenItemSide = "PAYABLE"
+	OpenItemSideRECEIVABLE OpenItemSide = "RECEIVABLE"
 )
 
 // Defines values for PartyKind.
@@ -306,6 +306,12 @@ const (
 	PartyRiskPolicyALLOW PartyRiskPolicy = "ALLOW"
 	PartyRiskPolicyBLOCK PartyRiskPolicy = "BLOCK"
 	PartyRiskPolicyWARN  PartyRiskPolicy = "WARN"
+)
+
+// Defines values for PartyAgingRowSide.
+const (
+	PartyAgingRowSidePAYABLE    PartyAgingRowSide = "PAYABLE"
+	PartyAgingRowSideRECEIVABLE PartyAgingRowSide = "RECEIVABLE"
 )
 
 // Defines values for PartyCustomFieldFieldType.
@@ -1591,6 +1597,45 @@ type PartyAddress struct {
 	ProvinceId   *int64  `json:"province_id"`
 	ProvinceName *string `json:"province_name,omitempty"`
 }
+
+// PartyAgingReport defines model for PartyAgingReport.
+type PartyAgingReport struct {
+	AsOf  openapi_types.Date `json:"as_of"`
+	Items []PartyAgingRow    `json:"items"`
+}
+
+// PartyAgingRow defines model for PartyAgingRow.
+type PartyAgingRow struct {
+	Currency string `json:"currency"`
+
+	// Days030 Exact base-10 decimal; never an IEEE-754 number.
+	Days030 Decimal `json:"days_0_30"`
+
+	// Days3160 Exact base-10 decimal; never an IEEE-754 number.
+	Days3160 Decimal `json:"days_31_60"`
+
+	// Days6190 Exact base-10 decimal; never an IEEE-754 number.
+	Days6190 Decimal `json:"days_61_90"`
+
+	// Days90Plus Exact base-10 decimal; never an IEEE-754 number.
+	Days90Plus Decimal `json:"days_90_plus"`
+
+	// NotDue Exact base-10 decimal; never an IEEE-754 number.
+	NotDue Decimal `json:"not_due"`
+
+	// OverdueTotal Exact base-10 decimal; never an IEEE-754 number.
+	OverdueTotal Decimal            `json:"overdue_total"`
+	PartyCode    string             `json:"party_code"`
+	PartyId      openapi_types.UUID `json:"party_id"`
+	PartyName    string             `json:"party_name"`
+	Side         PartyAgingRowSide  `json:"side"`
+
+	// Total Exact base-10 decimal; never an IEEE-754 number.
+	Total Decimal `json:"total"`
+}
+
+// PartyAgingRowSide defines model for PartyAgingRow.Side.
+type PartyAgingRowSide string
 
 // PartyBalance defines model for PartyBalance.
 type PartyBalance struct {
