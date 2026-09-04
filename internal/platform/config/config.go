@@ -46,24 +46,6 @@ type Config struct {
 	// thing the collector is told about this instance besides user-submitted
 	// feedback: there is no usage telemetry.
 	PulseInstallPing bool
-	// UpdateAgentToken authenticates the host-side systemd update agent against
-	// the /internal/update/* endpoints. Empty disables those endpoints
-	// entirely (the UI-facing /api/v1/system/update routes stay available).
-	UpdateAgentToken string
-	// UpdateCatalogURLs are the release-catalog documents (latest.json) the
-	// updater polls, tried in order until one parses. They are plain public
-	// https objects — no key, no rate limit — so update checks are independent
-	// of pulse. Empty disables update checking entirely; like PulseEndpoint,
-	// there is no built-in default here — the desktop supervisor and
-	// compose.yaml supply one, same as they do for PulseEndpoint.
-	UpdateCatalogURLs []string
-	// UpdateArtifactPrefix pins where a release artifact may be downloaded
-	// from. A catalog entry whose artifact URL does not start with this prefix
-	// has its artifact fields dropped, so a tampered catalog cannot point the
-	// updater at a fork or a third-party host. Empty disables the check (any
-	// https URL accepted) — only meaningful together with a non-default
-	// UpdateCatalogURLs pointed at a fork/self-host.
-	UpdateArtifactPrefix string
 	// DemoMode turns this installation into the public showcase deployment: the
 	// demo endpoints are mounted, the demo company may be seeded and purged, and
 	// the outward-facing operations are refused. It defaults to false and must
@@ -84,10 +66,6 @@ type Config struct {
 // DemoConfigured reports whether this process is running as the demo
 // deployment.
 func (c Config) DemoConfigured() bool { return c.DemoMode }
-
-// UpdateConfigured reports whether a release catalog is available, i.e. whether
-// update checks can run.
-func (c Config) UpdateConfigured() bool { return len(c.UpdateCatalogURLs) > 0 }
 
 // PulseConfigured reports whether a collector endpoint + ingest key are set,
 // i.e. whether the install ping and user feedback can reach anything.
@@ -152,9 +130,6 @@ func Load(getenv Getenv) (Config, error) {
 		PulseEndpoint:           strings.TrimRight(strings.TrimSpace(getenv("VARYAONE_PULSE_ENDPOINT")), "/"),
 		PulseIngestKey:          strings.TrimSpace(getenv("VARYAONE_PULSE_INGEST_KEY")),
 		PulseInstallPing:        !strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_PULSE_INSTALL_PING")), "false"),
-		UpdateAgentToken:        strings.TrimSpace(getenv("VARYAONE_UPDATE_AGENT_TOKEN")),
-		UpdateCatalogURLs:       splitList(getenv("VARYAONE_UPDATE_CATALOG_URL")),
-		UpdateArtifactPrefix:    strings.TrimSpace(getenv("VARYAONE_UPDATE_ARTIFACT_PREFIX")),
 		DemoMode:                strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_DEMO_MODE")), "true"),
 		DemoEmail:               valueOr(getenv("VARYAONE_DEMO_EMAIL"), "demo@varyaone.com"),
 		DemoPassword:            valueOr(getenv("VARYAONE_DEMO_PASSWORD"), "varyaone-demo-2026"),
@@ -203,30 +178,7 @@ func Load(getenv Getenv) (Config, error) {
 			return Config{}, errors.New("VARYAONE_PULSE_ENDPOINT must be a valid https URL")
 		}
 	}
-	for _, raw := range cfg.UpdateCatalogURLs {
-		catalogURL, cerr := url.Parse(raw)
-		if cerr != nil || catalogURL.Scheme != "https" || catalogURL.Host == "" {
-			return Config{}, fmt.Errorf("VARYAONE_UPDATE_CATALOG_URL entry %q must be a valid https URL", raw)
-		}
-	}
-	if cfg.UpdateArtifactPrefix != "" {
-		prefixURL, perr := url.Parse(cfg.UpdateArtifactPrefix)
-		if perr != nil || prefixURL.Scheme != "https" || prefixURL.Host == "" {
-			return Config{}, errors.New("VARYAONE_UPDATE_ARTIFACT_PREFIX must be a valid https URL")
-		}
-	}
 	return cfg, nil
-}
-
-// splitList parses a comma-separated env value into a trimmed, non-empty slice.
-func splitList(value string) []string {
-	var out []string
-	for _, part := range strings.Split(value, ",") {
-		if part = strings.TrimSpace(part); part != "" {
-			out = append(out, part)
-		}
-	}
-	return out
 }
 
 func valueOr(value, fallback string) string {

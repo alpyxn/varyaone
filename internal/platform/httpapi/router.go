@@ -41,7 +41,6 @@ import (
 	"github.com/alpyxn/varyaone/internal/reporting"
 	"github.com/alpyxn/varyaone/internal/sales"
 	"github.com/alpyxn/varyaone/internal/taxes"
-	"github.com/alpyxn/varyaone/internal/update"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -109,8 +108,6 @@ type routerOptions struct {
 	payrollDeliv    *delivery.Service
 	fixedAsset      *fixedasset.Service
 	systemBackup    *backup.Engine
-	systemUpdate    *update.Service
-	updateToken     string
 	spa             http.Handler
 	secureCookies   bool
 	scopePool       *pgxpool.Pool
@@ -152,13 +149,6 @@ func WithSPA(handler http.Handler) RouterOption {
 
 func WithSystemBackup(engine *backup.Engine) RouterOption {
 	return func(options *routerOptions) { options.systemBackup = engine }
-}
-
-func WithSystemUpdate(service *update.Service, agentToken string) RouterOption {
-	return func(options *routerOptions) {
-		options.systemUpdate = service
-		options.updateToken = agentToken
-	}
 }
 
 func WithParty(service *party.Service) RouterOption {
@@ -433,9 +423,6 @@ func NewRouter(logger *slog.Logger, release string, readiness Readiness, options
 		}
 		if configuration.systemBackup != nil {
 			mountSystemRoutes(router, configuration.identity, configuration.systemBackup)
-		}
-		if configuration.systemUpdate != nil {
-			mountSystemUpdateRoutes(router, configuration.identity, configuration.systemUpdate, configuration.updateToken)
 		}
 	}
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {

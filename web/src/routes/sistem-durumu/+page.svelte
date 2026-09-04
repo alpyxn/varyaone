@@ -14,8 +14,6 @@
   let readiness: State = 'checking';
   let traceID = '';
   let currentVersion = '';
-  let latestVersion = '';
-  let updateAvailable = false;
 
   async function check(path: string): Promise<State> {
     try {
@@ -34,22 +32,8 @@
     }
   }
 
-  async function loadVersion() {
-    try {
-      const response = await fetch('/api/v1/system/update');
-      if (!response.ok) return;
-      const body = await response.json();
-      currentVersion = body.current_version ?? currentVersion;
-      latestVersion = body.latest?.version ?? '';
-      updateAvailable = !!body.update_available;
-    } catch {
-      /* not permitted or offline — current version still comes from /health */
-    }
-  }
-
   onMount(async () => {
     [liveness, readiness] = await Promise.all([check('/health/live'), check('/health/ready')]);
-    await loadVersion();
   });
 
   const label = (state: State) =>
@@ -98,21 +82,13 @@
   </article>
 
   <article class="card status-card">
-    <div class="status-icon" class:ok={!updateAvailable && !!currentVersion}>
+    <div class="status-icon" class:ok={!!currentVersion}>
       <Package size={20} aria-hidden="true" />
     </div>
     <div class="status-body">
       <strong>Sürüm</strong>
-      <span class="status-desc">
-        {currentVersion || '—'}{#if latestVersion && updateAvailable}
-          · en yeni {latestVersion}{/if}
-      </span>
+      <span class="status-desc">{currentVersion || '—'}</span>
     </div>
-    {#if updateAvailable}
-      <a class="status-pill" href="/ayarlar/guncelleme">Güncelleme var</a>
-    {:else if currentVersion}
-      <span class="status-pill ok"><CheckCircle2 size={14} aria-hidden="true" /> Güncel</span>
-    {/if}
   </article>
 </section>
 

@@ -55,24 +55,6 @@ func stopManagedService(svc service.Service) error {
 func startManagedService(svc service.Service) error {
 	return controlManagedService(svc, "start")
 }
-
-func managedServiceStopped() (bool, error) {
-	m, managed, err := openManagedWindowsService()
-	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	defer m.Disconnect()
-	defer managed.Close()
-	status, err := managed.Query()
-	if err != nil {
-		return false, fmt.Errorf("query Windows service state: %w", err)
-	}
-	return status.State == svc.Stopped, nil
-}
-
 func openManagedWindowsService() (*mgr.Mgr, *mgr.Service, error) {
 	h, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
 	if err != nil {

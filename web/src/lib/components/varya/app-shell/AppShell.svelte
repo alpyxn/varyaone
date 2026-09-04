@@ -14,7 +14,6 @@
     registerVaryaKeyboardShortcuts
   } from '$lib/components/varya/keyboard';
   import Sidebar from './Sidebar.svelte';
-  import UpdateWatcher from './UpdateWatcher.svelte';
   import UserMenu from './UserMenu.svelte';
   import FeedbackDialog from './FeedbackDialog.svelte';
   import Calculator from './Calculator.svelte';
@@ -100,9 +99,6 @@
     modules={session?.modules ?? []}
   />
   <section class="workspace">
-    <UpdateWatcher
-      canManage={sessionReady && !!session?.permissions?.includes('system.update.manage')}
-    />
     <header class="topbar">
       <Button
         class="mobile-menu"

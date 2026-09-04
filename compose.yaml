@@ -24,27 +24,6 @@ x-backend-environment: &backend-environment
   VARYAONE_PULSE_ENDPOINT: ${VARYAONE_PULSE_ENDPOINT:-https://varya-pulse.varyaone.workers.dev}
   VARYAONE_PULSE_INGEST_KEY: ${VARYAONE_PULSE_INGEST_KEY:-0290a2e2fa410b7b7d4656496635a36695a84419027c134225de36b3bf67ce56}
   VARYAONE_PULSE_INSTALL_PING: ${VARYAONE_PULSE_INSTALL_PING:-true}
-  # Host'taki systemd guncelleme aracinin /internal/update/* uclarina erisim
-  # belirteci. Bos ise o uclar kapali kalir. `./deploy.sh install` uretir.
-  VARYAONE_UPDATE_AGENT_TOKEN: ${VARYAONE_UPDATE_AGENT_TOKEN:-}
-  # Surum kontrolu: her GitHub Release'e eklenen genel latest.json belgesi
-  # (bkz. internal/update/catalog.go). Pulse'tan bagimsizdir — anahtar/rate
-  # limit gerekmez, pulse kapali olsa da calisir. Virgulle birden fazla kaynak
-  # verilebilir (sirayla denenir); bos birakilirsa guncelleme kontrolu kapanir.
-  # Kendi kendine guncelleme VARSAYILAN KAPALI. Bos birakildiginda ne uc
-  # noktalari mount edilir, ne zamanlanmis kontrol calisir, ne de ayarlarda
-  # bir Guncelleme sayfasi cikar. Acmak icin bu degeri katalog adresleriyle
-  # doldurun:
-  #   https://github.com/alpyxn/varyaone/releases/latest/download/latest.json,https://raw.githubusercontent.com/alpyxn/varyaone/main/release/latest.json
-  VARYAONE_UPDATE_CATALOG_URL: ${VARYAONE_UPDATE_CATALOG_URL:-}
-  # Kataloğun windows_artifact_url alaninin kabul edilecegi tek konum; farkli
-  # bir depoya isaret eden bir alan sessizce dusurulur (bkz. catalog.go).
-  VARYAONE_UPDATE_ARTIFACT_PREFIX: ${VARYAONE_UPDATE_ARTIFACT_PREFIX:-https://github.com/alpyxn/varyaone/releases/download/}
-  # Demo modu: VARSAYILAN KAPALI. Acikken bu kurulum herkese acik tanitim
-  # kurulumuna doner: paylasilan ornek sirket duzenli araliklarla SILINIP
-  # yeniden kurulur, ziyaretciler parolasiz girer ve yedekleme/kullanici
-  # yonetimi gibi islemler reddedilir. Gercek veri tutan bir kurulumda ASLA
-  # acilmaz. Bkz. docs/operations/demo.md
   VARYAONE_DEMO_MODE: ${VARYAONE_DEMO_MODE:-false}
   VARYAONE_DEMO_EMAIL: ${VARYAONE_DEMO_EMAIL:-demo@varyaone.com}
   VARYAONE_DEMO_PASSWORD: ${VARYAONE_DEMO_PASSWORD:-varyaone-demo-2026}

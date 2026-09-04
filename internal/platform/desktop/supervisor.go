@@ -19,7 +19,6 @@ import (
 	"github.com/alpyxn/varyaone/internal/platform/httpapi"
 	"github.com/alpyxn/varyaone/internal/platform/migrations"
 	"github.com/alpyxn/varyaone/internal/platform/spa"
-	"github.com/alpyxn/varyaone/internal/update"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -61,21 +60,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err := s.checkHTTPPortFree(); err != nil {
 		return err
 	}
-	// Sweep any ".old-<ts>" binaries a previous Windows in-place update left behind
-	// (they can only be deleted once the old process has fully exited). The
-	// update-apply process that produced the newest one is usually still alive
-	// during its health-check wait when we get here, so also retry for a while.
-	cleanStaleReplacements(s.Layout.InstallDir)
-	go func() {
-		for i := 0; i < 10; i++ {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(30 * time.Second):
-				cleanStaleReplacements(s.Layout.InstallDir)
-			}
-		}
-	}()
 
 	// Log every long step of the boot sequence: on a first boot these are the
 	// only breadcrumbs (initdb, cluster start, migrations all take a while and a
@@ -149,14 +133,6 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		return nil
 	})
 
-	// Update applier: the desktop has no external agent (Linux uses systemd), so
-	// the stack itself watches for an operator-queued apply and launches the
-	// updater as a detached process that outlives the service stop it triggers.
-	group.Go(func() error {
-		s.runUpdateApplier(groupCtx, update.NewService(pool, cfg))
-		return nil
-	})
-
 	if mode == NetLAN {
 		s.Logger.Info("varya one desktop stack ready", "mode", mode, "urls", LANURLs(s.HTTPPort))
 	} else {
@@ -193,63 +169,6 @@ func (s *Supervisor) checkHTTPPortFree() error {
 				"addr", addr, "timeout", httpPortWait)
 		}
 		time.Sleep(500 * time.Millisecond)
-	}
-}
-
-// updateApplierPoll is how often the stack checks for an operator-queued apply.
-const updateApplierPoll = 2 * time.Minute
-
-// runUpdateApplier watches the update state machine. When the operator queues an
-// apply from the UI it launches `varyaone update-apply` detached — that process
-// stops this service, swaps the binaries and starts the service again, so it
-// must not be a child tied to our context.
-func (s *Supervisor) runUpdateApplier(ctx context.Context, svc *update.Service) {
-	if !svc.Configured() {
-		<-ctx.Done()
-		return
-	}
-	var lastSpawn time.Time
-	tick := func() {
-		// A spawned updater holds this lock for the whole run; don't stack a
-		// second one on top, and back off after a recent attempt so a crashed
-		// updater that left the state mid-flight can't become a spin loop.
-		if fileExists(filepath.Join(s.Layout.Home, "update.lock")) {
-			return
-		}
-		if time.Since(lastSpawn) < 15*time.Minute {
-			return
-		}
-		act, err := svc.NextAction(ctx)
-		if err != nil {
-			if ctx.Err() == nil {
-				s.Logger.Warn("update NextAction failed", "error", err)
-			}
-			return
-		}
-		if act.Action != "apply" {
-			return
-		}
-		s.Logger.Info("update queued — launching detached updater", "target", act.TargetVersion)
-		lastSpawn = time.Now()
-		if err := spawnDetachedUpdater(s.Layout.InstallDir, act.TargetVersion); err != nil {
-			s.Logger.Error("could not launch updater", "error", err)
-			_ = svc.RecordResult(ctx, update.ResultInput{
-				OK: false, FromVersion: act.FromVersion, ToVersion: act.TargetVersion,
-				Error: "updater başlatılamadı: " + err.Error(),
-			})
-		}
-	}
-
-	t := time.NewTicker(updateApplierPoll)
-	defer t.Stop()
-	tick() // catch a request queued while the service was down
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			tick()
-		}
 	}
 }
 
@@ -297,11 +216,6 @@ func (s *Supervisor) config(pg *Postgres) (config.Config, error) {
 		// the ping is opt-out via VARYAONE_PULSE_INSTALL_PING=false.
 		"VARYAONE_PULSE_ENDPOINT":   fileOrEnv("VARYAONE_PULSE_ENDPOINT", defaultPulseEndpoint),
 		"VARYAONE_PULSE_INGEST_KEY": fileOrEnv("VARYAONE_PULSE_INGEST_KEY", defaultPulseIngestKey),
-		// Update checks: default to the public GitHub Releases catalog so a
-		// plain install sees new releases without any configuration, and
-		// without depending on pulse being reachable or enabled.
-		"VARYAONE_UPDATE_CATALOG_URL":     fileOrEnv("VARYAONE_UPDATE_CATALOG_URL", defaultUpdateCatalogURLs),
-		"VARYAONE_UPDATE_ARTIFACT_PREFIX": fileOrEnv("VARYAONE_UPDATE_ARTIFACT_PREFIX", defaultUpdateArtifactPrefix),
 	}
 	getenv := func(key string) string {
 		if v, ok := overrides[key]; ok {

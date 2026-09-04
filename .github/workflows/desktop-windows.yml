@@ -1,15 +1,14 @@
 name: desktop-windows
 
 # Builds the Windows desktop bundle (varyaone.exe + varyaone-client.exe +
-# embedded SPA + bundled PostgreSQL), the updater zip, and the Inno Setup install
-# wizard; on a tag it attaches all three (+ sha256) plus latest.json — the
-# release catalog document the updater polls (internal/update/catalog.go) — to
-# the GitHub Release, publishing it only once every asset is uploaded (a
-# reader must never see a half-populated release). latest.json is also copied
-# to release/latest.json on main as a fallback source — see
-# deploy/windows/README.md. varya-pulse no longer serves a release catalog
-# (Cloudflare Worker, ../varya-pulse); it only collects anonymous usage/install
-# telemetry and feedback now.
+# embedded SPA + bundled PostgreSQL), the distribution zip, and the Inno Setup
+# install wizard; on a tag it attaches all of them (+ sha256) to the GitHub
+# Release, publishing it only once every asset is uploaded so a human
+# downloading the zip never sees a half-populated release.
+#
+# There is no release catalog: Varya One does not update itself. A new version
+# is installed by running the setup wizard, or on a server with
+# `git pull && ./deploy.sh rebuild`.
 
 on:
   push:
@@ -238,76 +237,6 @@ jobs:
             grep -Fx "$entry" <<<"$entries"
           done
 
-      - name: Generate release catalog (latest.json)
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          version="${{ steps.v.outputs.version }}"
-          repo="${{ github.repository }}"
-          artifact_prefix="https://github.com/${repo}/releases/download"
-          sha256="$(cut -d' ' -f1 "dist/windows/varyaone-${version}-windows-amd64.zip.sha256")"
-          published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # The tag's own annotation becomes the release notes. actions/checkout
-          # leaves refs/tags/<v> pointing at the commit even with fetch-tags, so
-          # the annotation is not in the work tree until it is fetched by name -
-          # without this, %(contents) yields the commit message (lightweight
-          # ref) and the release ships the wrong notes. A lightweight tag
-          # (workflow_dispatch dry-runs, or a plain `git tag`) still yields an
-          # empty - valid, if terse - notes_md.
-          git fetch --force --no-recurse-submodules origin \
-            "refs/tags/${version}:refs/tags/${version}" || true
-          notes_md=""
-          if [ "$(git cat-file -t "refs/tags/${version}" 2>/dev/null || true)" = "tag" ]; then
-            notes_md="$(git for-each-ref "refs/tags/${version}" --format='%(contents)')"
-          fi
-
-          # Carry the previous release's channel entry into history (capped at
-          # 10) so fetchNotes can still find its notes right after an apply.
-          # Best-effort: a missing/unreadable previous catalog just means an
-          # empty starting history, never a failed build.
-          prev_history="[]"
-          if prev_b64="$(gh api "repos/${repo}/contents/release/latest.json?ref=main" -q .content 2>/dev/null)"; then
-            prev_history="$(echo "$prev_b64" | base64 -d 2>/dev/null | \
-              jq -c '([.channels.stable] + (.history // [])) | unique_by(.version) | .[:10]' 2>/dev/null || echo '[]')"
-          fi
-
-          jq -n \
-            --arg version "$version" \
-            --arg notes_md "$notes_md" \
-            --arg published_at "$published_at" \
-            --arg artifact_url "${artifact_prefix}/${version}/varyaone-${version}-windows-amd64.zip" \
-            --arg sha256 "$sha256" \
-            --argjson history "$prev_history" \
-            --slurpfile channel release/channel.json \
-            '{
-              schema_version: 1,
-              channels: {
-                stable: ($channel[0] + {
-                  version: $version,
-                  notes_md: $notes_md,
-                  published_at: $published_at,
-                  windows_artifact_url: $artifact_url,
-                  windows_sha256: $sha256
-                })
-              },
-              yanked: [],
-              history: ($history | map(select(.version != $version)))
-            }' > dist/windows/latest.json
-
-          # A malformed catalog must never ship: fail the job rather than
-          # publish a release the updater can't parse or would reject the
-          # artifact of (see internal/update/catalog.go toLatestInfo).
-          jq -e '
-            .schema_version == 1
-            and (.channels.stable.version | test("^v?[0-9]+\\.[0-9]+\\.[0-9]+"))
-            and (.channels.stable.windows_sha256 | test("^[0-9a-f]{64}$"))
-            and (.channels.stable.windows_artifact_url | startswith("'"$artifact_prefix"'/"))
-          ' dist/windows/latest.json > /dev/null
-
-          cat dist/windows/latest.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -315,7 +244,6 @@ jobs:
           path: |
             dist/windows/*.zip*
             dist/windows/*.exe
-            dist/windows/latest.json
 
       - name: Attach to release (draft)
         if: startsWith(github.ref, 'refs/tags/')
@@ -326,39 +254,12 @@ jobs:
             dist/windows/*.zip
             dist/windows/*.zip.sha256
             dist/windows/*.exe
-            dist/windows/latest.json
 
       - name: Publish release
-        # Every asset (zip, sha256, setup.exe, latest.json) is uploaded before
-        # the release goes public, so a client polling latest.json — or a
-        # human downloading the zip — never sees a half-populated release.
+        # Every asset (zip, sha256, setup.exe) is uploaded before the release
+        # goes public, so nobody downloading it sees a half-populated release.
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "${{ steps.v.outputs.version }}" --repo "${{ github.repository }}" --draft=false
-
-      - name: Commit release catalog fallback copy
-        # release/latest.json on main is the secondary source
-        # (VARYAONE_UPDATE_CATALOG_URL default #2) for networks where the
-        # release CDN itself is unreachable. Written through the Contents API
-        # (not git push) because this job checks out the tag, not main —
-        # pushing the checked-out HEAD would rewrite main to the tag's commit
-        # instead of adding a file to it.
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          repo="${{ github.repository }}"
-          existing_sha="$(gh api "repos/${repo}/contents/release/latest.json?ref=main" -q .sha 2>/dev/null || true)"
-          sha_args=()
-          if [ -n "$existing_sha" ]; then
-            sha_args=(-f "sha=${existing_sha}")
-          fi
-          gh api --method PUT "repos/${repo}/contents/release/latest.json" \
-            -f "message=release: publish ${{ steps.v.outputs.version }} catalog" \
-            -f "content=$(base64 -w0 dist/windows/latest.json)" \
-            -f "branch=main" \
-            "${sha_args[@]}"

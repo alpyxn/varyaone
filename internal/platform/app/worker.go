@@ -13,7 +13,6 @@ import (
 	"github.com/alpyxn/varyaone/internal/platform/migrations"
 	"github.com/alpyxn/varyaone/internal/platform/outbox"
 	"github.com/alpyxn/varyaone/internal/pulse"
-	"github.com/alpyxn/varyaone/internal/update"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -29,13 +28,6 @@ func RunWorker(ctx context.Context, cfg config.Config, logger *slog.Logger, pool
 	if cfg.PulseConfigured() {
 		logger.Info("pulse enabled", "endpoint", cfg.PulseEndpoint, "install_ping", cfg.PulseInstallPing)
 		go runPulseScheduler(ctx, logger, cfg, pulse.NewService(pool, cfg))
-	}
-	// Update checks are independent of pulse: they read a public GitHub Releases
-	// catalog document, not the pulse collector, so a self-hoster who turns the
-	// install ping off still gets update notifications.
-	if updateService := update.NewService(pool, cfg); updateService.Configured() {
-		logger.Info("update checks enabled", "catalog_urls", cfg.UpdateCatalogURLs)
-		go runUpdateScheduler(ctx, logger, updateService)
 	}
 	// The demo deployment rebuilds its single shared company on a timer; a
 	// normal installation never starts this scheduler.
@@ -125,25 +117,6 @@ func runPulseScheduler(ctx context.Context, logger *slog.Logger, cfg config.Conf
 			if announce() {
 				return
 			}
-		}
-	}
-}
-
-func runUpdateScheduler(ctx context.Context, logger *slog.Logger, service *update.Service) {
-	check := func() {
-		if err := service.CheckDue(ctx); err != nil && ctx.Err() == nil {
-			logger.Warn("update check cycle failed", "error", err)
-		}
-	}
-	check()
-	ticker := time.NewTicker(time.Hour)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			check()
 		}
 	}
 }

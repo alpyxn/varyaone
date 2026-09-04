@@ -47,19 +47,6 @@ func run() error {
 			return errors.New("usage: varyaone service <ensure|repair|install|uninstall|start|stop|restart|status|wait-ready>")
 		}
 		return desktop.Control(os.Args[2])
-	case "update-apply":
-		target := ""
-		for i := 2; i < len(os.Args)-1; i++ {
-			if os.Args[i] == "--target" {
-				target = os.Args[i+1]
-			}
-		}
-		// Cancel a stuck update on Ctrl+C / service-manager stop instead of
-		// hanging forever (download and health-check both honour the context).
-		applyCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		return desktop.NewUpdater(desktop.NewUpdateLogger()).
-			Apply(applyCtx, target)
 	case "netmode":
 		if len(os.Args) != 3 {
 			return errors.New("usage: varyaone netmode <local|lan>")
@@ -137,7 +124,7 @@ func run() error {
 }
 
 func usageError() error {
-	return errors.New("usage: varyaone <server|worker|stack|service <ensure|repair|install|uninstall|start|stop|restart|status|wait-ready>|netmode <local|lan>|update-apply [--target v]|migrate up|migrate status|demo seed|demo reset|backup create <file>|backup restore <file>|backup verify <file>>")
+	return errors.New("usage: varyaone <server|worker|stack|service <ensure|repair|install|uninstall|start|stop|restart|status|wait-ready>|netmode <local|lan>|migrate up|migrate status|demo seed|demo reset|backup create <file>|backup restore <file>|backup verify <file>>")
 }
 
 // runDemo builds or rebuilds the shared showcase company. It refuses to run

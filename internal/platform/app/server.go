@@ -47,7 +47,6 @@ import (
 	"github.com/alpyxn/varyaone/internal/sales"
 	"github.com/alpyxn/varyaone/internal/storage"
 	"github.com/alpyxn/varyaone/internal/taxes"
-	"github.com/alpyxn/varyaone/internal/update"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -147,12 +146,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawP
 	// the pulse collector, so it stays mounted even with pulse disabled.
 	if cfg.PulseConfigured() {
 		backupOptions = append(backupOptions, httpapi.WithPulse(pulse.NewService(rawPool, cfg)))
-	}
-	// Self-update is opt-in. With no catalog URL configured the service is not
-	// mounted at all: no endpoints, no scheduled check, and nothing in the
-	// settings UI. Set VARYAONE_UPDATE_CATALOG_URL to turn it back on.
-	if updateService := update.NewService(rawPool, cfg); updateService.Configured() {
-		backupOptions = append(backupOptions, httpapi.WithSystemUpdate(updateService, cfg.UpdateAgentToken))
 	}
 
 	routerOptions := append([]httpapi.RouterOption{httpapi.WithIdentity(identityService, cfg.CookiesSecure()), httpapi.WithParty(partyService), httpapi.WithProducts(productService), httpapi.WithPricing(pricingService), httpapi.WithExchange(exchangeService), httpapi.WithTaxes(taxService), httpapi.WithPreferences(preferenceService), httpapi.WithDashboard(dashboardService), httpapi.WithAgenda(agendaService), httpapi.WithFinance(financeService), httpapi.WithInventory(inventoryService), httpapi.WithSales(salesService), httpapi.WithPurchasing(purchasingService), httpapi.WithMedia(mediaService), httpapi.WithSearch(httpapi.NewSearchService(pool)), httpapi.WithDataExchange(dataExchangeService), httpapi.WithReporting(reportingService), httpapi.WithEmailSettings(emailSettingsService), httpapi.WithHREmployee(hrEmployeeService), httpapi.WithHRAdvance(hrAdvanceService), httpapi.WithFixedAsset(fixedAssetService), httpapi.WithHREmployment(hrEmploymentService), httpapi.WithHRDocument(hrDocumentService), httpapi.WithHRSchedule(hrScheduleService), httpapi.WithHRLeave(hrLeaveService), httpapi.WithHRCalendar(hrCalendarService), httpapi.WithHRTimesheet(hrTimesheetService), httpapi.WithPayrollLegislation(payrollLegislationService), httpapi.WithLegislationRepository(legislationRepository), httpapi.WithPayrollRun(payrollRunService), httpapi.WithPayrollPayment(payrollPaymentService), httpapi.WithPayrollDelivery(payrollDeliveryService), httpapi.WithEmail(emailTemplateService, emailComposeService), httpapi.WithCompanyScope(rawPool)}, backupOptions...)

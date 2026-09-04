@@ -1,9 +1,6 @@
 #!/bin/sh
 set -eu
 
-# VARYAONE_PROJECT_DIR: `run_update` re-exec's the script from a throwaway copy
-# (so `git checkout` can freely replace deploy.sh on disk mid-run); the copy is
-# not next to the repo, so it passes the real project dir through this env var.
 project_dir=${VARYAONE_PROJECT_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}
 cd "$project_dir"
 
@@ -333,14 +330,8 @@ Komutlar:
                           kur/başlat, kullanıcıyı docker grubuna ekle.
                           (install bunu zaten otomatik çağırır.)
   rebuild [--no-cache]    Görüntüleri yeniden derleyip servisleri yeniden başlatır.
-  update [--target vX.Y.Z] [--yes]
-                          Bulletproof güncelleme: ön kontrol → tam yedek →
-                          GitHub'dan çek → derle → (gerekirse PostgreSQL majör
-                          yükseltmesi: dök & geri yükle) → migrate → yeniden
-                          başlat → sağlık kontrolü. Herhangi bir aşamada hata
-                          olursa sistem otomatik olarak önceki sürüme geri alınır.
-  recover                 Yarıda kalmış bir güncellemeyi (elektrik/kill) güvenle
-                          geri al. Sonraki 'update' bunu otomatik de yapar.
+                          Güncellemek için:  git pull && ./deploy.sh rebuild
+                          (Önce yedek almak iyi olur: ./deploy.sh backup)
   status                  Servis durumu + sağlık kontrolü.
   doctor                  Ön koşul ve ortam denetimi.
   repair-app-role         varyaone_app rolünün parolasını ve yetkilerini yeniden uygular
@@ -353,7 +344,7 @@ Komutlar:
   uninstall --confirm [--keep-backups] [--purge] [--yes]
                           Her şeyi kaldır: konteynerler, volume'ler (VERİTABANI
                           DAHİL), derlenen image'lar, ağlar, üretilen .env ve
-                          nginx yapılandırması, systemd güncelleme aracı.
+                          nginx yapılandırması.
                           --keep-backups verilmezse backups/ de silinir.
                           --purge ayrıca proje dizininin kendisini de siler
                           (hiçbir iz bırakmaz).
@@ -474,8 +465,7 @@ repair_app_role() {
 }
 
 # --- tekil çalıştırma kilidi -------------------------------------------------
-# Aynı anda iki güncelleme/yedek/geri-yükleme (ör. host agent + elle çalıştırma)
-# .update-rollback dosyasını, :preupdate etiketlerini ve git ağacını bozar.
+# Aynı anda iki yedek/geri-yükleme çalışmasın.
 # mkdir atomiktir ve her POSIX sh'de vardır; sahibi ölmüşse kilit devralınır.
 LOCK_DIR=""
 LOCK_HELD=0
@@ -541,17 +531,6 @@ generate_hex_token() {
   fi
 }
 
-# Otomatik guncelleme icin host agent belirteci (.env'de yoksa uretilir).
-ensure_update_token() {
-  [ -f .env ] || return 0
-  if ! grep -q '^VARYAONE_UPDATE_AGENT_TOKEN=.\+' .env 2>/dev/null; then
-    grep -v '^VARYAONE_UPDATE_AGENT_TOKEN=' .env > .env.tmp 2>/dev/null || true
-    printf 'VARYAONE_UPDATE_AGENT_TOKEN=%s\n' "$(generate_hex_token)" >> .env.tmp
-    cat .env.tmp > .env && rm -f .env.tmp
-    echo ".env için otomatik güncelleme belirteci oluşturuldu."
-  fi
-}
-
 create_env() {
   umask 077
   if [ -f .env ]; then
@@ -563,7 +542,6 @@ create_env() {
       sed -i "s|^VARYAONE_MASTER_KEY=.*|VARYAONE_MASTER_KEY=$master_key|" .env
       echo ".env içindeki örnek şifreleme anahtarı güvenli bir anahtarla değiştirildi."
     fi
-    ensure_update_token
     return 0
   fi
   if command -v openssl >/dev/null 2>&1; then
@@ -574,7 +552,6 @@ create_env() {
   master_key=$(generate_master_key)
   sed "s|POSTGRES_PASSWORD=change-me|POSTGRES_PASSWORD=$password|; s|VARYAONE_ENV=development|VARYAONE_ENV=production|; s|VARYAONE_MASTER_KEY=replace-with-base64-encoded-32-byte-key|VARYAONE_MASTER_KEY=$master_key|" .env.example > .env
   echo ".env güvenli bir rastgele parola ve şifreleme anahtarı ile oluşturuldu."
-  ensure_update_token
 }
 
 # --- nginx / certbot ---------------------------------------------------------
@@ -927,7 +904,6 @@ install_stack() {
 
   ensure_prereqs
   create_env
-  sync_release_env
 
   if interactive; then
     # Terminalde: adım adım sihirbaz.
@@ -937,7 +913,6 @@ install_stack() {
     else
       install_domainless "$WZ_WEBPORT" "$WZ_APIPORT"
     fi
-    post_install_agent
     return
   fi
 
@@ -951,7 +926,6 @@ install_stack() {
   else
     install_domainless "" ""
   fi
-  post_install_agent
 }
 
 renew_cert() {
@@ -976,24 +950,6 @@ show_status() {
   fi
 }
 
-# Calisan surumu git etiketinden turetip .env'e yazar.
-#
-# Bunu yapmazsak VARYAONE_RELEASE bos kalir ve sunucu kendini "dev" olarak
-# raporlar. Surum karsilastirmasi ayristirilamayan bir surumu EN ESKI sayar,
-# yani git clone ile kurulmus ve en yeni etiketin ONUNDE olan bir kurulum
-# kendisine surekli daha eski bir surume "guncelleme" teklif eder.
-#
-# `git describe` ciktisi (ornek: v0.1.7-alpha-1-gf106e8a) surum ayristiricisi
-# tarafindan 0.1.7 olarak okunur, dolayisiyla karsilastirma dogru calisir:
-# etiketle ayni noktadaysak guncelleme teklif edilmez, yeni etiket cikinca
-# edilir.
-sync_release_env() {
-  _rel=$(current_release)
-  case "$_rel" in
-    ""|unknown) return 0 ;;
-  esac
-  env_set VARYAONE_RELEASE "$_rel"
-}
 
 rebuild() {
   require_docker
@@ -1005,7 +961,6 @@ rebuild() {
     *) echo "Bilinmeyen seçenek: $1" >&2; usage ;;
   esac
   [ -f .env ] || { echo ".env yok; önce ./deploy.sh install çalıştırın." >&2; exit 1; }
-  sync_release_env
   echo "  Görüntüler derleniyor${no_cache:+ (önbelleksiz)}..."
   compose build $no_cache
   echo "  Servisler yeniden başlatılıyor..."
@@ -1020,8 +975,6 @@ rebuild() {
 # ===========================================================================
 #  Guncelleme (bulletproof): on kontrol -> yedek -> derle -> migrate ->
 #  yeniden baslat -> saglik; herhangi bir asamada hata -> otomatik geri alma.
-#  Manuel: ./deploy.sh update
-#  Agent (host systemd): ./deploy.sh update --yes --report [--target vX.Y.Z]
 # ===========================================================================
 
 UPD_LOG=""
@@ -1044,33 +997,6 @@ current_release() {
   git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "unknown"
 }
 
-# report_phase <phase> <mesaj>
-report_phase() {
-  _ts=$(date -u +%H:%M:%S)
-  printf '  [%s] %-12s %s\n' "$_ts" "$1" "${2:-}"
-  [ -n "$UPD_LOG" ] && printf '[%s] %s %s\n' "$_ts" "$1" "${2:-}" >> "$UPD_LOG" 2>/dev/null || true
-  if [ "$UPD_REPORT" = 1 ] && [ -n "$UPD_SELF_URL" ] && [ -n "$UPD_TOKEN" ]; then
-    _msg=$(printf '%s' "${2:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    curl -fsS -m 10 -X POST "$UPD_SELF_URL/internal/update/progress" \
-      -H "authorization: Bearer $UPD_TOKEN" -H 'content-type: application/json' \
-      -d "{\"phase\":\"$1\",\"message\":\"$_msg\"}" >/dev/null 2>&1 || true
-  fi
-}
-
-# report_result <ok|fail> <hata-mesaji> <rolled_back:0|1>
-report_result() {
-  _ok=false; [ "$1" = "ok" ] && _ok=true
-  _rb=false; [ "${3:-0}" = "1" ] && _rb=true
-  _tail=""
-  [ -n "$UPD_LOG" ] && [ -f "$UPD_LOG" ] && _tail=$(tail -n 120 "$UPD_LOG" 2>/dev/null | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/ /g' | awk '{printf "%s\\n", $0}')
-  _err=$(printf '%s' "${2:-}" | sed 's/\\/\\\\/g; s/"/\\"/g')
-  if [ "$UPD_REPORT" = 1 ] && [ -n "$UPD_SELF_URL" ] && [ -n "$UPD_TOKEN" ]; then
-    curl -fsS -m 15 -X POST "$UPD_SELF_URL/internal/update/result" \
-      -H "authorization: Bearer $UPD_TOKEN" -H 'content-type: application/json' \
-      -d "{\"ok\":$_ok,\"error\":\"$_err\",\"rolled_back\":$_rb,\"from_version\":\"$UPD_FROM_VERSION\",\"to_version\":\"${UPD_NEW_RELEASE:-${UPD_TARGET_VERSION:-$UPD_FROM_VERSION}}\",\"log_tail\":\"$_tail\"}" \
-      >/dev/null 2>&1 || true
-  fi
-}
 
 # 127.0.0.1:port/health/ready true olana kadar bekle (<saniye> zaman asimi)
 # frontend konteynerinde HTTP dinleyicisi ayakta mi? (api'den compose agi
@@ -1100,39 +1026,12 @@ _avail_kb_for() {
   df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4}'
 }
 
-# api konteynerinden uygulanmış şema sürümünü oku (çalışmıyorsa boş döner).
-db_migration_version() {
-  compose exec -T api varyaone migrate status 2>/dev/null \
-    | sed -n 's/.*current=\([0-9][0-9]*\).*/\1/p' | head -n1
-}
 
 # api daha önce kurulmuş mu? (postgres volume + şema tablosu var mı)
 system_installed() {
   compose exec -T api varyaone migrate status >/dev/null 2>&1
 }
 
-# --- PostgreSQL majör sürüm yükseltmesi -------------------------------------
-# Çalışan postgres konteynerinin majör sürümü (örn. 18). Kapalıysa boş.
-pg_server_major() {
-  _u=$(env_get POSTGRES_USER); _u=${_u:-varyaone}
-  _d=$(env_get POSTGRES_DB); _d=${_d:-varyaone}
-  _n=$(compose exec -T postgres psql -U "$_u" -d "$_d" -tAc 'SHOW server_version_num' 2>/dev/null | tr -cd '0-9')
-  [ -n "$_n" ] && echo $(( _n / 10000 ))
-}
-
-# Çalışma ağacındaki compose.yaml'ın istediği postgres majör sürümü (örn. 18).
-compose_pg_major() {
-  grep -oE 'postgres:[0-9]+' "$project_dir/compose.yaml" 2>/dev/null | grep -oE '[0-9]+' | head -n1
-}
-
-# Başarılı bir majör yükseltmeden sonra eski majörün artık kullanılmayan veri
-# dizinini volume'den siler (disk iadesi). `postgres` imajı sürümlü PGDATA
-# kullanır: /var/lib/postgresql/<majör>/docker.
-pg_drop_old_major_dir() {
-  _m=$1
-  [ -n "$_m" ] || return 0
-  compose exec -T postgres sh -c "rm -rf /var/lib/postgresql/$_m" >>"${UPD_LOG:-/dev/null}" 2>&1 || true
-}
 
 # .varya dosyasının bütünlüğünü doğrula: var + boş değil + geçerli arşiv +
 # motorun kendi sağlama doğrulaması. 0 = sağlam.
@@ -1150,481 +1049,6 @@ verify_backup_file() {
   return 0
 }
 
-update_preflight() {
-  # Disk: hem proje dizini hem docker veri kökü için bol alan gerekli.
-  _min_kb=5242880
-  _proj_kb=$(_avail_kb_for "$project_dir")
-  _proj_gb=$(awk "BEGIN{printf \"%.1f\", ${_proj_kb:-0}/1048576}")
-  if [ "${_proj_kb:-0}" -lt "$_min_kb" ]; then
-    report_phase preflight "proje diski yetersiz: ${_proj_gb} GiB boş, en az 5 GiB gerekli"
-    return 1
-  fi
-  _docker_root=$($DK info --format '{{.DockerRootDir}}' 2>/dev/null || echo "")
-  if [ -n "$_docker_root" ] && [ -d "$_docker_root" ]; then
-    _dk_kb=$(_avail_kb_for "$_docker_root")
-    if [ -n "$_dk_kb" ] && [ "$_dk_kb" -lt "$_min_kb" ]; then
-      _dk_gb=$(awk "BEGIN{printf \"%.1f\", ${_dk_kb}/1048576}")
-      report_phase preflight "docker diski ($_docker_root) yetersiz: ${_dk_gb} GiB boş, en az 5 GiB gerekli"
-      return 1
-    fi
-  fi
-  # Docker calisir durumda mi
-  if ! $DK info >/dev/null 2>&1; then
-    report_phase preflight "docker daemon yanıt vermiyor"
-    return 1
-  fi
-  # Calisma agaci temiz mi (yerel degisiklikler pull'u bozar)
-  if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-    report_phase preflight "çalışma ağacı kirli — sunucuda 'git status' ile temizleyin"
-    return 1
-  fi
-  # GitHub'a erisim
-  if ! git ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
-    report_phase preflight "git uzak sunucusuna (origin) erişilemiyor"
-    return 1
-  fi
-  # Mevcut sistem saglikli mi (calisiyorsa)
-  if compose ps --status running api 2>/dev/null | grep -q api; then
-    if ! compose exec -T api wget -q -O - http://127.0.0.1:8080/health/ready >/dev/null 2>&1; then
-      report_phase preflight "mevcut sistem sağlıksız; önce onu düzeltin"
-      return 1
-    fi
-  fi
-  report_phase preflight "tamam — ${_proj_gb} GiB boş"
-  return 0
-}
-
-# Kirilan asamadan sonra guvenli geri donus. Tekrar girise karsi korumali;
-# icinde `set +e` — geri alma adimlarindan biri patlasa bile devam eder.
-rollback_update() {
-  [ "${UPD_ROLLING_BACK:-0}" = 1 ] && return 0
-  UPD_ROLLING_BACK=1
-  trap - EXIT INT TERM
-  set +e
-
-  _phase=$1
-  _restore_db=${2:-0}
-  report_phase rollback "'$_phase' başarısız — önceki sürüme dönülüyor"
-
-  # 1) Kaynak agaci geri al — KRITIK. Sessizce yutma.
-  if ! git checkout --quiet --force --detach "$UPD_PREV_COMMIT" 2>>"${UPD_LOG:-/dev/null}"; then
-    if ! git reset --hard "$UPD_PREV_COMMIT" >>"${UPD_LOG:-/dev/null}" 2>&1; then
-      report_phase rollback "KRİTİK: kaynak ağacı $UPD_PREV_COMMIT sürümüne döndürülemedi — elle müdahale gerekli"
-      report_result fail "Geri alma başarısız: git ağacı geri alınamadı ($UPD_PREV_COMMIT). Sistemi elle onarın." 0
-      release_lock
-      exit 1
-    fi
-  fi
-  [ -n "$UPD_PREV_RELEASE" ] && env_set VARYAONE_RELEASE "$UPD_PREV_RELEASE"
-
-  # 1b) Majör PG yükseltmesi denendiyse: eski majör dizini (örn. .../18/docker)
-  # volume'de bozulmadan duruyor; git checkout eski `postgres:<majör>` imajını
-  # geri getirdi, `compose up` onu otomatik devreye alır. Yeni majörün yarım
-  # dizini volume'de kalır — sonraki deneme onu `backup restore --force` ile
-  # temizler. Yıkıcı .varya geri yüklemesi GEREKMEZ.
-  if [ "${UPD_PG_UPGRADED:-0}" = 1 ]; then
-    report_phase rollback "PostgreSQL yükseltmesi geri alınıyor — eski majör (${UPD_PG_FROM_MAJOR:-?}) devreye giriyor"
-  fi
-
-  # 2) Onceki image'lari geri getir: once :preupdate etiketlerinden, olmadi yeniden derle.
-  _restored_images=1
-  for _svc in api worker frontend migrate; do
-    if $DK image inspect "varyaone-${_svc}:preupdate" >/dev/null 2>&1; then
-      $DK image tag "varyaone-${_svc}:preupdate" "varyaone-${_svc}:latest" 2>/dev/null || _restored_images=0
-    else
-      _restored_images=0
-    fi
-  done
-  [ "$_restored_images" = 1 ] || compose build >>"${UPD_LOG:-/dev/null}" 2>&1
-
-  # 3) Akilli DB geri yukleme: yalnizca sema surumu gercekten ilerlediyse.
-  #    (Migrasyonlar tek transaction — basarisiz migrasyon DB'yi degistirmez.)
-  if [ "$_restore_db" = 1 ] && [ -n "$UPD_PRE_BACKUP" ] && [ -f "$UPD_PRE_BACKUP" ]; then
-    compose up -d postgres api >>"${UPD_LOG:-/dev/null}" 2>&1
-    _now_ver=""; _tries=0
-    while [ "$_tries" -lt 12 ]; do
-      _now_ver=$(db_migration_version)
-      [ -n "$_now_ver" ] && break
-      sleep 5; _tries=$((_tries + 1))
-    done
-    _pre_ver=${UPD_PRE_MIGRATE_VERSION:-}
-    if [ -n "$_now_ver" ] && [ -n "$_pre_ver" ] && [ "$_now_ver" = "$_pre_ver" ]; then
-      report_phase rollback "veritabanı değişmedi (şema $_now_ver) — yıkıcı geri yükleme atlandı"
-    else
-      report_phase rollback "veritabanı yedekten geri yükleniyor (şema $_pre_ver -> $_now_ver)"
-      compose stop worker frontend >>"${UPD_LOG:-/dev/null}" 2>&1
-      if compose exec -T api varyaone backup restore - --force < "$UPD_PRE_BACKUP" >>"${UPD_LOG:-/dev/null}" 2>&1; then
-        compose up -d --force-recreate api >>"${UPD_LOG:-/dev/null}" 2>&1
-      else
-        # DB tutarsiz: yeni imajlari BASLATMA, postgres'i durdur, elle mudahale.
-        compose stop >>"${UPD_LOG:-/dev/null}" 2>&1
-        report_phase rollback "KRİTİK: otomatik DB geri yükleme başarısız — sistem DURDURULDU"
-        report_result fail "Geri alma sırasında DB geri yükleme başarısız. Sistem tutarsız ve durduruldu. Elle geri yükleyin: $UPD_PRE_BACKUP" 0
-        release_lock
-        exit 1
-      fi
-    fi
-  fi
-
-  # 4) Servisleri onceki imajlarla ayaga kaldir.
-  compose up -d >>"${UPD_LOG:-/dev/null}" 2>&1
-  reload_nginx_soft >>"${UPD_LOG:-/dev/null}" 2>&1
-  if wait_healthy 180; then
-    report_phase rollback "önceki sürüme dönüldü — sistem sağlıklı ($UPD_PREV_RELEASE)"
-    rm -f "$project_dir/deploy/.update-rollback"
-    report_result fail "Güncelleme '$_phase' aşamasında başarısız oldu; sistem $UPD_PREV_RELEASE sürümüne geri alındı." 1
-  else
-    report_phase rollback "KRİTİK: geri alma sonrası sistem sağlıksız — elle müdahale gerekli"
-    report_result fail "Güncelleme '$_phase' aşamasında başarısız; geri alma da sağlıksız — deploy/update log dosyasına bakın." 0
-  fi
-  release_lock
-  exit 1
-}
-
-# Yarida kalan bir guncellemeyi (SIGKILL, elektrik kesintisi) sonraki calistirmada
-# ya da elle `./deploy.sh recover` ile temizle.
-recover_update() {
-  _rb="$project_dir/deploy/.update-rollback"
-  [ -f "$_rb" ] || return 0
-  require_docker
-  acquire_lock update
-  trap 'release_lock' EXIT INT TERM
-  banner "Yarım Kalan Güncelleme Kurtarma"
-  UPD_LOG="$project_dir/deploy/recover-$(date -u +%Y%m%dT%H%M%SZ).log"
-  : > "$UPD_LOG"
-  # shellcheck disable=SC1090
-  UPD_PREV_COMMIT=$(sed -n 's/^prev_commit=//p' "$_rb" | head -n1)
-  UPD_PREV_RELEASE=$(sed -n 's/^prev_release=//p' "$_rb" | head -n1)
-  UPD_TARGET_VERSION=$(sed -n 's/^target_version=//p' "$_rb" | head -n1)
-  UPD_PRE_MIGRATE_VERSION=$(sed -n 's/^pre_migrate_version=//p' "$_rb" | head -n1)
-  UPD_MIGRATED=$(sed -n 's/^migrated=//p' "$_rb" | head -n1); UPD_MIGRATED=${UPD_MIGRATED:-0}
-  UPD_PG_UPGRADED=$(sed -n 's/^pg_upgraded=//p' "$_rb" | head -n1); UPD_PG_UPGRADED=${UPD_PG_UPGRADED:-0}
-  UPD_PG_FROM_MAJOR=$(sed -n 's/^pg_from_major=//p' "$_rb" | head -n1)
-  UPD_PRE_BACKUP=$(sed -n 's/^pre_backup=//p' "$_rb" | head -n1)
-  [ -n "$UPD_PRE_BACKUP" ] || UPD_PRE_BACKUP=$(ls -1t "$project_dir"/backups/pre-update-*.varya 2>/dev/null | head -n1)
-  [ -n "$UPD_PREV_COMMIT" ] || { echo "  .update-rollback okunamadı; elle müdahale gerekli." >&2; exit 1; }
-  echo "  Önceki sürüm: ${UPD_PREV_RELEASE:-?} ($UPD_PREV_COMMIT), migrated=$UPD_MIGRATED"
-  rollback_update interrupted "$UPD_MIGRATED"
-}
-
-run_update() {
-  # Adim 4 (`git checkout <target>`) bu betigin kendisini diskte degistirir.
-  # Kabuk betigi calisirken dosyayi degistirmek (POSIX sh dahil) ofset kaymasi
-  # yuzunden yarim/yanlis calismaya yol acar. Bu yuzden ilk is: betigi gecici
-  # bir kopyaya al ve oradan yeniden calis; diskteki deploy.sh artik serbestce
-  # degistirilebilir. Kopyayi release_lock temizler.
-  if [ "${VARYAONE_UPDATE_REEXEC:-0}" != 1 ]; then
-    # Kopyayi repo ile ayni dosya sisteminde tut: /tmp bazen noexec olur, ama
-    # deploy.sh'in kendisi buradan calisti, yani burasi calistirilabilir.
-    _self_copy="$project_dir/deploy/.deploy-self.$$"
-    rm -f "$project_dir"/deploy/.deploy-self.* 2>/dev/null || true
-    cat "$project_dir/deploy.sh" > "$_self_copy" && chmod +x "$_self_copy" || {
-      rm -f "$_self_copy"; echo "Geçici betik kopyası oluşturulamadı." >&2; exit 1; }
-    VARYAONE_UPDATE_REEXEC=1 VARYAONE_PROJECT_DIR="$project_dir" \
-      VARYAONE_SELF_COPY="$_self_copy" exec "$_self_copy" update "$@"
-  fi
-
-  require_docker
-  target_ref=""
-  assume_yes=0
-  for _a in "$@"; do
-    case "$_a" in
-      --report) UPD_REPORT=1 ;;
-      --yes|-y) assume_yes=1 ;;
-      --target) _expect_target=1 ;;
-      --target=*) target_ref=${_a#--target=} ;;
-      *)
-        if [ "${_expect_target:-0}" = 1 ]; then target_ref=$_a; _expect_target=0
-        else echo "Bilinmeyen seçenek: $_a" >&2; exit 2; fi ;;
-    esac
-  done
-
-  [ -f .env ] || { echo ".env yok; önce ./deploy.sh install çalıştırın." >&2; exit 1; }
-  command -v git >/dev/null 2>&1 || { echo "git gerekli." >&2; exit 1; }
-  [ -d "$project_dir/.git" ] || { echo "Bu dizin bir git deposu değil; güncelleme git ile yapılır." >&2; exit 1; }
-
-  mkdir -p "$project_dir/deploy" "$project_dir/backups"
-
-  # Aynı anda ikinci bir güncelleme/yedek çalışmasın (host agent + elle çakışması).
-  acquire_lock update
-  trap 'release_lock' EXIT INT TERM
-
-  # Önceki güncelleme yarıda kaldıysa (SIGKILL/elektrik) önce onu temizle.
-  if [ -f "$project_dir/deploy/.update-rollback" ]; then
-    echo "  Önceki güncelleme tamamlanmamış — önce geri alma çalıştırılıyor." >&2
-    UPD_LOG="$project_dir/deploy/recover-$(date -u +%Y%m%dT%H%M%SZ).log"; : > "$UPD_LOG"
-    UPD_PREV_COMMIT=$(sed -n 's/^prev_commit=//p' "$project_dir/deploy/.update-rollback" | head -n1)
-    UPD_PREV_RELEASE=$(sed -n 's/^prev_release=//p' "$project_dir/deploy/.update-rollback" | head -n1)
-    UPD_TARGET_VERSION=$(sed -n 's/^target_version=//p' "$project_dir/deploy/.update-rollback" | head -n1)
-    UPD_PRE_MIGRATE_VERSION=$(sed -n 's/^pre_migrate_version=//p' "$project_dir/deploy/.update-rollback" | head -n1)
-    _lm=$(sed -n 's/^migrated=//p' "$project_dir/deploy/.update-rollback" | head -n1)
-    UPD_PG_UPGRADED=$(sed -n 's/^pg_upgraded=//p' "$project_dir/deploy/.update-rollback" | head -n1); UPD_PG_UPGRADED=${UPD_PG_UPGRADED:-0}
-    UPD_PG_FROM_MAJOR=$(sed -n 's/^pg_from_major=//p' "$project_dir/deploy/.update-rollback" | head -n1)
-    UPD_PRE_BACKUP=$(sed -n 's/^pre_backup=//p' "$project_dir/deploy/.update-rollback" | head -n1)
-    [ -n "$UPD_PRE_BACKUP" ] || UPD_PRE_BACKUP=$(ls -1t "$project_dir"/backups/pre-update-*.varya 2>/dev/null | head -n1)
-    [ -n "$UPD_PREV_COMMIT" ] && rollback_update interrupted "${_lm:-0}"
-    rm -f "$project_dir/deploy/.update-rollback"
-    UPD_ROLLING_BACK=0
-  fi
-
-  UPD_LOG="$project_dir/deploy/update-$(date -u +%Y%m%dT%H%M%SZ).log"
-  : > "$UPD_LOG"
-  if [ "$UPD_REPORT" = 1 ]; then
-    UPD_TOKEN=$(env_get VARYAONE_UPDATE_AGENT_TOKEN)
-    _p=$(env_get VARYAONE_API_PORT); UPD_SELF_URL="http://127.0.0.1:${_p:-8080}"
-  fi
-
-  banner "Güncelleme"
-  UPD_FROM_VERSION=$(current_release)
-  UPD_PREV_COMMIT=$(git rev-parse HEAD)
-  UPD_PREV_RELEASE=$(env_get VARYAONE_RELEASE); [ -n "$UPD_PREV_RELEASE" ] || UPD_PREV_RELEASE=$UPD_FROM_VERSION
-
-  # 1) On kontroller
-  update_preflight || { report_result fail "Ön kontroller başarısız (bkz. yukarıdaki sebep)." 0; exit 1; }
-
-  # Hedef referansi coz
-  report_phase fetch "sürüm bilgisi alınıyor"
-  git fetch --tags --prune --quiet origin >>"$UPD_LOG" 2>&1 || { report_result fail "git fetch başarısız." 0; exit 1; }
-  if [ -z "$target_ref" ]; then
-    # Manual updates follow the stable release channel too: prefer the newest
-    # final SemVer tag instead of deploying whatever happens to be on main.
-    # Development repositories without release tags retain the old main/HEAD
-    # fallback so bootstrap environments still work.
-    target_ref=$(git tag --list 'v*' --sort=-version:refname \
-      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
-    if [ -n "$target_ref" ]; then
-      target_ref="refs/tags/$target_ref"
-    else
-      target_ref=$(git rev-parse --verify --quiet origin/HEAD >/dev/null 2>&1 && echo "origin/HEAD" || echo "origin/main")
-    fi
-  elif git rev-parse --verify --quiet "refs/tags/$target_ref" >/dev/null 2>&1; then
-    target_ref="refs/tags/$target_ref"
-  fi
-  git rev-parse --verify --quiet "$target_ref" >/dev/null 2>&1 || { report_result fail "Hedef sürüm bulunamadı: $target_ref" 0; exit 1; }
-  UPD_TARGET_VERSION=${target_ref#refs/tags/}
-
-  if [ "$assume_yes" != 1 ]; then
-    interactive || { echo "Etkileşimsiz çalıştırma için --yes gerekli." >&2; exit 2; }
-    ask_yesno "  $UPD_FROM_VERSION -> $target_ref güncellensin mi? (yedek otomatik alınır)" h || { echo "Vazgeçildi."; exit 0; }
-  fi
-
-  # 2) Anlik durum (geri donus noktasi)
-  report_phase snapshot "geri dönüş noktası kaydediliyor"
-  UPD_PRE_MIGRATE_VERSION=$(db_migration_version)
-  printf 'prev_commit=%s\nprev_release=%s\ntarget_version=%s\npre_migrate_version=%s\nstarted_at=%s\n' \
-    "$UPD_PREV_COMMIT" "$UPD_PREV_RELEASE" "$UPD_TARGET_VERSION" "${UPD_PRE_MIGRATE_VERSION:-}" "$(date -u +%FT%TZ)" \
-    > "$project_dir/deploy/.update-rollback"
-  for _svc in api worker frontend migrate; do
-    $DK image inspect "varyaone-${_svc}:latest" >/dev/null 2>&1 && \
-      $DK image tag "varyaone-${_svc}:latest" "varyaone-${_svc}:preupdate" 2>/dev/null || true
-  done
-  # Buradan sonra herhangi bir beklenmedik çıkış (hata/sinyal) otomatik geri alır.
-  trap 'rollback_update interrupted "$UPD_MIGRATED"' EXIT INT TERM
-
-  # 3) DB + dosya yedegi — sistem daha once kurulduysa ZORUNLU ve DOGRULANIR.
-  report_phase backup "tam sistem yedeği alınıyor"
-  if system_installed; then
-    _tag=$(printf '%s' "$target_ref" | sed 's#refs/tags/##; s#[^A-Za-z0-9._-]#-#g')
-    UPD_PRE_BACKUP="$project_dir/backups/pre-update-${_tag}-$(date -u +%Y%m%dT%H%M%SZ).varya"
-    if ! compose exec -T api varyaone backup create - > "$UPD_PRE_BACKUP.partial" 2>>"$UPD_LOG"; then
-      rm -f "$UPD_PRE_BACKUP.partial"
-      trap - EXIT INT TERM
-      report_result fail "Yedek alınamadı; güncelleme durduruldu (hiçbir şey değişmedi)." 0
-      rm -f "$project_dir/deploy/.update-rollback"; release_lock
-      exit 1
-    fi
-    mv "$UPD_PRE_BACKUP.partial" "$UPD_PRE_BACKUP"
-    if ! verify_backup_file "$UPD_PRE_BACKUP"; then
-      rm -f "$UPD_PRE_BACKUP"
-      trap - EXIT INT TERM
-      report_result fail "Yedek doğrulanamadı; güncelleme durduruldu (hiçbir şey değişmedi)." 0
-      rm -f "$project_dir/deploy/.update-rollback"; release_lock
-      exit 1
-    fi
-    if ! sha256sum "$UPD_PRE_BACKUP" > "$UPD_PRE_BACKUP.sha256" 2>/dev/null; then
-      report_phase backup "UYARI: sha256sum yok — yedek sağlama dosyası yazılamadı"
-    fi
-    report_phase backup "yedek doğrulandı: $(basename "$UPD_PRE_BACKUP")"
-    printf 'pre_backup=%s\n' "$UPD_PRE_BACKUP" >> "$project_dir/deploy/.update-rollback"
-    # Son 3 on-guncelleme yedegini tut.
-    ls -1t "$project_dir"/backups/pre-update-*.varya 2>/dev/null | tail -n +4 | while read -r _old; do
-      rm -f "$_old" "$_old.sha256"
-    done
-  else
-    report_phase backup "sistem henüz kurulmamış — yedek atlanıyor (ilk kurulum gibi)"
-  fi
-
-  # 4) Kaynak kodu hedef surume getir
-  report_phase fetch "kaynak kod güncelleniyor ($target_ref)"
-  git checkout --quiet --force --detach "$target_ref" >>"$UPD_LOG" 2>&1 || rollback_update fetch 0
-  UPD_NEW_RELEASE=$(current_release)
-  env_set VARYAONE_RELEASE "$UPD_NEW_RELEASE"
-
-  # 5) Yeni image'lari derle (DB'ye henuz dokunulmadi)
-  report_phase build "docker görüntüleri derleniyor"
-  compose build >>"$UPD_LOG" 2>&1 || rollback_update build 0
-
-  # 5b) PostgreSQL majör yükseltmesi (örn. 18 -> 19). Aynı majörde bütünüyle
-  # atlanır. `postgres` imajı sürümlü PGDATA kullanır (/var/lib/postgresql/<majör>/
-  # docker), dolayısıyla yeni imaj eski veriye DOKUNMADAN yeni majör dizinine boş
-  # initdb yapar. Yapılacak tek şey güncelleme öncesi .varya dökümünü yeni majöre
-  # yüklemek. Eski majör dizini volume'de kalır; hata halinde rollback eski imaja
-  # dönünce o dizin bozulmadan devreye girer (yıkıcı geri yükleme gerekmez).
-  UPD_PG_UPGRADED=0
-  _pg_run=$(pg_server_major)
-  _pg_new=$(compose_pg_major)
-  if [ -n "$_pg_run" ] && [ -n "$_pg_new" ] && [ "$_pg_new" -gt "$_pg_run" ]; then
-    report_phase pg-upgrade "PostgreSQL $_pg_run -> $_pg_new: veritabanı taşınıyor"
-    if [ -z "$UPD_PRE_BACKUP" ] || [ ! -f "$UPD_PRE_BACKUP" ]; then
-      report_phase pg-upgrade "majör yükseltme için doğrulanmış yedek yok"
-      rollback_update pg-upgrade 0
-    fi
-    UPD_PG_UPGRADED=1
-    UPD_PG_FROM_MAJOR=$_pg_run
-    sed -i "s/^started_at=/pg_upgraded=1\npg_from_major=$_pg_run\nstarted_at=/" "$project_dir/deploy/.update-rollback" 2>/dev/null || true
-    compose stop >>"$UPD_LOG" 2>&1
-    # --no-deps: `migrate` servisini ÇALIŞTIRMA. Geri yükleme tertemiz boş bir
-    # veritabanına gitmeli; şema sonraki `migrate` adımında kurulur.
-    compose up -d --no-deps postgres >>"$UPD_LOG" 2>&1 || rollback_update pg-upgrade 0
-    _t=0; while [ "$_t" -lt 90 ]; do
-      compose exec -T postgres pg_isready >/dev/null 2>&1 && break
-      sleep 3; _t=$((_t + 3))
-    done
-    compose exec -T postgres pg_isready >/dev/null 2>&1 || rollback_update pg-upgrade 0
-    compose up -d --no-deps api >>"$UPD_LOG" 2>&1 || rollback_update pg-upgrade 0
-    _t=0; while [ "$_t" -lt 60 ]; do
-      compose exec -T api true >/dev/null 2>&1 && break
-      sleep 3; _t=$((_t + 3))
-    done
-    if ! compose exec -T api varyaone backup restore - --force < "$UPD_PRE_BACKUP" >>"$UPD_LOG" 2>&1; then
-      report_phase pg-upgrade "yeni majöre geri yükleme başarısız"
-      rollback_update pg-upgrade 1
-    fi
-    report_phase pg-upgrade "veritabanı PostgreSQL $_pg_new üzerine yüklendi (şema sürümü $UPD_PRE_MIGRATE_VERSION)"
-  fi
-
-  # 6) Migration — donusu olmayan nokta
-  report_phase migrate "veritabanı taşınıyor"
-  UPD_MIGRATED=1
-  sed -i 's/^started_at=/migrated=1\nstarted_at=/' "$project_dir/deploy/.update-rollback" 2>/dev/null || true
-  compose run --rm migrate >>"$UPD_LOG" 2>&1 || rollback_update migrate 1
-
-  # 6b) Zorlama zaten açıksa (VARYAONE_APP_DATABASE_URL dolu) varyaone_app
-  # grant'lerini güncel şemaya göre tazele — yeni tablolar app rolüne otomatik
-  # açılır (ALTER DEFAULT PRIVILEGES) ama bu ekstra bir emniyet ağı. Güncelleme
-  # sırasında zorlama KENDİLİĞİNDEN açılmaz; operatör `./deploy.sh` fresh install
-  # veya elle etkinleştirir.
-  #
-  # Bir majör PostgreSQL yükseltmesi veritabanini BOS bir kumeye geri yukler.
-  # Roller kume seviyesindedir, yedekle tasinmaz: varyaone_app'i migration
-  # 000148 parolasiz ve NOLOGIN olarak yeniden yaratir. Yani bu adim yalnizca
-  # bir emniyet agi degil, yukseltmeden sonra rolun tek onarim yeridir.
-  #
-  # Basarisiz olursa .env'deki DSN giris yapamayan bir role isaret etmeye devam
-  # ederdi: api baglanamaz, /health/ready 503 doner ve butun kurulum ayaga
-  # kalkmaz. Bunun yerine URL temizlenir; sunucu superuser baglantisina doner
-  # (izolasyon yalnizca uygulama yukune dayanir) ve sistem ayakta kalir.
-  if [ -n "$(env_get VARYAONE_APP_DATABASE_URL)" ]; then
-    if ! ensure_app_role >>"$UPD_LOG" 2>&1; then
-      env_set VARYAONE_APP_DATABASE_URL ""
-      report_phase migrate "UYARI: varyaone_app rolü kurulamadı — superuser bağlantısına dönüldü. Düzeltmek için: ./deploy.sh repair-app-role"
-    fi
-  fi
-
-  # 7) Servisleri yeniden baslat
-  report_phase restart "servisler yeniden başlatılıyor"
-  compose up -d >>"$UPD_LOG" 2>&1 || rollback_update restart 1
-  reload_nginx_soft >>"$UPD_LOG" 2>&1
-
-  # 8) Saglik kontrolu
-  report_phase healthcheck "sağlık kontrolü (en fazla 3 dk)"
-  wait_healthy 180 || rollback_update healthcheck 1
-
-  # 9) Dogrulama
-  report_phase verify "sürüm doğrulanıyor"
-  compose exec -T api varyaone migrate status >>"$UPD_LOG" 2>&1 || rollback_update verify 1
-
-  # Basari — otomatik geri alma trap'ini kaldır.
-  trap - EXIT INT TERM
-  for _svc in api worker frontend migrate; do
-    $DK image rm "varyaone-${_svc}:preupdate" >/dev/null 2>&1 || true
-  done
-  $DK image prune -f >/dev/null 2>&1 || true
-  # Majör yükseltme başarılıysa eski majörün veri dizinini geri kazan.
-  [ "${UPD_PG_UPGRADED:-0}" = 1 ] && pg_drop_old_major_dir "${UPD_PG_FROM_MAJOR:-}"
-  rm -f "$project_dir/deploy/.update-rollback"
-  report_phase done "tamamlandı — $UPD_FROM_VERSION -> $UPD_NEW_RELEASE"
-  report_result ok "" 0
-  release_lock
-  echo
-  echo "  Güncelleme tamamlandı: $UPD_NEW_RELEASE"
-}
-
-install_agent() {
-  banner "Güncelleme Aracı Kurulumu"
-  have systemctl || { echo "systemd (systemctl) bulunamadı; bu host'ta agent kurulamaz." >&2; return 1; }
-  [ -f .env ] || { echo ".env yok; önce ./deploy.sh install." >&2; return 1; }
-  elevate || { echo "Bu işlem root/sudo gerektirir." >&2; return 1; }
-
-  ensure_update_token
-
-  _run_user=${SUDO_USER:-$(id -un)}
-  _unit=/etc/systemd/system/varyaone-update-agent.service
-  sed -e "s#__USER__#${_run_user}#g" -e "s#__REPO_DIR__#${project_dir}#g" \
-    "$project_dir/deploy/varyaone-update-agent.service" | run_root tee "$_unit" >/dev/null
-  run_root chmod 0644 "$_unit"
-  run_root systemctl daemon-reload
-  run_root systemctl enable --now varyaone-update-agent.service
-
-  # Token .env'e yeni yazilmis olabilir; api'yi onu ortam degiskeni olarak
-  # gorecek sekilde yeniden olustur, yoksa /internal/update/* uclari kapali
-  # kalir ve agent 401 alir.
-  if $DK compose version >/dev/null 2>&1 && [ -n "$(compose ps -q api 2>/dev/null)" ]; then
-    echo "  api konteyneri güncel belirteçle yeniden oluşturuluyor..."
-    compose up -d --force-recreate api >/dev/null 2>&1 || true
-    reload_nginx_soft
-  fi
-
-  echo
-  echo "  Kuruldu ve başlatıldı (kullanıcı: ${_run_user})."
-  echo "  Durum:   systemctl status varyaone-update-agent"
-  echo "  Günlük:  journalctl -u varyaone-update-agent -f"
-}
-
-uninstall_agent() {
-  banner "Güncelleme Aracı Kaldırma"
-  have systemctl || { echo "systemd bulunamadı." >&2; return 1; }
-  elevate || { echo "Bu işlem root/sudo gerektirir." >&2; return 1; }
-  run_root systemctl disable --now varyaone-update-agent.service >/dev/null 2>&1 || true
-  run_root rm -f /etc/systemd/system/varyaone-update-agent.service
-  run_root systemctl daemon-reload
-  echo "  Kaldırıldı. (VARYAONE_UPDATE_AGENT_TOKEN .env içinde kaldı; elle silebilirsiniz.)"
-}
-
-# Kurulumun son adimi: systemd varsa guncelleme agent'ini sessizce kur.
-# Basarisiz olursa kurulumu bozmaz; sadece uyarir.
-post_install_agent() {
-  # Kendi kendine guncelleme varsayilan kapali: katalog adresi bos ise sunucu
-  # guncelleme uclarini hic mount etmez, dolayisiyla ajan da yoklayacak bir sey
-  # bulamaz ve loglari 404/500 ile doldurur. Acmak isteyen once
-  # VARYAONE_UPDATE_CATALOG_URL'i doldurur, sonra `./deploy.sh install-agent`.
-  if [ -z "$(env_get VARYAONE_UPDATE_CATALOG_URL)" ]; then
-    echo "  Not: güncelleme kapalı — otomatik güncelleme aracı kurulmadı."
-    return 0
-  fi
-  have systemctl || { echo "  Not: systemd yok — otomatik güncelleme aracı atlandı."; return 0; }
-  if ! elevate 2>/dev/null; then
-    echo "  Not: otomatik güncelleme aracı için yetki yok. Sonra: sudo ./deploy.sh install-agent"
-    return 0
-  fi
-  echo
-  echo "Otomatik güncelleme aracı kuruluyor (varyaone-update-agent.service)..."
-  if install_agent; then
-    :
-  else
-    echo "  Uyarı: güncelleme aracı kurulamadı. Sonra deneyin: ./deploy.sh install-agent" >&2
-  fi
-}
 
 # check <etiket> ; sonra: pass "detay"  |  fail "neden"  |  warn "not"
 # (Türkçe çok baytlı karakterler için hizalama awk length() ile yapılır.)
@@ -1749,24 +1173,6 @@ doctor() {
   check "Çalışan sürüm"
   _rel=$(env_get VARYAONE_RELEASE); _git=$(current_release)
   pass "${_rel:-?} (git: ${_git})"
-
-  check "Güncelleme aracı"
-  if have systemctl && run_root systemctl is-active --quiet varyaone-update-agent 2>/dev/null; then
-    pass "varyaone-update-agent çalışıyor"
-  elif have systemctl && [ -f /etc/systemd/system/varyaone-update-agent.service ]; then
-    warn "kurulu ama çalışmıyor — systemctl start varyaone-update-agent"
-  elif [ -z "$(env_get VARYAONE_UPDATE_AGENT_TOKEN)" ]; then
-    warn "belirteç yok — otomatik güncelleme kapalı"
-  else
-    warn "kurulu değil — ./deploy.sh install-agent"
-  fi
-
-  check "Yarım kalan güncelleme"
-  if [ -f "$project_dir/deploy/.update-rollback" ]; then
-    fail "önceki güncelleme tamamlanmamış — ./deploy.sh recover"
-  else
-    pass "yok"
-  fi
 
   check "Yedek dizini"
   if [ -d "$project_dir/backups" ]; then
@@ -1909,7 +1315,6 @@ uninstall() {
   echo "    • Docker volume'leri — PostgreSQL veritabanı ve yüklenen dosyalar DAHİL"
   echo "    • Derlenen image'lar (varyaone-*) + çekilen nginx/certbot/postgres image'ları"
   echo "    • Üretilen .env (+ geçici kopyaları), nginx yapılandırması, kilitler, güncelleme günlükleri"
-  echo "    • systemd güncelleme aracı (varyaone-update-agent)"
   [ "$keep_backups" = 1 ] || echo "    • backups/ dizini (tüm .varya yedekleri)"
   [ "$purge" = 1 ] && echo "    • proje dizininin kendisi: $project_dir"
   echo
@@ -1949,16 +1354,6 @@ uninstall() {
   fi
 
   # 2) systemd güncelleme aracı.
-  if have systemctl && { [ -f /etc/systemd/system/varyaone-update-agent.service ] || run_root systemctl is-enabled varyaone-update-agent.service >/dev/null 2>&1; }; then
-    if elevate 2>/dev/null; then
-      echo "  systemd güncelleme aracı kaldırılıyor..."
-      run_root systemctl disable --now varyaone-update-agent.service >/dev/null 2>&1 || true
-      run_root rm -f /etc/systemd/system/varyaone-update-agent.service
-      run_root systemctl daemon-reload >/dev/null 2>&1 || true
-    else
-      echo "  Uyarı: yetki yok — systemd aracı kalabilir: sudo ./deploy.sh uninstall-agent" >&2
-    fi
-  fi
 
   # 3) Üretilen dosyalar.
   echo "  Üretilen dosyalar siliniyor..."
@@ -2007,10 +1402,6 @@ case "${1:-}" in
   install) shift; install_stack "$@" ;;
   bootstrap) bootstrap ;;
   rebuild) shift; rebuild "$@" ;;
-  update) shift; run_update "$@" ;;
-  recover) recover_update ;;
-  install-agent) install_agent || exit 1 ;;
-  uninstall-agent) uninstall_agent || exit 1 ;;
   status) show_status ;;
   doctor) doctor ;;
   repair-app-role) repair_app_role ;;
