@@ -35,3 +35,17 @@ func TestSettingsEnv(t *testing.T) {
 		t.Errorf("malformed line should be skipped")
 	}
 }
+
+// TestSelfUpdateIsOffByDefault pins the shipped Windows behaviour: the desktop
+// build must not carry a release catalog of its own.
+//
+// A baked-in default here is invisible from compose.yaml, so the deployment
+// that turned self-update off everywhere else would still have had the desktop
+// polling, applying and offering releases. If someone puts an address back in
+// this constant, updates silently return for every Windows installation.
+func TestSelfUpdateIsOffByDefault(t *testing.T) {
+	if defaultUpdateCatalogURLs != "" {
+		t.Fatalf("desktop ships a release catalog by default (%q); self-update must stay opt-in",
+			defaultUpdateCatalogURLs)
+	}
+}

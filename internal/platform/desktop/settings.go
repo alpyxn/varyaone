@@ -15,14 +15,18 @@ const (
 	defaultPulseEndpoint  = "https://varya-pulse.varyaone.workers.dev"
 	defaultPulseIngestKey = "0290a2e2fa410b7b7d4656496635a36695a84419027c134225de36b3bf67ce56"
 
-	// defaultUpdateCatalogURLs is the release catalog the desktop updater polls:
-	// the asset attached to the newest published GitHub release, with a
-	// raw.githubusercontent.com copy as a fallback for networks where the
-	// release CDN is unreachable. A comma-separated list — see
-	// internal/platform/config.Load / internal/update/catalog.go. It is a
-	// public document with no key, so it works even with pulse disabled.
-	defaultUpdateCatalogURLs = "https://github.com/alpyxn/varyaone/releases/latest/download/latest.json," +
-		"https://raw.githubusercontent.com/alpyxn/varyaone/main/release/latest.json"
+	// defaultUpdateCatalogURLs is empty: self-update is opt-in on the desktop
+	// exactly as it is on a compose install. With no catalog configured the
+	// update service is never constructed, the applier never runs, the
+	// endpoints are not mounted and no Güncelleme page appears.
+	//
+	// Whoever turns it back on sets VARYAONE_UPDATE_CATALOG_URL in the
+	// installation's settings file or environment to:
+	//   https://github.com/alpyxn/varyaone/releases/latest/download/latest.json,
+	//   https://raw.githubusercontent.com/alpyxn/varyaone/main/release/latest.json
+	// (the release asset, with a raw.githubusercontent.com copy as fallback for
+	// networks where the release CDN is unreachable).
+	defaultUpdateCatalogURLs = ""
 	// defaultUpdateArtifactPrefix is the only location a stock build will
 	// download a Windows update artifact from — a catalog entry pointing
 	// anywhere else has its artifact fields dropped before the updater ever
