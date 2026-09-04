@@ -1,7 +1,9 @@
-export const TRY_AMOUNT_PATTERN = /^(0|[1-9][0-9]*)(?:[.,]([0-9]{1,2}))?$/;
+import { parseMoneyInput } from '$lib/design/decimal';
+
+export const TRY_AMOUNT_PATTERN = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,2}))?$/;
 
 export function normalizeTRYAmount(value: string): string | null {
-  const match = TRY_AMOUNT_PATTERN.exec(value.trim());
+  const match = TRY_AMOUNT_PATTERN.exec(parseMoneyInput(value));
   if (!match) return null;
   const normalized = `${match[1]}.${(match[2] ?? '').padEnd(2, '0')}`;
   return normalized === '0.00' ? null : normalized;

@@ -6,6 +6,7 @@
   import { Input } from '$lib/components/ui/input';
   import { Badge } from '$lib/components/ui/badge';
   import * as Field from '$lib/components/ui/field';
+  import { parseMoneyInput, trimDecimalZeros } from '$lib/design/decimal';
   import * as hr from '$lib/features/hr/api';
   import { money, type LegislationPack, type WagePreview } from '$lib/features/hr/types';
 
@@ -60,13 +61,15 @@
 
   async function save(e: SubmitEvent) {
     e.preventDefault();
-    if (saving || !form.minimum_monthly_gross.trim()) return;
+    // Read in Turkish notation: "26.005,50" is twenty-six thousand lira.
+    const gross = parseMoneyInput(form.minimum_monthly_gross);
+    if (saving || !gross) return;
     saving = true;
     error = '';
     msg = '';
     try {
       const result = await hr.replaceMinimumWage({
-        minimum_monthly_gross: form.minimum_monthly_gross.trim(),
+        minimum_monthly_gross: gross,
         change_reason: form.change_reason.trim() || undefined
       });
       msg =
@@ -135,7 +138,7 @@
           variant="outline"
           onclick={() => {
             showForm = !showForm;
-            form = { minimum_monthly_gross: current?.gross ?? '', change_reason: '' };
+            form = { minimum_monthly_gross: trimDecimalZeros(current?.gross), change_reason: '' };
           }}>{showForm ? 'Vazgeç' : 'Yeni tanım'}</Button
         >
       {/if}

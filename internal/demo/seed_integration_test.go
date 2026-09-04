@@ -71,9 +71,26 @@ func assertSeeded(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 		"finance payments":         {`SELECT count(*) FROM finance_payments WHERE company_id=$1`, 1},
 		"employees":                {`SELECT count(*) FROM employees WHERE company_id=$1`, 6},
 		"fixed assets":             {`SELECT count(*) FROM fixed_assets WHERE company_id=$1`, 4},
-		"posted sales invoices":    {`SELECT count(*) FROM sales_invoices WHERE company_id=$1 AND status='POSTED'`, 10},
+		"posted sales invoices":    {`SELECT count(*) FROM sales_invoices WHERE company_id=$1 AND status='POSTED'`, 11},
 		"confirmed sales orders":   {`SELECT count(*) FROM sales_orders WHERE company_id=$1 AND status='CONFIRMED'`, 3},
-		"posted purchase invoices": {`SELECT count(*) FROM purchase_invoices WHERE company_id=$1 AND status='POSTED'`, 3},
+		"posted purchase invoices": {`SELECT count(*) FROM purchase_invoices WHERE company_id=$1 AND status='POSTED'`, 5},
+		// The showcase is only as good as the parts of the product it reaches:
+		// a second warehouse, variant-tracked stock, both returns, the purchase
+		// order chain, dispatch notes and transfers each have screens that are
+		// empty without seeded data.
+		"warehouses":              {`SELECT count(*) FROM warehouses WHERE company_id=$1 AND NOT is_system`, 2},
+		"product variants":        {`SELECT count(*) FROM product_variants WHERE company_id=$1`, 11},
+		"variant stock positions": {`SELECT count(*) FROM stock_positions WHERE company_id=$1 AND variant_id IS NOT NULL`, 8},
+		"store warehouse stock":   {`SELECT count(*) FROM stock_positions p JOIN warehouses w ON w.company_id=p.company_id AND w.id=p.warehouse_id WHERE p.company_id=$1 AND w.code='KDK' AND p.physical_quantity>0`, 3},
+		"purchase orders":         {`SELECT count(*) FROM purchase_orders WHERE company_id=$1`, 1},
+		"posted goods receipts":   {`SELECT count(*) FROM goods_receipts WHERE company_id=$1 AND status='POSTED'`, 1},
+		"posted purchase returns": {`SELECT count(*) FROM purchase_returns WHERE company_id=$1 AND status='POSTED'`, 1},
+		"posted sales dispatches": {`SELECT count(*) FROM sales_dispatches WHERE company_id=$1 AND status='POSTED'`, 5},
+		"posted sales returns":    {`SELECT count(*) FROM sales_returns WHERE company_id=$1 AND status='POSTED'`, 1},
+		"received transfers":      {`SELECT count(*) FROM warehouse_transfers WHERE company_id=$1 AND state='RECEIVED'`, 2},
+		"transfers in transit":    {`SELECT count(*) FROM warehouse_transfers WHERE company_id=$1 AND state='IN_TRANSIT'`, 1},
+		"manual stock operations": {`SELECT count(*) FROM stock_movement_operations WHERE company_id=$1`, 1},
+		"manual stock movements":  {`SELECT count(*) FROM stock_movements WHERE company_id=$1 AND movement_type='MANUAL_ADJUSTMENT'`, 2},
 	}
 	for name, check := range counts {
 		var actual int

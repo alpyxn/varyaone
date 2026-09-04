@@ -21,7 +21,7 @@
   import { listProducts } from '$lib/features/products/api';
   import type { Product } from '$lib/features/products/types';
   import { densityPreference } from '$lib/design/density.svelte';
-  import { formatMoney, formatQuantity } from '$lib/design/formatters';
+  import { formatQuantity, formatUnitPrice } from '$lib/design/formatters';
   import { listWarehouses } from '$lib/features/warehouses/api';
   import { isActiveStandardWarehouse, type Warehouse } from '$lib/features/warehouses/types';
 
@@ -93,14 +93,14 @@
     {
       id: 'purchase_price',
       header: 'Alış Fiyatı',
-      accessor: (row) => formatMoney(row.purchase_price || '0', baseCurrency),
+      accessor: (row) => formatUnitPrice(row.purchase_price || '0', baseCurrency),
       width: 125,
       align: 'right'
     },
     {
       id: 'net_price',
       header: 'Net Fiyat',
-      accessor: (row) => formatMoney(row.net_price || row.sales_price || '0', baseCurrency),
+      accessor: (row) => formatUnitPrice(row.net_price || row.sales_price || '0', baseCurrency),
       width: 125,
       align: 'right'
     },

@@ -11,6 +11,7 @@
   import { DateInput } from '$lib/components/varya/date-input';
   import { FileDrop } from '$lib/components/varya/file-drop';
   import { formatDate } from '$lib/design/formatters';
+  import { parseMoneyInput, trimDecimalZeros } from '$lib/design/decimal';
   import { localizedEnum } from '$lib/design/labels';
   import { advanceStatusLabel } from '$lib/features/hr/advance';
   import * as hr from '$lib/features/hr/api';
@@ -179,7 +180,7 @@
     try {
       const preview = await hr.wagePreview({
         mode: 'gross',
-        amount: String(t.gross_wage),
+        amount: parseMoneyInput(t.gross_wage),
         scheme: t.contribution_scheme_code || undefined
       });
       activeTermNet = preview.net;
@@ -193,8 +194,8 @@
     wageCalculating = true;
     try {
       const preview = await hr.minimumWage();
-      termForm.gross_wage = preview.gross;
-      termForm.net_wage = preview.net;
+      termForm.gross_wage = trimDecimalZeros(preview.gross);
+      termForm.net_wage = trimDecimalZeros(preview.net);
     } catch (cause) {
       wageCalcError =
         cause instanceof APIRequestError ? cause.message : 'Güncel asgari ücret alınamadı.';
@@ -219,9 +220,11 @@
   }
 
   async function recalcWage(mode: 'gross' | 'net') {
-    const amount = (mode === 'gross' ? termForm.gross_wage : termForm.net_wage).trim();
+    // Read in Turkish notation before asking the server, so "12.500" is
+    // twelve thousand five hundred lira rather than twelve and a half.
+    const amount = parseMoneyInput(mode === 'gross' ? termForm.gross_wage : termForm.net_wage);
     // Only ask the server once the field holds a plain positive number.
-    if (!/^\d+([.,]\d{1,2})?$/.test(amount) || Number(amount.replace(',', '.')) <= 0) {
+    if (!/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0) {
       wageCalcError = '';
       return;
     }
@@ -230,11 +233,11 @@
     try {
       const preview = await hr.wagePreview({
         mode,
-        amount: amount.trim(),
+        amount,
         scheme: termForm.contribution_scheme_code || undefined
       });
-      if (mode === 'gross') termForm.net_wage = preview.net;
-      else termForm.gross_wage = preview.gross;
+      if (mode === 'gross') termForm.net_wage = trimDecimalZeros(preview.net);
+      else termForm.gross_wage = trimDecimalZeros(preview.gross);
     } catch (cause) {
       wageCalcError = cause instanceof APIRequestError ? cause.message : 'Hesaplanamadı.';
     } finally {
@@ -1101,11 +1104,12 @@
             class="row-form"
             onsubmit={(e) => {
               e.preventDefault();
-              if (!termForm.gross_wage.trim()) return;
+              const grossWage = parseMoneyInput(termForm.gross_wage);
+              if (!grossWage) return;
               void run(
                 () =>
                   hr.createTerm(employeeID, activeEmploymentID, {
-                    gross_wage: termForm.gross_wage.trim(),
+                    gross_wage: grossWage,
                     work_type: termForm.work_type,
                     sgk_status: termForm.sgk_status,
                     is_minimum_wage: termForm.is_minimum_wage,

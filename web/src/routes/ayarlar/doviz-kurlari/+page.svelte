@@ -8,7 +8,7 @@
     updateExchangeRateSettings
   } from '$lib/features/pricing/api';
   import type { ExchangeRateDashboard } from '$lib/features/pricing/types';
-  import { formatDate, formatMoney } from '$lib/design/formatters';
+  import { formatDate, formatUnitPrice } from '$lib/design/formatters';
 
   let session = $state<Session | null>(null);
   let dashboard = $state<ExchangeRateDashboard>();
@@ -171,7 +171,7 @@
                 ><strong>{item.currency_code}</strong><small>{item.rate_date} · {item.source}</small
                 ></span
               >
-              <strong>{formatMoney(item.rate_to_base, dashboard.base_currency)}</strong>
+              <strong>{formatUnitPrice(item.rate_to_base, dashboard.base_currency)}</strong>
               <a href={item.source_url} target="_blank" rel="noreferrer">Kaynağı gör</a>
             </div>
           {/each}

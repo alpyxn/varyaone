@@ -5,6 +5,7 @@
   import { api, APIRequestError, type Session } from '$lib/api';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import { parseMoneyInput } from '$lib/design/decimal';
   import NegativeBalanceReason from './NegativeBalanceReason.svelte';
 
   type Account = {
@@ -77,7 +78,7 @@
   });
 
   $effect(() => {
-    const signature = `${form.from_account_id}|${form.to_account_id}|${form.amount.trim()}`;
+    const signature = `${form.from_account_id}|${form.to_account_id}|${parseMoneyInput(form.amount)}`;
     if (needsOverride && signature !== overrideSignature) {
       needsOverride = false;
       form.override_reason = '';
@@ -93,7 +94,10 @@
       error = 'Kaynak ve hedef hesap seçin.';
       return;
     }
-    if (!/^\d+(\.\d{1,4})?$/.test(form.amount.trim()) || Number(form.amount) <= 0) {
+    // The field is read in Turkish notation, so "1.500,50" is fifteen hundred
+    // lira and fifty kuruş rather than a rejected value or a stray decimal.
+    const amount = parseMoneyInput(form.amount);
+    if (!/^\d+(\.\d{1,4})?$/.test(amount) || Number(amount) <= 0) {
       error = 'Geçerli bir tutar girin.';
       return;
     }
@@ -108,7 +112,7 @@
         body: JSON.stringify({
           from_account_id: form.from_account_id,
           to_account_id: form.to_account_id,
-          amount: form.amount.trim(),
+          amount,
           transaction_date: `${form.transaction_date}T00:00:00+03:00`,
           description: form.description.trim(),
           external_reference: form.external_reference.trim(),
@@ -123,7 +127,7 @@
         cause.code === 'NEGATIVE_BALANCE_CONFIRMATION_REQUIRED'
       ) {
         needsOverride = true;
-        overrideSignature = `${form.from_account_id}|${form.to_account_id}|${form.amount.trim()}`;
+        overrideSignature = `${form.from_account_id}|${form.to_account_id}|${amount}`;
         error =
           'Kaynak hesap bu çıkış için negatife düşüyor. Yetkiliyseniz gerekçe girip yeniden deneyin.';
       } else if (cause instanceof APIRequestError && cause.code === 'NEGATIVE_BALANCE_BLOCKED') {

@@ -25,7 +25,7 @@ describe('describeBalance', () => {
   });
 
   it('keeps the currency symbol', () => {
-    expect(describeBalance('-9.1534', 'GBP').headline).toBe('9,1534 £ alacak');
+    expect(describeBalance('-9.1534', 'GBP').headline).toBe('9,15 £ alacak');
   });
 
   it('normalizes negative zero and preserves very large exact amounts', () => {

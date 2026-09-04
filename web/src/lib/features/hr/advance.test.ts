@@ -13,7 +13,11 @@ describe('employee advance UI rules', () => {
     expect(validTRYAmount('1250,5')).toBe(true);
     expect(normalizeTRYAmount('1250')).toBe('1250.00');
     expect(normalizeTRYAmount('1250,5')).toBe('1250.50');
-    expect(validTRYAmount('1.234')).toBe(false);
+    // Turkish notation: the dot groups the thousands, so "1.234" is the
+    // amount the user read off the screen, not one lira and change.
+    expect(normalizeTRYAmount('1.234')).toBe('1234.00');
+    expect(normalizeTRYAmount('1.234,50')).toBe('1234.50');
+    expect(validTRYAmount('1.2345')).toBe(false);
     expect(validTRYAmount('0.00')).toBe(false);
   });
   it('uses the browser-local business day instead of a UTC slice', () => {

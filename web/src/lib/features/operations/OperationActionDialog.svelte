@@ -5,7 +5,8 @@
     addDecimalStrings,
     canonicalDecimal,
     decimalNumber,
-    subtractDecimalStrings
+    subtractDecimalStrings,
+    trimDecimalZeros
   } from '$lib/design/decimal';
   import { formatMoney, formatQuantity } from '$lib/design/formatters';
   import { DateInput } from '$lib/components/varya/date-input';
@@ -860,7 +861,7 @@
               exchangeBase = dashboard.base_currency || 'TRY';
               const next: Record<string, string> = {};
               for (const item of dashboard.items ?? [])
-                next[item.currency_code] = item.rate_to_base;
+                next[item.currency_code] = trimDecimalZeros(item.rate_to_base) || '1';
               exchangeRates = next;
               applyExchangeRate(payment);
               applyExchangeRate(manual);
@@ -934,7 +935,7 @@
         document_no: item.document_no ? String(item.document_no) : undefined,
         document_date: String(item.document_date ?? ''),
         due_date: item.due_date ? String(item.due_date) : undefined,
-        open_amount: String(item.open_amount ?? '0'),
+        open_amount: trimDecimalZeros(String(item.open_amount ?? '')) || '0',
         applied: '0'
       }));
       const prefillDocumentID = paymentPrefill?.documentID?.trim();

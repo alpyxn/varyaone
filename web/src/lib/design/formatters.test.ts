@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatAmount,
   formatDate,
   formatMoney,
+  formatUnitPrice,
   formatQuantity,
   formatQuantityWithUnit,
   isNegativeDecimal,
@@ -11,7 +13,14 @@ import {
 describe('Turkish ERP formatters', () => {
   it('formats exact decimal strings without duplicating presentation rules', () => {
     expect(formatMoney('142450.20', 'TRY')).toMatch(/142\.450,20\s*₺/);
-    expect(formatMoney('10.12500000', 'TRY')).toMatch(/^10,125\s*₺/);
+    // A money amount is read at the two decimals the currency is counted in;
+    // the storage scale behind it is rounded away rather than printed.
+    expect(formatMoney('10.12500000', 'TRY')).toMatch(/^10,13\s*₺/);
+    expect(formatMoney('1234.5678', 'TRY')).toMatch(/^1\.234,57\s*₺/);
+    expect(formatAmount('1234.5678')).toBe('1.234,57');
+    // A unit price keeps the digits it was priced with.
+    expect(formatUnitPrice('10.12500000', 'TRY')).toMatch(/^10,125\s*₺/);
+    expect(formatUnitPrice('42.15340000', 'TRY')).toMatch(/^42,1534\s*₺/);
     expect(formatMoney('0.000000000000', 'TRY')).toMatch(/^0,00\s*₺/);
     expect(formatQuantity('1250.500')).toBe('1.250,5');
     expect(formatQuantity('1.00000000')).toBe('1');

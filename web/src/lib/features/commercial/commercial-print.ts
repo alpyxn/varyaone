@@ -7,7 +7,7 @@
  */
 import type { Company } from '$lib/api';
 import { trimDecimalZeros } from '$lib/design/decimal';
-import { formatMoney, formatQuantityWithUnit } from '$lib/design/formatters';
+import { formatMoney, formatQuantityWithUnit, formatUnitPrice } from '$lib/design/formatters';
 import { ph, type PrintDocumentInput, type PrintStamp } from '$lib/design/print';
 import type { Party } from '$lib/features/parties/types';
 import { lineAmounts, lineComponentAmounts } from './commercial-calc';
@@ -232,7 +232,7 @@ export function buildCommercialDocument(input: BuildCommercialDocumentInput): Pr
             `${component.name || component.code} ${
               component.calculationType === 'PERCENTAGE'
                 ? `%${trimDecimalZeros(component.rate)}`
-                : formatMoney(component.rate, currency)
+                : formatUnitPrice(component.rate, currency)
             }`
         )
         .join(', ');
@@ -241,7 +241,7 @@ export function buildCommercialDocument(input: BuildCommercialDocumentInput): Pr
         <td>${ph(lineDescription(line))}${extraTaxes ? `<small class="line-taxes">${ph(extraTaxes)}</small>` : ''}</td>
         <td>${ph(line.warehouse?.title ?? '')}</td>
         <td class="right">${ph(formatQuantityWithUnit(line.quantity, line.unitCode))}</td>
-        <td class="right">${ph(formatMoney(line.unitPrice || '0', currency))}</td>
+        <td class="right">${ph(formatUnitPrice(line.unitPrice || '0', currency))}</td>
         <td class="right">${discountRate && discountRate !== '0' ? ph(`%${discountRate}`) : '—'}</td>
         <td class="right">${taxRate && taxRate !== '0' ? ph(`%${taxRate}`) : '—'}</td>
         <td class="right">${ph(line.persistedTotal ? lineTotal(line, currency) : formatMoney(amounts.total, currency))}</td>

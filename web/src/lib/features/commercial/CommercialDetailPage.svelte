@@ -388,7 +388,7 @@
       dueDate: dateOnly(next.due_date, ''),
       validUntil: dateOnly(next.valid_until, ''),
       currency: text(next.currency_code ?? next.currency, 'TRY'),
-      exchangeRate: text(next.exchange_rate, '1'),
+      exchangeRate: trimDecimalZeros(text(next.exchange_rate, '1')) || '1',
       notes: text(next.notes),
       sourceDocumentID: sourceID,
       sourceDocument,
@@ -463,7 +463,8 @@
       const resolvedBaseCurrency = rateResult.base_currency || baseCurrency;
       baseCurrency = resolvedBaseCurrency;
       const nextRates: Record<string, string> = { [resolvedBaseCurrency]: '1' };
-      for (const item of rateResult.items ?? []) nextRates[item.currency_code] = item.rate_to_base;
+      for (const item of rateResult.items ?? [])
+        nextRates[item.currency_code] = trimDecimalZeros(item.rate_to_base) || '1';
       exchangeRates = nextRates;
       if (nextRates[currency]) form.exchangeRate = nextRates[currency];
       for (const line of lines) {
@@ -485,7 +486,8 @@
         const resolvedBaseCurrency = result.base_currency || baseCurrency;
         baseCurrency = resolvedBaseCurrency;
         const nextRates: Record<string, string> = { [resolvedBaseCurrency]: '1' };
-        for (const item of result.items ?? []) nextRates[item.currency_code] = item.rate_to_base;
+        for (const item of result.items ?? [])
+          nextRates[item.currency_code] = trimDecimalZeros(item.rate_to_base) || '1';
         exchangeRates = nextRates;
       } catch (cause) {
         validationError = friendlyError(cause, 'Seçilen para birimi için güncel kur alınamadı.');

@@ -1,3 +1,5 @@
+import { formatAmount } from '$lib/design/formatters';
+
 export type Employee = {
   id: string;
   employee_code: string;
@@ -529,16 +531,12 @@ export function statusTone(status: string): 'neutral' | 'success' | 'warning' | 
   }
 }
 
-const TR_CURRENCY = new Intl.NumberFormat('tr-TR', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2
-});
-
-/** Formats a decimal string like "50000.00" as "50.000,00". */
+/** Formats a decimal string like "50000.00" as "50.000,00". The pages that
+ *  call this print the ₺ themselves, so only the amount is returned. */
 export function money(value?: string | null): string {
   if (value == null || value === '') return '—';
-  const n = Number(value);
-  return Number.isFinite(n) ? TR_CURRENCY.format(n) : value;
+  const amount = formatAmount(value);
+  return amount === '—' ? value : amount;
 }
 
 export const LEAVE_TREATMENT_LABELS: Record<string, string> = {

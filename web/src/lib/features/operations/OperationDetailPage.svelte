@@ -24,7 +24,8 @@
     formatDate,
     formatMoney,
     formatQuantity,
-    formatQuantityWithUnit
+    formatQuantityWithUnit,
+    formatUnitPrice
   } from '$lib/design/formatters';
   import { localizedEnum } from '$lib/design/labels';
   import { ph, printDocument } from '$lib/design/print';
@@ -1612,11 +1613,13 @@
     return String(firstValue(line, 'currency') ?? firstValue(item, 'currency') ?? 'TRY');
   }
 
-  function stockLineMoney(item: RecordValue, line: RecordValue, keys: string | string[]) {
+  /** A unit cost keeps the decimals it was entered with; a line total is
+   *  money and is shown at two. */
+  function stockLineUnitCost(item: RecordValue, line: RecordValue, keys: string | string[]) {
     const amount = firstValue(line, keys);
     return amount === undefined || amount === null || amount === ''
       ? '—'
-      : formatMoney(String(amount), stockCurrency(item, line));
+      : formatUnitPrice(String(amount), stockCurrency(item, line));
   }
 
   function stockLineTotalMoney(item: RecordValue, line: RecordValue) {
@@ -1988,7 +1991,7 @@
                       'ADET'
                   )}</td
                 >
-                <td class="numeric">{stockLineMoney(record, line, ['unit_cost', 'cost'])}</td>
+                <td class="numeric">{stockLineUnitCost(record, line, ['unit_cost', 'cost'])}</td>
                 <td class="numeric">{stockLineTotalMoney(record, line)}</td>
                 <td>
                   {formatQuantityWithUnit(

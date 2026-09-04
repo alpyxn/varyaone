@@ -12,6 +12,35 @@ export function canonicalDecimal(value: string | number | null | undefined): str
   return comma >= 0 ? compact.replace(',', '.') : compact;
 }
 
+/**
+ * Read a money amount the way a Turkish user types it back after reading it.
+ * Amounts are printed as "1.500,00", so in a money field the dot groups the
+ * thousands: "1.500" is fifteen hundred lira, not one and a half. Taking it
+ * for a decimal point is how a payment gets saved a thousand times too small.
+ * Returns '' when the text is not a number.
+ */
+export function parseMoneyInput(value: string | number | null | undefined): string {
+  const compact = String(value ?? '')
+    .trim()
+    .replace(/[\s ]/g, '');
+  if (!compact) return '';
+  if (!compact.includes(',') && compact.includes('.')) {
+    const [integer, ...groups] = compact.replace(/^[+-]/, '').split('.');
+    const sign = /^-/.test(compact) ? '-' : '';
+    // Grouped thousands: a non-zero lead of at most three digits followed by
+    // groups of exactly three. "0.500" and "12.3456" stay decimals.
+    if (
+      integer.length > 0 &&
+      integer.length <= 3 &&
+      integer !== '0' &&
+      groups.length > 0 &&
+      groups.every((group) => /^\d{3}$/.test(group))
+    )
+      return `${sign}${integer}${groups.join('')}`;
+  }
+  return canonicalDecimal(compact);
+}
+
 /** Keep a decimal input exact while removing insignificant fractional zeros. */
 export function trimDecimalZeros(value: string | number | null | undefined): string {
   const normalized = canonicalDecimal(value);

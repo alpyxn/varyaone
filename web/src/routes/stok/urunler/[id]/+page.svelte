@@ -131,7 +131,7 @@
       const resolvedBase = (result.base_currency || baseCurrency).toUpperCase();
       const nextRates: Record<string, string> = { [resolvedBase]: '1' };
       for (const item of result.items ?? [])
-        nextRates[item.currency_code.toUpperCase()] = item.rate_to_base;
+        nextRates[item.currency_code.toUpperCase()] = trimDecimalZeros(item.rate_to_base) || '1';
       baseCurrency = resolvedBase;
       exchangeRates = nextRates;
       syncPriceEntries();

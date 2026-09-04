@@ -18,6 +18,7 @@
   import { ConfirmDialog } from '$lib/components/varya/confirm-dialog';
   import NegativeBalanceReason from './NegativeBalanceReason.svelte';
   import { formatDate, formatMoney } from '$lib/design/formatters';
+  import { parseMoneyInput } from '$lib/design/decimal';
   import { localizedEnum } from '$lib/design/labels';
 
   type Account = {
@@ -157,7 +158,9 @@
   async function submitOpeningBalance(event: SubmitEvent) {
     event.preventDefault();
     if (!account || openingBusy) return;
-    if (!/^\d+(\.\d{1,4})?$/.test(openingForm.amount.trim()) || !openingForm.transaction_date) {
+    // Read in Turkish notation: "1.500,50" is fifteen hundred lira, not 1,5.
+    const openingAmount = parseMoneyInput(openingForm.amount);
+    if (!/^\d+(\.\d{1,4})?$/.test(openingAmount) || !openingForm.transaction_date) {
       toast.error('Geçerli tutar ve tarih girin.');
       return;
     }
@@ -168,7 +171,7 @@
         body: JSON.stringify({
           account_id: account.id,
           direction: openingForm.direction,
-          amount: openingForm.amount.trim(),
+          amount: openingAmount,
           transaction_date: `${openingForm.transaction_date}T00:00:00+03:00`,
           description: 'Açılış bakiyesi'
         })
@@ -194,7 +197,7 @@
   async function submitMovement(event: SubmitEvent) {
     event.preventDefault();
     if (!account || movementBusy) return;
-    const amount = movementForm.amount.trim();
+    const amount = parseMoneyInput(movementForm.amount);
     if (!/^\d+(\.\d{1,4})?$/.test(amount) || Number(amount) <= 0) {
       toast.error('Geçerli bir tutar girin.');
       return;

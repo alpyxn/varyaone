@@ -1,3 +1,16 @@
+/** Round a digit-string magnitude half-up to `scale` fraction digits. Cutting
+ *  the extra digits off instead would show 1,999999 as 1,99. */
+function roundMagnitude(integer: string, fraction: string, scale: number) {
+  if (fraction.length <= scale) return { integer, fraction };
+  const kept = BigInt(`${integer}${fraction.slice(0, scale)}`);
+  const rounded = fraction.charCodeAt(scale) - 48 >= 5 ? kept + 1n : kept;
+  const digits = rounded.toString().padStart(scale + 1, '0');
+  return {
+    integer: scale === 0 ? digits : digits.slice(0, -scale),
+    fraction: scale === 0 ? '' : digits.slice(-scale)
+  };
+}
+
 function exactDecimal(
   value: string | number,
   minimumFractionDigits: number,
@@ -5,13 +18,20 @@ function exactDecimal(
 ) {
   const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(String(value).trim());
   if (!match) return '—';
-  const integerDigits = match[2].replace(/^0+/, '') || '0';
+  const rounded = roundMagnitude(match[2], match[3] ?? '', maximumFractionDigits);
+  const integerDigits = rounded.integer.replace(/^0+/, '') || '0';
   const integer = integerDigits.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  let fraction = (match[3] ?? '').slice(0, maximumFractionDigits).replace(/0+$/, '');
+  let fraction = rounded.fraction.replace(/0+$/, '');
   const hasDisplayedMagnitude = integerDigits !== '0' || fraction !== '';
   if (fraction.length < minimumFractionDigits)
     fraction = fraction.padEnd(minimumFractionDigits, '0');
   return `${match[1] === '-' && hasDisplayedMagnitude ? '-' : ''}${integer}${fraction ? `,${fraction}` : ''}`;
+}
+
+function currencySuffix(currency: string) {
+  const code = String(currency).trim().toUpperCase() || 'TRY';
+  const symbols: Record<string, string> = { TRY: '₺', USD: '$', EUR: '€', GBP: '£' };
+  return symbols[code] ?? code;
 }
 
 function decimalMagnitude(value: unknown) {
@@ -34,14 +54,29 @@ export function isNonPositiveDecimal(value: unknown) {
   return parsed ? parsed.negative || parsed.zero : false;
 }
 
+/** A money amount, always with the two decimals the currency is counted in.
+ *  The API stores money at a much larger scale, and printing those digits
+ *  ("1.234,5678 ₺") is read as a different number than the amount actually
+ *  is - so an amount is rounded for display, never shown at storage scale. */
 export function formatMoney(value: string | number, currency = 'TRY') {
-  // Money can carry more than two meaningful decimal places in the API
-  // (for example, unit prices). Keep those digits while hiding scale padding.
+  const amount = formatAmount(value);
+  if (amount === '—') return amount;
+  return `${amount} ${currencySuffix(currency)}`;
+}
+
+/** A money amount without the currency, for places that print their own. */
+export function formatAmount(value: string | number) {
+  return exactDecimal(value, 2, 2);
+}
+
+/** A unit price or an exchange rate, where digits past the second are a real
+ *  part of the figure rather than storage padding. Only those fields may use
+ *  this - a total, a balance or a paid amount is money and belongs in
+ *  `formatMoney`, which is read at the two decimals money is counted in. */
+export function formatUnitPrice(value: string | number, currency = 'TRY') {
   const amount = exactDecimal(value, 2, 8);
   if (amount === '—') return amount;
-  const code = String(currency).trim().toUpperCase() || 'TRY';
-  const symbols: Record<string, string> = { TRY: '₺', USD: '$', EUR: '€', GBP: '£' };
-  return `${amount} ${symbols[code] ?? code}`;
+  return `${amount} ${currencySuffix(currency)}`;
 }
 
 export function formatQuantity(value: string | number, fractionDigits = 8) {

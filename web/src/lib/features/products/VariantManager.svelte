@@ -1,14 +1,12 @@
 <script module lang="ts">
+  import { trimDecimalZeros } from '$lib/design/decimal';
   import type { ProductBarcode } from './types';
 
-  /** Keep decimal values as strings while removing only insignificant fractional zeroes. */
+  /** Keep decimal values as strings while removing only insignificant
+   *  fractional zeroes. A price typed in Turkish ("1.500,50") is read as the
+   *  amount it shows rather than passed to the API as it was keyed. */
   export function compactDecimal(value: string | null | undefined): string {
-    const text = value?.trim() ?? '';
-    if (!text) return '';
-    return text
-      .replace(/(\.\d*?[1-9])0+$/, '$1')
-      .replace(/\.0+$/, '')
-      .replace(/\.$/, '');
+    return trimDecimalZeros(value);
   }
 
   export function validateVariantBarcodes(barcodes: readonly ProductBarcode[]): string | undefined {
@@ -102,7 +100,7 @@
   import { Button } from '$lib/components/ui/button';
   import * as Alert from '$lib/components/ui/alert';
   import { Input } from '$lib/components/ui/input';
-  import { formatMoney, formatQuantity } from '$lib/design/formatters';
+  import { formatQuantity, formatUnitPrice } from '$lib/design/formatters';
   import type {
     Product,
     ProductVariant,
@@ -823,14 +821,14 @@
                     value={draft.purchase_price_override ?? ''}
                     disabled={disabled || !canManage}
                     inputmode="decimal"
-                    placeholder={formatMoney(parentPurchasePrice || '0', baseCurrency)}
+                    placeholder={formatUnitPrice(parentPurchasePrice || '0', baseCurrency)}
                     aria-label={`${variantLabel(variant)} alış fiyatı`}
                     oninput={(event) =>
                       updateVariantPrice(variant, 'purchase', event.currentTarget.value)}
                     onblur={() => compactVariantPrice(variant, 'purchase')}
                   />
                   {#if !draft.purchase_price_override}<small class="inherit-note"
-                      >Üründen miras: {formatMoney(
+                      >Üründen miras: {formatUnitPrice(
                         effectivePrice(variant, 'purchase'),
                         baseCurrency
                       )}</small
@@ -841,14 +839,14 @@
                     value={draft.sales_price_override ?? ''}
                     disabled={disabled || !canManage}
                     inputmode="decimal"
-                    placeholder={formatMoney(parentSalesPrice || '0', baseCurrency)}
+                    placeholder={formatUnitPrice(parentSalesPrice || '0', baseCurrency)}
                     aria-label={`${variantLabel(variant)} satış fiyatı`}
                     oninput={(event) =>
                       updateVariantPrice(variant, 'sales', event.currentTarget.value)}
                     onblur={() => compactVariantPrice(variant, 'sales')}
                   />
                   {#if !draft.sales_price_override}<small class="inherit-note"
-                      >Üründen miras: {formatMoney(
+                      >Üründen miras: {formatUnitPrice(
                         effectivePrice(variant, 'sales'),
                         baseCurrency
                       )}</small

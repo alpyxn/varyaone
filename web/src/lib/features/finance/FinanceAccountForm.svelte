@@ -5,6 +5,7 @@
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { CurrencySelect } from '$lib/components/varya/currency-select';
+  import { parseMoneyInput } from '$lib/design/decimal';
 
   export type FinanceAccountType = 'CASH' | 'BANK';
 
@@ -111,7 +112,8 @@
       error = 'Kod, ad ve üç harfli para birimi zorunludur.';
       return;
     }
-    const opening = openingAmount.trim();
+    // Read in Turkish notation: "1.500,50" is fifteen hundred lira, not 1,5.
+    const opening = parseMoneyInput(openingAmount);
     if (!isEdit && opening) {
       if (!/^\d+(\.\d{1,4})?$/.test(opening) || Number(opening) <= 0) {
         error = 'Açılış bakiyesi tutarı geçersiz.';

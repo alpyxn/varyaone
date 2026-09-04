@@ -24,7 +24,9 @@ describe('compactDecimal', () => {
     ['', ''],
     ['250.00000000', '250'],
     ['250.12000000', '250.12'],
-    ['0.00000001', '0.00000001']
+    ['0.00000001', '0.00000001'],
+    ['1.500,50', '1500.5'],
+    ['1500,50', '1500.5']
   ])('formats %j as %j without numeric conversion', (input, expected) => {
     const result = compactDecimal(input);
 

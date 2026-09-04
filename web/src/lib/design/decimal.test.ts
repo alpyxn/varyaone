@@ -7,6 +7,7 @@ import {
   isZeroDecimal,
   multiplyDecimalStrings,
   negateDecimalString,
+  parseMoneyInput,
   subtractDecimalStrings,
   trimDecimalZeros
 } from './decimal';
@@ -20,6 +21,23 @@ describe('decimal input helpers', () => {
     ['1,250.50', '1250.50']
   ])('preserves the magnitude of %s', (input, expected) => {
     expect(canonicalDecimal(input)).toBe(expected);
+  });
+
+  it.each([
+    ['1.500', '1500'],
+    ['1.234.567', '1234567'],
+    ['12.345', '12345'],
+    ['1.500,50', '1500.50'],
+    ['1500,50', '1500.50'],
+    ['1500', '1500'],
+    ['-2.500', '-2500'],
+    // Not thousands grouping: a zero lead, or a group that is not three long.
+    ['0.500', '0.500'],
+    ['1234.5678', '1234.5678'],
+    ['1.5', '1.5'],
+    ['', '']
+  ])('reads the money field entry %s the way it is typed in Turkish', (input, expected) => {
+    expect(parseMoneyInput(input)).toBe(expected);
   });
 
   it('returns zero only for invalid numeric conversion', () => {
