@@ -5,11 +5,11 @@
       "mandatory": false,
       "min_version": "",
       "pg_major": 18,
-      "version": "v0.1.5-alpha",
-      "notes_md": "",
-      "published_at": "2026-09-03T22:26:52Z",
-      "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.5-alpha/varyaone-v0.1.5-alpha-windows-amd64.zip",
-      "windows_sha256": "3cd1a5bc60c1675074b71c9f2c129e7ee4995ebd4bddc763e3bd4fcd399965e9"
+      "version": "v0.1.6-alpha",
+      "notes_md": "Vergi motoru geliştirildi\n\n## Yenilikler\n- **Ek vergiler artık gerçekten hesaplanıyor.** ÖTV, ÖİV, TRT payı gibi KDV\n  dışı satır vergileri belge tutarına işliyor. Matraha dahil olanlar önce\n  uygulanıp KDV matrahına taşınıyor, matrah dışındakiler KDV'den sonra\n  ekleniyor. Önceden kartta bir ek vergi bileşeni tanımlıysa KDV oranı\n  düşüyordu; belge ya düz KDV ile ya da hiç vergisiz kesiliyordu.\n- **Stok kartında alış / satış vergi ayrımı.** Ek vergiler iki yöne ayrı\n  tanımlanabiliyor: \"Alış ve satışta aynı\" kutusu kaldırıldığında \"Alışta\" ve\n  \"Satışta\" listeleri bağımsız düzenleniyor. Bayi senaryosu böylece doğru\n  çalışıyor — alışta gömülü ÖTV, satış faturasında yalnız KDV. KDV oranı mala\n  bağlı olduğu için iki yönde ortak kalmaya devam ediyor.\n- **\"Fiyat KDV dahil\" seçeneği.** Alış ve satış fiyatı vergiler dahil\n  girilebiliyor; alan başlıkları ve net fiyat önizlemesi buna göre değişiyor.\n  Bu bayrak daha önce yalnızca içe aktarımla yazılabiliyordu, arayüzden\n  tanımlanamıyordu.\n- **Yeni hazır vergi tanımları:** TRT Payı ve Konaklama Vergisi. ÖİV ile\n  konaklama vergisi kanuni oranlarıyla geliyor; oranı mala göre değişenler\n  (ÖTV, TRT payı) kartta giriliyor.\n\n## İyileştirmeler\n- Fatura toplamlarında \"Ek vergiler\" ve \"Toplam vergi\" satırları görünüyor.\n- Vergi tanımları ekranında hazır tanımlar \"Hazır tanım\" etiketiyle ayrılıyor.\n- Mevcut kartlardaki ÖTV bileşenleri \"KDV matrahına dahil\" olarak düzeltildi.\n  Kanun gereği matraha dahildir; bu bileşenler bu sürüme kadar hiç\n  fiyatlanmadığı için kesilmiş belgeler etkilenmiyor.\n- Demo modu, çalışan bir compose kurulumunda sonradan açılabiliyor.",
+      "published_at": "2026-09-04T09:57:42Z",
+      "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.6-alpha/varyaone-v0.1.6-alpha-windows-amd64.zip",
+      "windows_sha256": "8b550676fd5437c395980277dd8df9808bf55697d0eb47c83b3c047745e2044c"
     }
   },
   "yanked": [],
@@ -23,6 +23,16 @@
       "published_at": "2026-09-02T23:48:12Z",
       "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.0-alpha/varyaone-v0.1.0-alpha-windows-amd64.zip",
       "windows_sha256": "ace69b735450dc5d4deb8422fa89a4bbcd9427ed2f3c21400212cd8700fed143"
+    },
+    {
+      "mandatory": false,
+      "min_version": "",
+      "pg_major": 18,
+      "version": "v0.1.5-alpha",
+      "notes_md": "",
+      "published_at": "2026-09-03T22:26:52Z",
+      "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.5-alpha/varyaone-v0.1.5-alpha-windows-amd64.zip",
+      "windows_sha256": "3cd1a5bc60c1675074b71c9f2c129e7ee4995ebd4bddc763e3bd4fcd399965e9"
     }
   ]
 }
