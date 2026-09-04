@@ -114,9 +114,10 @@ export const REPORTS: ReportDef[] = [
     endpoint: '/reports/tax-summary',
     filters: ['dateRange', 'direction'],
     columns: [
+      { key: 'tax', label: 'Vergi' },
       { key: 'rate', label: 'Oran (%)', align: 'right' },
       money('tax_base', 'Matrah', 'base_currency'),
-      money('tax_amount', 'KDV', 'base_currency'),
+      money('tax_amount', 'Tutar', 'base_currency'),
       money('withholding_amount', 'Tevkifat', 'base_currency')
     ]
   }

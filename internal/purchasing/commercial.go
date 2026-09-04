@@ -770,10 +770,12 @@ func normalizePurchaseOrderInput(ctx context.Context, session identity.Session, 
 	return nil
 }
 
+// purchaseOrderTotal sums the lines' net amounts, so a line discount reaches
+// the header the same way it does on create.
 func purchaseOrderTotal(lines []PurchaseOrderLine) string {
 	total := "0"
 	for _, line := range lines {
-		total = add(total, multiply(line.OrderedQuantity, line.UnitPrice))
+		total = add(total, subtract(multiply(line.OrderedQuantity, line.UnitPrice), zero(line.DiscountAmount)))
 	}
 	return total
 }

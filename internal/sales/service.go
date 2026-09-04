@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alpyxn/varyaone/internal/commerce"
 	"github.com/alpyxn/varyaone/internal/finance"
 	"github.com/alpyxn/varyaone/internal/identity"
 	"github.com/alpyxn/varyaone/internal/money"
@@ -881,11 +882,15 @@ type documentLineTaxSnapshot struct {
 	TaxAmountSnapshot              string
 	TaxComponentsSnapshot          []byte
 	ProductTaxProfileVersion       int64
+	// AdditionalComponents are the product's non-VAT taxes (ÖTV, ÖİV, a
+	// company-defined tax) resolved against the document date, so they are
+	// priced with the line instead of being dropped.
+	AdditionalComponents []taxes.TaxComponent
 }
 
 func loadProductTaxSnapshot(ctx context.Context, tx pgx.Tx, companyID, documentID, productID, variantID, stockEffect string, code, name, variantCode *string, variantAttributes *[]byte, snapshot *documentLineTaxSnapshot) error {
-	var direction string
-	if err := tx.QueryRow(ctx, `SELECT dt.direction FROM documents d JOIN document_types dt ON dt.code=d.document_type_code AND (dt.company_id IS NULL OR dt.company_id=d.company_id) WHERE d.company_id=$1 AND d.id=$2`, companyID, documentID).Scan(&direction); err != nil {
+	var direction, documentDate string
+	if err := tx.QueryRow(ctx, `SELECT dt.direction,d.document_date::text FROM documents d JOIN document_types dt ON dt.code=d.document_type_code AND (dt.company_id IS NULL OR dt.company_id=d.company_id) WHERE d.company_id=$1 AND d.id=$2`, companyID, documentID).Scan(&direction, &documentDate); err != nil {
 		return err
 	}
 	if stockEffect != "NONE" && strings.TrimSpace(variantID) == "" {
@@ -939,6 +944,11 @@ LEFT JOIN tax_withholding_rules wr ON wr.company_id=ptp.company_id AND wr.id=ptp
 		snapshot.TaxComponentsSnapshot = components
 	}
 	snapshot.ProductTaxProfileVersion = version
+	additional, err := commerce.AdditionalComponents(ctx, tx, companyID, productID, direction, documentDate)
+	if err != nil {
+		return err
+	}
+	snapshot.AdditionalComponents = additional
 	return nil
 }
 
@@ -976,7 +986,10 @@ func (s *Service) insertLineTx(ctx context.Context, tx pgx.Tx, companyID, docume
 	}
 	// A permitted line override is part of the line snapshot as well.
 	taxSnapshot.TaxRateSnapshot = calculationTaxRate
-	components := []taxes.TaxComponent{{Code: taxSnapshot.TaxCodeSnapshot, CalculationType: taxes.TaxPercentage, Rate: calculationTaxRate, Withholding: taxSnapshot.WithholdingCodeSnapshot != "", WithholdingNumerator: taxSnapshot.WithholdingNumeratorSnapshot, WithholdingDenominator: taxSnapshot.WithholdingDenominatorSnapshot, Exempt: taxSnapshot.TaxTreatment == "EXEMPT" || taxSnapshot.TaxTreatment == "NOT_APPLICABLE"}}
+	components := []taxes.TaxComponent{{Code: taxSnapshot.TaxCodeSnapshot, Name: "KDV", Primary: true, CalculationType: taxes.TaxPercentage, Rate: calculationTaxRate, Withholding: taxSnapshot.WithholdingCodeSnapshot != "", WithholdingNumerator: taxSnapshot.WithholdingNumeratorSnapshot, WithholdingDenominator: taxSnapshot.WithholdingDenominatorSnapshot, Exempt: taxSnapshot.TaxTreatment == "EXEMPT" || taxSnapshot.TaxTreatment == "NOT_APPLICABLE"}}
+	// The product's additional taxes are charged alongside VAT; the engine
+	// puts each one on the base its profile says it belongs to.
+	components = append(components, taxSnapshot.AdditionalComponents...)
 	taxMode := taxes.TaxModeExclusive
 	if taxSnapshot.TaxIncludedSnapshot {
 		taxMode = taxes.TaxModeInclusive

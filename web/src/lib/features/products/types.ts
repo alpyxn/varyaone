@@ -264,7 +264,7 @@ export function normalizeProductInput(input: ProductInput): ProductInput {
     .filter((unit) => unit.code);
   const baseUnit =
     input.base_unit.trim().toUpperCase() || units.find((unit) => unit.is_base)?.code || '';
-  const normalizeTaxProfile = (profile?: ProductTaxProfile) => {
+  const normalizeTaxProfile = (profile?: ProductTaxProfile, taxIncludedFallback = false) => {
     if (!profile) return profile;
     const components = (profile.components ?? [])
       .filter((component) => {
@@ -288,7 +288,7 @@ export function normalizeProductInput(input: ProductInput): ProductInput {
       ...(profile.tax_code ? { tax_code: profile.tax_code } : {}),
       components,
       rate: normalizePrice(profile.rate ?? ''),
-      tax_included: Boolean(profile.tax_included),
+      tax_included: Boolean(profile.tax_included ?? taxIncludedFallback),
       ...(profile.withholding_rule_id ? { withholding_rule_id: profile.withholding_rule_id } : {}),
       ...(profile.withholding_code ? { withholding_code: profile.withholding_code } : {}),
       withholding_rate: normalizePrice(profile.withholding_rate ?? ''),
@@ -335,8 +335,14 @@ export function normalizeProductInput(input: ProductInput): ProductInput {
       barcode_type: item.barcode_type,
       is_primary: Boolean(item.is_primary)
     })),
-    purchase_tax_profile: normalizeTaxProfile(input.purchase_tax_profile),
-    sales_tax_profile: normalizeTaxProfile(input.sales_tax_profile)
+    purchase_tax_profile: normalizeTaxProfile(
+      input.purchase_tax_profile,
+      Boolean(input.purchase_tax_included)
+    ),
+    sales_tax_profile: normalizeTaxProfile(
+      input.sales_tax_profile,
+      Boolean(input.sales_tax_included)
+    )
   };
 }
 

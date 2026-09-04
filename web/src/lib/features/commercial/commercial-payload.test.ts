@@ -41,6 +41,7 @@ function line(overrides: Partial<LineDraft> = {}): LineDraft {
     discountRate: '',
     taxRate: '20',
     taxIncluded: false,
+    taxComponents: [],
     description: 'Ürün',
     manualPrice: false,
     ...overrides

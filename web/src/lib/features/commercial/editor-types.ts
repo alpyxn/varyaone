@@ -1,6 +1,18 @@
 import type { EntityOption } from '$lib/components/varya/entity-picker-dialog';
 import type { CommercialDocumentReference, CommercialResource, CommercialLineType } from './types';
 
+/** One tax a line carries besides KDV: ÖTV, ÖİV, TRT payı or a tax the company
+ *  defined itself. `rate` is a percentage, a per-unit amount or a flat amount
+ *  depending on `calculationType`; `includedInBase` marks a tax that sits in
+ *  the KDV base. */
+export type LineTaxComponent = {
+  code: string;
+  name: string;
+  calculationType: 'PERCENTAGE' | 'QUANTITY_BASED' | 'FIXED_AMOUNT';
+  rate: string;
+  includedInBase: boolean;
+};
+
 export type ProductOption = EntityOption & {
   kind?: 'PHYSICAL' | 'SERVICE';
   unit?: string;
@@ -9,6 +21,7 @@ export type ProductOption = EntityOption & {
   baseUnitPrice?: string;
   taxRate?: string;
   taxIncluded?: boolean;
+  taxComponents?: LineTaxComponent[];
   variantsEnabled?: boolean;
 };
 export type VariantOption = EntityOption & {
@@ -187,6 +200,7 @@ export type LineDraft = {
   discountRate: string;
   taxRate: string;
   taxIncluded: boolean;
+  taxComponents: LineTaxComponent[];
   persistedTotal?: string;
   description: string;
   orderedQuantity?: string;

@@ -25,37 +25,33 @@ func TestSeedAndReset(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err = migrations.New(pool).Up(ctx); err != nil {
+	pool, maintenanceDSN := isolatedDemo(t, ctx, databaseURL)
+	if err := migrations.New(pool).Up(ctx); err != nil {
 		t.Fatal(err)
 	}
 
 	seededAt := time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC)
 	runner := New(pool, Options{
-		MaintenanceDSN: databaseURL,
+		MaintenanceDSN: maintenanceDSN,
 		MasterKey:      bytes.Repeat([]byte{9}, 32),
 		Email:          "demo@varyaone.test",
 		Password:       "varyaone-demo-2026",
 		Now:            func() time.Time { return seededAt },
 	})
 
-	if err = runner.Ensure(ctx); err != nil {
+	if err := runner.Ensure(ctx); err != nil {
 		t.Fatalf("first seed failed: %v", err)
 	}
 	assertSeeded(t, ctx, pool)
 
 	// Ensure is called on every start-up, so a second call must be a no-op
 	// rather than a second set of demo documents.
-	if err = runner.Ensure(ctx); err != nil {
+	if err := runner.Ensure(ctx); err != nil {
 		t.Fatalf("second ensure failed: %v", err)
 	}
 	assertSeeded(t, ctx, pool)
 
-	if err = runner.Reset(ctx); err != nil {
+	if err := runner.Reset(ctx); err != nil {
 		t.Fatalf("reset failed: %v", err)
 	}
 	assertSeeded(t, ctx, pool)
@@ -100,26 +96,22 @@ func TestPurgeRefusesNonDemoCompany(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err = migrations.New(pool).Up(ctx); err != nil {
+	pool, maintenanceDSN := isolatedDemo(t, ctx, databaseURL)
+	if err := migrations.New(pool).Up(ctx); err != nil {
 		t.Fatal(err)
 	}
 	const password = "varyaone-demo-2026"
 	runner := New(pool, Options{
-		MaintenanceDSN: databaseURL,
+		MaintenanceDSN: maintenanceDSN,
 		MasterKey:      bytes.Repeat([]byte{9}, 32),
 		Email:          "demo@varyaone.test",
 		Password:       password,
 		Now:            func() time.Time { return time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC) },
 	})
-	if err = runner.Ensure(ctx); err != nil {
+	if err := runner.Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
-	identityService, err := identity.NewService(database.NewScoped(pool), bytes.Repeat([]byte{9}, 32), identity.WithMaintenanceDSN(databaseURL))
+	identityService, err := identity.NewService(database.NewScoped(pool), bytes.Repeat([]byte{9}, 32), identity.WithMaintenanceDSN(maintenanceDSN))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -106,10 +106,7 @@ function purchaseLinePayload(
     tax_base: amounts.taxBase,
     tax_amount: amounts.tax,
     withholding_amount: '0',
-    payable_amount: amounts.total,
-    tax_components_snapshot: line.taxRate
-      ? [{ rate: line.taxRate, included: line.taxIncluded }]
-      : []
+    payable_amount: amounts.total
   };
 }
 

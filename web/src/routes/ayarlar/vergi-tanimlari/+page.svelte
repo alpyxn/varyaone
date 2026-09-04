@@ -73,6 +73,10 @@
     }
   }
 
+  function sourceLabel(definition: TaxDefinition) {
+    return definition.source === 'TR_TAX_LOCALIZATION' ? 'Hazır tanım' : definition.source;
+  }
+
   function valueLabel(definition: TaxDefinition) {
     if (!definition.rate) return 'Değer tanımlı değil';
     return definition.calculation_type === 'QUANTITY_BASED'
@@ -159,7 +163,7 @@
           {#each definitions as definition}<div class="list-row">
               <span
                 ><strong>{definition.code}</strong> · {definition.name}<small
-                  >{valueLabel(definition)}</small
+                  >{valueLabel(definition)} · {sourceLabel(definition)}</small
                 ></span
               ><span>{definition.is_active ? 'Aktif' : 'Pasif'}</span>
             </div>{/each}

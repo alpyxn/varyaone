@@ -340,17 +340,25 @@ func (s *Service) DeleteCompany(ctx context.Context, session Session, companyID,
 // Every base table carrying a company_id column is company-scoped data that must
 // go. Reading that list from the catalogue also covers the per-document-type line
 // tables that are created dynamically outside the migration DDL.
+//
+// The lookup follows current_schema() rather than naming `public`, because the
+// unqualified DELETEs below resolve through the same search_path: hardcoding one
+// schema while deleting from another silently purges nothing but the companies
+// row and leaves every child row behind.
 func purgeCompanyRows(ctx context.Context, tx pgx.Tx, companyID string) error {
 	scopedTables, err := scanStrings(tx.Query(ctx, `
 		SELECT c.table_name
 		FROM information_schema.columns c
 		JOIN information_schema.tables t
 		  ON t.table_schema=c.table_schema AND t.table_name=c.table_name
-		WHERE c.table_schema='public' AND c.column_name='company_id'
+		WHERE c.table_schema=current_schema() AND c.column_name='company_id'
 		  AND t.table_type='BASE TABLE'
 		ORDER BY c.table_name`))
 	if err != nil {
 		return err
+	}
+	if len(scopedTables) == 0 {
+		return fmt.Errorf("purge %s: no company-scoped tables found in the current schema", companyID)
 	}
 
 	// replica mode disables FK enforcement and every user trigger for this

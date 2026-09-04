@@ -113,19 +113,54 @@ func resolveCatalog(ctx context.Context, q Querier, doc DocumentContext, line Li
 	return defaults, candidates, nil
 }
 
-// resolveComponents loads the directional tax profile components. When a
-// product has no component rows the single profile rate is expressed as one
-// percentage component, so every caller sees the same shape.
+// resolveComponents builds the line's full component list: the profile's own
+// VAT component first (the one whose rate is the document line's tax_rate),
+// then every additional tax the product card carries (ÖTV, ÖİV, TRT payı or a
+// company-defined tax). A component's value is the rate row it points at, the
+// rate typed on the card, or the definition's rate in force on the document
+// date - in that order - so both catalog-managed and hand-entered taxes price
+// the same way.
 func resolveComponents(ctx context.Context, q Querier, doc DocumentContext, line LineContext, defaults LineDefaults) ([]taxes.TaxComponent, error) {
+	exempt := defaults.Treatment == "EXEMPT" || defaults.Treatment == "NOT_APPLICABLE"
+	components := []taxes.TaxComponent{{
+		Code:            defaults.TaxCode,
+		Name:            "KDV",
+		CalculationType: taxes.TaxPercentage,
+		Rate:            defaultRate(defaults.TaxRate),
+		Exempt:          exempt,
+		Primary:         true,
+	}}
+	additional, err := AdditionalComponents(ctx, q, doc.CompanyID, line.ProductID, string(doc.Direction), doc.DocumentDate)
+	if err != nil {
+		return nil, err
+	}
+	return append(components, additional...), nil
+}
+
+// AdditionalComponents reads the non-VAT components of a product's directional
+// tax profile. VAT itself lives on the profile row, so a component pointing at
+// a KDV definition would double-count and is skipped.
+func AdditionalComponents(ctx context.Context, q Querier, companyID, productID, direction, documentDate string) ([]taxes.TaxComponent, error) {
 	rows, err := q.Query(ctx, `
-		SELECT COALESCE(td.code,''), c.calculation_type,
-		       COALESCE(tr.rate, 0)::text,
+		SELECT COALESCE(td.code,''), COALESCE(td.name,''), c.calculation_type,
+		       COALESCE(
+		           tr.rate::text,
+		           CASE WHEN replace(COALESCE(c.metadata->>'rate',''),',','.') ~ '^[0-9]+(\.[0-9]+)?$'
+		                THEN replace(c.metadata->>'rate',',','.') END,
+		           (SELECT dr.rate::text FROM tax_rates dr
+		             WHERE dr.company_id=c.company_id AND dr.tax_definition_id=c.tax_definition_id
+		               AND dr.valid_from <= COALESCE(NULLIF($4,'')::date, CURRENT_DATE)
+		               AND (dr.valid_to IS NULL OR dr.valid_to >= COALESCE(NULLIF($4,'')::date, CURRENT_DATE))
+		             ORDER BY dr.valid_from DESC, dr.id LIMIT 1),
+		           '0') AS rate,
+		       c.included_in_tax_base,
 		       COALESCE(c.metadata->>'withholding','') = 'true'
 		  FROM product_tax_profile_components c
 		  JOIN tax_definitions td ON td.company_id=c.company_id AND td.id=c.tax_definition_id
 		  LEFT JOIN tax_rates tr ON tr.company_id=c.company_id AND tr.id=c.tax_rate_id
 		 WHERE c.company_id=$1 AND c.product_id=$2 AND c.direction=$3
-		 ORDER BY c.sequence`, doc.CompanyID, line.ProductID, string(doc.Direction))
+		   AND UPPER(td.code) NOT LIKE 'KDV%'
+		 ORDER BY c.sequence`, companyID, productID, direction, documentDate)
 	if err != nil {
 		return nil, err
 	}
@@ -135,36 +170,27 @@ func resolveComponents(ctx context.Context, q Querier, doc DocumentContext, line
 	for rows.Next() {
 		var component taxes.TaxComponent
 		var calculationType string
-		if err := rows.Scan(&component.Code, &calculationType, &component.Rate, &component.Withholding); err != nil {
+		if err := rows.Scan(&component.Code, &component.Name, &calculationType, &component.Rate, &component.IncludedInBase, &component.Withholding); err != nil {
 			return nil, err
 		}
 		component.CalculationType = normalizeCalculationType(calculationType)
+		component.Rate = defaultRate(component.Rate)
 		components = append(components, component)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(components) > 0 {
-		return components, nil
-	}
-
-	// No component rows: fall back to the profile's own rate.
-	exempt := defaults.Treatment == "EXEMPT" || defaults.Treatment == "NOT_APPLICABLE"
-	return []taxes.TaxComponent{{
-		Code:            defaults.TaxCode,
-		CalculationType: taxes.TaxPercentage,
-		Rate:            defaultRate(defaults.TaxRate),
-		Exempt:          exempt,
-	}}, nil
+	return components, rows.Err()
 }
 
-// FIXED_AMOUNT is stored per line rather than per unit; the engine models both
-// non-percentage forms through its quantity-based path.
+// normalizeCalculationType maps a stored component/rate calculation type onto
+// the engine's own set.
 func normalizeCalculationType(value string) taxes.TaxCalculationType {
-	if strings.ToUpper(strings.TrimSpace(value)) == "PERCENTAGE" {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "QUANTITY_BASED":
+		return taxes.TaxQuantityBased
+	case "FIXED_AMOUNT":
+		return taxes.TaxFixedAmount
+	default:
 		return taxes.TaxPercentage
 	}
-	return taxes.TaxQuantityBased
 }
 
 func defaultRate(value string) string {

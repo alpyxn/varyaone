@@ -199,3 +199,76 @@ func assertAmounts(t *testing.T, result TaxCalculationResult, gross, discount, t
 		}
 	}
 }
+
+func TestCalculateChargesVATOnTopOfABaseIncludedTax(t *testing.T) {
+	// ÖTV %10 belongs to the KDV base: KDV is charged on 110, not on 100.
+	result := mustCalculate(t, TaxCalculationInput{
+		Lines: []TaxCalculationLine{{
+			UnitPrice: "100",
+			Quantity:  "1",
+			Components: []TaxComponent{
+				{Code: "OTV", CalculationType: TaxPercentage, Rate: "10", IncludedInBase: true},
+				{Code: "KDV", CalculationType: TaxPercentage, Rate: "20", Primary: true},
+			},
+		}},
+		RoundScale: 2,
+	})
+
+	assertAmounts(t, result, "100", "0", "100", "32", "132", "132")
+	if result.Components[0].Amount != "10" || result.Components[0].BaseAmount != "100" {
+		t.Fatalf("ÖTV should be charged on the net amount: %#v", result.Components[0])
+	}
+	if result.Components[1].Amount != "22" || result.Components[1].BaseAmount != "110" {
+		t.Fatalf("KDV should be charged on net plus ÖTV: %#v", result.Components[1])
+	}
+}
+
+func TestCalculateInclusivePriceSolvesTheBaseIncludedCascade(t *testing.T) {
+	result := mustCalculate(t, TaxCalculationInput{
+		TaxMode: TaxInclusive,
+		Lines: []TaxCalculationLine{{
+			UnitPrice: "132",
+			Quantity:  "1",
+			Components: []TaxComponent{
+				{Code: "OTV", CalculationType: TaxPercentage, Rate: "10", IncludedInBase: true},
+				{Code: "KDV", CalculationType: TaxPercentage, Rate: "20", Primary: true},
+			},
+		}},
+		RoundScale: 2,
+	})
+
+	assertAmounts(t, result, "132", "0", "100", "32", "132", "132")
+}
+
+func TestCalculateFixedAmountTaxIsChargedOncePerLine(t *testing.T) {
+	result := mustCalculate(t, TaxCalculationInput{
+		Lines: []TaxCalculationLine{{
+			UnitPrice: "100",
+			Quantity:  "3",
+			Components: []TaxComponent{
+				{Code: "PAY", CalculationType: TaxFixedAmount, Rate: "15"},
+				{Code: "KDV", CalculationType: TaxPercentage, Rate: "20", Primary: true},
+			},
+		}},
+		RoundScale: 2,
+	})
+
+	// The flat amount does not multiply by quantity and stays out of the KDV base.
+	assertAmounts(t, result, "300", "0", "300", "75", "375", "375")
+}
+
+func TestCalculateBaseIncludedQuantityTaxRaisesTheVATBase(t *testing.T) {
+	result := mustCalculate(t, TaxCalculationInput{
+		Lines: []TaxCalculationLine{{
+			UnitPrice: "100",
+			Quantity:  "2",
+			Components: []TaxComponent{
+				{Code: "OTV", CalculationType: TaxQuantityBased, Rate: "5", IncludedInBase: true},
+				{Code: "KDV", CalculationType: TaxPercentage, Rate: "20", Primary: true},
+			},
+		}},
+		RoundScale: 2,
+	})
+
+	assertAmounts(t, result, "200", "0", "200", "52", "252", "252")
+}

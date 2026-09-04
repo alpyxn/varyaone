@@ -10,14 +10,19 @@ import { trimDecimalZeros } from '$lib/design/decimal';
 import { formatMoney, formatQuantityWithUnit } from '$lib/design/formatters';
 import { ph, type PrintDocumentInput, type PrintStamp } from '$lib/design/print';
 import type { Party } from '$lib/features/parties/types';
-import { lineAmounts } from './commercial-calc';
+import { lineAmounts, lineComponentAmounts } from './commercial-calc';
 import { documentStatusLabel, type CommercialResourceConfig } from './types';
 import type { DocumentRecord, LineDraft } from './editor-types';
 
 export type CommercialDocumentTotals = {
   subtotal: string;
   discount: string;
+  /** Total tax: KDV plus every additional tax on the lines. */
   tax: string;
+  /** The KDV part of `tax`. */
+  vat?: string;
+  /** ÖTV and every other tax charged besides KDV. */
+  additionalTax?: string;
   grand: string;
 };
 
@@ -221,9 +226,19 @@ export function buildCommercialDocument(input: BuildCommercialDocumentInput): Pr
       const amounts = lineAmounts(line);
       const discountRate = firstText(line.discountRate);
       const taxRate = firstText(line.taxRate);
+      const extraTaxes = lineComponentAmounts(line)
+        .map(
+          (component) =>
+            `${component.name || component.code} ${
+              component.calculationType === 'PERCENTAGE'
+                ? `%${trimDecimalZeros(component.rate)}`
+                : formatMoney(component.rate, currency)
+            }`
+        )
+        .join(', ');
       return `<tr>
         <td class="right">${index + 1}</td>
-        <td>${ph(lineDescription(line))}</td>
+        <td>${ph(lineDescription(line))}${extraTaxes ? `<small class="line-taxes">${ph(extraTaxes)}</small>` : ''}</td>
         <td>${ph(line.warehouse?.title ?? '')}</td>
         <td class="right">${ph(formatQuantityWithUnit(line.quantity, line.unitCode))}</td>
         <td class="right">${ph(formatMoney(line.unitPrice || '0', currency))}</td>
@@ -287,7 +302,13 @@ export function buildCommercialDocument(input: BuildCommercialDocumentInput): Pr
       <table class="totals">
         <tr><td>Brüt Toplam</td><td class="right">${ph(formatMoney(totals.subtotal, currency))}</td></tr>
         <tr><td>İskonto</td><td class="right">${ph(formatMoney(totals.discount, currency))}</td></tr>
-        <tr><td>KDV</td><td class="right">${ph(formatMoney(totals.tax, currency))}</td></tr>
+        <tr><td>KDV</td><td class="right">${ph(formatMoney(totals.vat ?? totals.tax, currency))}</td></tr>
+        ${
+          totals.additionalTax && trimDecimalZeros(totals.additionalTax) !== '0'
+            ? `<tr><td>Ek Vergiler</td><td class="right">${ph(formatMoney(totals.additionalTax, currency))}</td></tr>
+        <tr><td>Toplam Vergi</td><td class="right">${ph(formatMoney(totals.tax, currency))}</td></tr>`
+            : ''
+        }
         <tr class="grand"><td>Genel Toplam</td><td class="right">${ph(formatMoney(totals.grand, currency))}</td></tr>
         ${settlementRows}
       </table>
@@ -313,6 +334,7 @@ export function buildCommercialDocument(input: BuildCommercialDocumentInput): Pr
     bodyStyles: `
       table.lines th, table.lines td { font-size: 10.5px; }
       table.lines td { vertical-align: top; }
+      td small.line-taxes { display: block; color: #4b5563; font-size: 10px; margin-top: 2px; }
       .doc-totals { display: flex; justify-content: flex-end; margin-top: 8px; }
       table.totals { width: 320px; margin: 0; }
       table.totals td { border-bottom: none; padding: 3px 8px; font-size: 11.5px; }

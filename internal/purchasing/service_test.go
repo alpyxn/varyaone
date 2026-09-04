@@ -3,6 +3,8 @@ package purchasing
 import (
 	"strings"
 	"testing"
+
+	"github.com/alpyxn/varyaone/internal/taxes"
 )
 
 func TestValidateReceiptLineKeepsDamagedAndRejectedQuantities(t *testing.T) {
@@ -260,5 +262,57 @@ func TestPurchaseSourceLineBindingsRequireMatchingHeaderSource(t *testing.T) {
 	}
 	if err := validatePurchaseReturnSourceShape("10000000-0000-4000-8000-000000000002", []PurchaseReturnLine{{}}); err == nil {
 		t.Fatal("receipt-linked return must require a source receipt line on every line")
+	}
+}
+
+// The client's preview arithmetic and the engine round independently; only a
+// genuine override should demand the purchase.tax.override permission.
+func TestTaxDiffersMateriallyIgnoresSubKurusDrift(t *testing.T) {
+	cases := []struct {
+		supplied, expected string
+		want               bool
+	}{
+		{"20", "20", false},
+		{"20.00000001", "20", false},
+		{"19.998", "20", false},
+		{"20.01", "20", true},
+		{"0", "20", true},
+	}
+	for _, test := range cases {
+		if got := taxDiffersMaterially(test.supplied, test.expected); got != test.want {
+			t.Fatalf("taxDiffersMaterially(%q,%q) = %v, want %v", test.supplied, test.expected, got, test.want)
+		}
+	}
+}
+
+// The persisted breakdown names every tax on the line and records, on the VAT
+// entry, whether the price already contained tax.
+func TestComponentsSnapshotMarksTheTaxIncludedFlagOnVAT(t *testing.T) {
+	snapshot := componentsSnapshot([]taxes.TaxCalculationComponentResult{
+		{Code: "KDV", Primary: true, Rate: "20", Amount: "22"},
+		{Code: "OTV", IncludedInBase: true, Rate: "10", Amount: "10"},
+	}, true)
+	if len(snapshot) != 2 {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+	vat, ok := snapshot[0].(map[string]any)
+	if !ok || vat["included"] != true || vat["code"] != "KDV" {
+		t.Fatalf("VAT entry = %+v", snapshot[0])
+	}
+	if extra, ok := snapshot[1].(map[string]any); !ok || extra["included"] != nil {
+		t.Fatalf("additional tax entry must not claim the tax-included flag: %+v", snapshot[1])
+	}
+}
+
+func TestPrimaryComponentAmountPicksVAT(t *testing.T) {
+	components := []taxes.TaxCalculationComponentResult{
+		{Code: "OTV", Amount: "10"},
+		{Code: "KDV", Primary: true, Amount: "22"},
+	}
+	if got := primaryComponentAmount(components, "32"); got != "22" {
+		t.Fatalf("primaryComponentAmount = %q, want 22", got)
+	}
+	if got := primaryComponentAmount(nil, "32"); got != "32" {
+		t.Fatalf("fallback = %q, want 32", got)
 	}
 }

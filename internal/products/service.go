@@ -110,12 +110,17 @@ type Product struct {
 	AvailableQuantity string           `json:"available_quantity"`
 	StockUnit         string           `json:"stock_unit"`
 	NetPrice          string           `json:"net_price"`
-	IsActive          bool             `json:"is_active"`
-	CreatedAt         time.Time        `json:"created_at"`
-	UpdatedAt         time.Time        `json:"updated_at"`
-	Version           int64            `json:"version"`
-	VariantsEnabled   bool             `json:"variants_enabled"`
-	VariantSummary    VariantSummary   `json:"variant_summary"`
+	// PurchaseTaxComponents/SalesTaxComponents are the card's additional taxes
+	// (ÖTV, ÖİV, a company-defined tax) with their value already resolved, so
+	// a document line can price them without another catalog round trip.
+	PurchaseTaxComponents []TaxLineComponent `json:"purchase_tax_components"`
+	SalesTaxComponents    []TaxLineComponent `json:"sales_tax_components"`
+	IsActive              bool               `json:"is_active"`
+	CreatedAt             time.Time          `json:"created_at"`
+	UpdatedAt             time.Time          `json:"updated_at"`
+	Version               int64              `json:"version"`
+	VariantsEnabled       bool               `json:"variants_enabled"`
+	VariantSummary        VariantSummary     `json:"variant_summary"`
 }
 
 type VariantSummary struct {
@@ -192,6 +197,18 @@ type TaxProfileComponentInput struct {
 	CalculationType   string         `json:"calculation_type"`
 	IncludedInTaxBase bool           `json:"included_in_tax_base"`
 	Metadata          map[string]any `json:"metadata,omitempty"`
+}
+
+// TaxLineComponent is the document-ready form of one additional tax on a
+// product card. Rate is a percentage, a per-unit amount or a flat amount
+// depending on CalculationType; IncludedInBase marks a tax that belongs to the
+// VAT base, which is where ÖTV sits.
+type TaxLineComponent struct {
+	Code            string `json:"code"`
+	Name            string `json:"name"`
+	CalculationType string `json:"calculation_type"`
+	Rate            string `json:"rate"`
+	IncludedInBase  bool   `json:"included_in_base"`
 }
 
 type TaxProfile struct {
@@ -338,16 +355,14 @@ sales_tax_summary AS (
            ptp.treatment,
            ptp.rate,
            ptp.tax_included,
-           COALESCE(SUM(CASE
-               WHEN c.calculation_type = 'PERCENTAGE'
-               THEN CASE WHEN (c.metadata->>'rate') ~ '^[0-9]+([.,][0-9]+)?$'
-                         THEN replace(c.metadata->>'rate', ',', '.')::numeric ELSE 0 END
-               ELSE 0 END), 0) AS additional_percentage,
-           COALESCE(SUM(CASE
-               WHEN c.calculation_type IN ('QUANTITY_BASED', 'FIXED_AMOUNT')
-               THEN CASE WHEN (c.metadata->>'rate') ~ '^[0-9]+([.,][0-9]+)?$'
-                         THEN replace(c.metadata->>'rate', ',', '.')::numeric ELSE 0 END
-               ELSE 0 END), 0) AS additional_quantity_amount
+           COALESCE(SUM(CASE WHEN c.calculation_type = 'PERCENTAGE' AND c.included_in_tax_base
+                             THEN component_rate.value ELSE 0 END), 0) AS base_percentage,
+           COALESCE(SUM(CASE WHEN c.calculation_type = 'PERCENTAGE' AND NOT c.included_in_tax_base
+                             THEN component_rate.value ELSE 0 END), 0) AS additional_percentage,
+           COALESCE(SUM(CASE WHEN c.calculation_type <> 'PERCENTAGE' AND c.included_in_tax_base
+                             THEN component_rate.value ELSE 0 END), 0) AS base_amount,
+           COALESCE(SUM(CASE WHEN c.calculation_type <> 'PERCENTAGE' AND NOT c.included_in_tax_base
+                             THEN component_rate.value ELSE 0 END), 0) AS additional_amount
     FROM product_tax_profiles ptp
     LEFT JOIN product_tax_profile_components c
       ON c.company_id = ptp.company_id
@@ -356,6 +371,7 @@ sales_tax_summary AS (
     LEFT JOIN tax_definitions ctd
       ON ctd.company_id = c.company_id
      AND ctd.id = c.tax_definition_id
+    LEFT JOIN LATERAL (SELECT ` + productComponentRateSQL + `) component_rate ON true
     WHERE ptp.company_id = $1
       AND ptp.direction = 'SALES'
       AND (c.tax_definition_id IS NULL OR UPPER(ctd.code) NOT LIKE 'KDV%')
@@ -375,14 +391,18 @@ SELECT p.id,p.code,p.name,p.kind::text,p.description,p.purchase_price::text,p.sa
        CASE
          WHEN p.sales_tax_included OR COALESCE(st.tax_included, false) THEN p.sales_price
          ELSE ROUND(
-           p.sales_price * (1 + (
-             CASE
-               WHEN COALESCE(st.treatment, p.sales_tax_type) IN ('NOT_APPLICABLE','EXEMPT','YOK','NONE','MUAF','ISTISNA') THEN 0
-               ELSE COALESCE(st.rate, p.sales_tax_rate, 0)
-             END + COALESCE(st.additional_percentage, 0)
-           ) / 100) + COALESCE(st.additional_quantity_amount, 0), 2
+           (p.sales_price * (1 + COALESCE(st.base_percentage, 0) / 100) + COALESCE(st.base_amount, 0))
+             * (1 + (
+               CASE
+                 WHEN COALESCE(st.treatment, p.sales_tax_type) IN ('NOT_APPLICABLE','EXEMPT','YOK','NONE','MUAF','ISTISNA') THEN 0
+                 ELSE COALESCE(st.rate, p.sales_tax_rate, 0)
+               END + COALESCE(st.additional_percentage, 0)
+             ) / 100)
+           + COALESCE(st.additional_amount, 0), 2
          )
-       END::text
+       END::text,
+       ` + productComponentsSQL("PURCHASE") + `,
+       ` + productComponentsSQL("SALES") + `
 FROM products p
 LEFT JOIN product_categories pc ON pc.company_id=p.company_id AND pc.id=p.category_id
 LEFT JOIN product_brands pb ON pb.company_id=p.company_id AND pb.id=p.brand_id
@@ -1232,15 +1252,59 @@ func loadProduct(ctx context.Context, q rowQuerier, session identity.Session, id
 	return item, nil
 }
 
+// productComponentRateSQL resolves what one additional tax component is worth:
+// the rate row it points at, the value typed on the card, or the definition's
+// currently valid rate - the same order the document resolver uses.
+const productComponentRateSQL = `COALESCE(
+        (SELECT tr.rate FROM tax_rates tr WHERE tr.company_id=c.company_id AND tr.id=c.tax_rate_id),
+        CASE WHEN replace(COALESCE(c.metadata->>'rate',''),',','.') ~ '^[0-9]+(\.[0-9]+)?$'
+             THEN replace(c.metadata->>'rate',',','.')::numeric END,
+        (SELECT dr.rate FROM tax_rates dr
+          WHERE dr.company_id=c.company_id AND dr.tax_definition_id=c.tax_definition_id
+            AND dr.valid_from <= CURRENT_DATE AND (dr.valid_to IS NULL OR dr.valid_to >= CURRENT_DATE)
+          ORDER BY dr.valid_from DESC, dr.id LIMIT 1),
+        0) AS value`
+
+// productComponentsSQL lists a card's additional taxes for one direction, in
+// the shape a document line needs them.
+func productComponentsSQL(direction string) string {
+	return `COALESCE((SELECT jsonb_agg(jsonb_build_object(
+            'code', td.code,
+            'name', td.name,
+            'calculation_type', c.calculation_type,
+            'rate', trim_scale(component_rate.value)::text,
+            'included_in_base', c.included_in_tax_base) ORDER BY c.sequence)
+          FROM product_tax_profile_components c
+          JOIN tax_definitions td ON td.company_id=c.company_id AND td.id=c.tax_definition_id
+          LEFT JOIN LATERAL (SELECT ` + productComponentRateSQL + `) component_rate ON true
+         WHERE c.company_id=p.company_id AND c.product_id=p.id AND c.direction='` + direction + `'
+           AND UPPER(td.code) NOT LIKE 'KDV%'),'[]'::jsonb)::text`
+}
+
+func decodeTaxLineComponents(raw []byte) []TaxLineComponent {
+	components := []TaxLineComponent{}
+	if len(raw) == 0 {
+		return components
+	}
+	_ = json.Unmarshal(raw, &components)
+	if components == nil {
+		components = []TaxLineComponent{}
+	}
+	return components
+}
+
 func scanProduct(row interface{ Scan(...any) error }) (Product, error) {
 	item := Product{
 		Units:    make([]ProductUnit, 0),
 		Barcodes: make([]ProductBarcode, 0),
 	}
 	var kind string
-	if err := row.Scan(&item.ID, &item.Code, &item.Name, &kind, &item.Description, &item.PurchasePrice, &item.SalesPrice, &item.CustomDesc1, &item.CustomDesc2, &item.CustomDesc3, &item.PurchaseTaxType, &item.SalesTaxType, &item.PurchaseTaxRate, &item.SalesTaxRate, &item.PurchaseTaxIncluded, &item.SalesTaxIncluded, &item.ExciseTaxRate, &item.WithholdingCode, &item.WithholdingRate, &item.ExemptionCode, &item.TaxNote, &item.CategoryID, &item.CategoryName, &item.BrandID, &item.BrandName, &item.IsActive, &item.VariantsEnabled, &item.VariantSummary.Count, &item.VariantSummary.ActiveCount, &item.BarcodeSummary, &item.UnitSummary, &item.CreatedAt, &item.UpdatedAt, &item.Version, &item.PhysicalQuantity, &item.ReservedQuantity, &item.AvailableQuantity, &item.StockUnit, &item.NetPrice); err != nil {
+	var purchaseComponents, salesComponents []byte
+	if err := row.Scan(&item.ID, &item.Code, &item.Name, &kind, &item.Description, &item.PurchasePrice, &item.SalesPrice, &item.CustomDesc1, &item.CustomDesc2, &item.CustomDesc3, &item.PurchaseTaxType, &item.SalesTaxType, &item.PurchaseTaxRate, &item.SalesTaxRate, &item.PurchaseTaxIncluded, &item.SalesTaxIncluded, &item.ExciseTaxRate, &item.WithholdingCode, &item.WithholdingRate, &item.ExemptionCode, &item.TaxNote, &item.CategoryID, &item.CategoryName, &item.BrandID, &item.BrandName, &item.IsActive, &item.VariantsEnabled, &item.VariantSummary.Count, &item.VariantSummary.ActiveCount, &item.BarcodeSummary, &item.UnitSummary, &item.CreatedAt, &item.UpdatedAt, &item.Version, &item.PhysicalQuantity, &item.ReservedQuantity, &item.AvailableQuantity, &item.StockUnit, &item.NetPrice, &purchaseComponents, &salesComponents); err != nil {
 		return Product{}, err
 	}
+	item.PurchaseTaxComponents = decodeTaxLineComponents(purchaseComponents)
+	item.SalesTaxComponents = decodeTaxLineComponents(salesComponents)
 	item.Kind = kind
 	item.SKU = item.Code
 	return item, nil

@@ -1,6 +1,10 @@
 package commerce
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/alpyxn/varyaone/internal/taxes"
+)
 
 func TestDirectionSelectsOverridePermissions(t *testing.T) {
 	if got := DirectionSales.PriceOverridePermission(); got != "sales.price.override" {
@@ -54,5 +58,22 @@ func TestConvertBasePriceRefusesUnusableRate(t *testing.T) {
 	}
 	if got, err := ConvertBasePrice("", "2"); err != nil || got != "" {
 		t.Fatalf("empty price returned %q, %v", got, err)
+	}
+}
+
+// A FIXED_AMOUNT component used to be mapped onto the engine's quantity-based
+// path, which multiplied a flat amount by the line quantity.
+func TestNormalizeCalculationTypeKeepsEachStoredForm(t *testing.T) {
+	cases := map[string]taxes.TaxCalculationType{
+		"PERCENTAGE":     taxes.TaxPercentage,
+		"QUANTITY_BASED": taxes.TaxQuantityBased,
+		"FIXED_AMOUNT":   taxes.TaxFixedAmount,
+		"":               taxes.TaxPercentage,
+		"unknown":        taxes.TaxPercentage,
+	}
+	for stored, want := range cases {
+		if got := normalizeCalculationType(stored); got != want {
+			t.Fatalf("normalizeCalculationType(%q) = %q, want %q", stored, got, want)
+		}
 	}
 }

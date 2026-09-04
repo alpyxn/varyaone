@@ -13,6 +13,7 @@ import type {
   DocumentLine,
   DocumentRecord,
   LineDraft,
+  LineTaxComponent,
   ProductOption,
   SourceOption,
   WarehouseOption
@@ -81,6 +82,7 @@ export function emptyLine(
     discountRate: '',
     taxRate: '0',
     taxIncluded: false,
+    taxComponents: [],
     description: lineType === 'SERVICE' ? 'Hizmet' : '',
     manualPrice: false
   };
@@ -124,6 +126,40 @@ export function contextualDocumentStatusLabel(status: unknown, isSales: boolean)
   return documentStatusLabel(status);
 }
 
+/** The additional taxes a persisted line carries. The stored breakdown holds
+ *  the KDV entry first (flagged `primary`); everything else is an ÖTV-style
+ *  tax. Entries written before that flag existed are recognised by their KDV
+ *  code, and an entry with neither code nor name is the old rate-only KDV
+ *  snapshot - both are skipped so KDV is never counted twice. */
+export function lineTaxComponents(line: DocumentLine): LineTaxComponent[] {
+  const components: LineTaxComponent[] = [];
+  for (const entry of line.tax_components_snapshot ?? []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    if (record.primary === true) continue;
+    const code = text(record.code);
+    const name = text(record.name) || code;
+    if (!code && !name) continue;
+    if (isVatCode(code) || isVatCode(name)) continue;
+    const calculationType = text(record.calculation_type).toUpperCase();
+    components.push({
+      code,
+      name,
+      calculationType:
+        calculationType === 'QUANTITY_BASED' || calculationType === 'FIXED_AMOUNT'
+          ? calculationType
+          : 'PERCENTAGE',
+      rate: trimDecimalZeros(text(record.rate, '0')) || '0',
+      includedInBase: record.included_in_base === true
+    });
+  }
+  return components;
+}
+
+function isVatCode(value: string) {
+  return value.toLocaleUpperCase('tr-TR').startsWith('KDV');
+}
+
 function lineTaxSnapshot(line: DocumentLine) {
   if (line.tax_snapshot && typeof line.tax_snapshot === 'object') return line.tax_snapshot;
   return (
@@ -148,6 +184,7 @@ export function productOption(line: DocumentLine): ProductOption | null {
     taxRate: trimDecimalZeros(text(taxSnapshot.rate ?? line.tax_rate, '0')) || '0',
     taxIncluded:
       taxSnapshot.included === true || String(taxSnapshot.included).toLowerCase() === 'true',
+    taxComponents: lineTaxComponents(line),
     variantsEnabled: Boolean(text(line.variant_id))
   };
 }
@@ -195,6 +232,7 @@ export function lineFromRecord(
     taxRate: trimDecimalZeros(text(taxSnapshot.rate ?? line.tax_rate, '0')) || '0',
     taxIncluded:
       taxSnapshot.included === true || String(taxSnapshot.included).toLowerCase() === 'true',
+    taxComponents: lineTaxComponents(line),
     persistedTotal: trimDecimalZeros(text(line.line_total ?? line.payable_amount)) || undefined,
     description: text(line.description ?? line.description_snapshot ?? line.product_name_snapshot),
     orderedQuantity: text(line.ordered_quantity) || undefined,

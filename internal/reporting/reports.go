@@ -362,43 +362,71 @@ func (s *Service) OverduePayables(ctx context.Context, session identity.Session,
 	return items, nil
 }
 
-// TaxSummaryRow aggregates posted document lines by their effective tax rate.
+// TaxSummaryRow aggregates posted document lines by the tax that produced the
+// amount: one row per tax and rate, so an ÖTV-style component is never added
+// into a KDV bucket.
 type TaxSummaryRow struct {
+	Tax               string `json:"tax"`
 	Rate              string `json:"rate"`
 	TaxBase           string `json:"tax_base"`
 	TaxAmount         string `json:"tax_amount"`
 	WithholdingAmount string `json:"withholding_amount"`
 }
 
-// TaxSummary groups posted sales or purchase invoice lines by tax rate.
+// TaxSummary groups posted sales or purchase invoice lines by tax and rate.
 // direction is "SALES" or "PURCHASE"; any other value defaults to "SALES".
+// Lines carry a per-tax breakdown; a line posted before that breakdown existed
+// falls back to its own single tax figures.
 func (s *Service) TaxSummary(ctx context.Context, session identity.Session, from, to time.Time, direction string) ([]TaxSummaryRow, error) {
 	if !canRead(session) {
 		return nil, identity.ErrForbidden
 	}
 	query := `
-		SELECT COALESCE(NULLIF(l.tax_snapshot->>'rate',''),'0') AS rate,
-		       SUM(l.net_amount)::numeric(24,4)::text,
-		       SUM(l.tax_amount)::numeric(24,4)::text,
-		       SUM(l.withholding_amount)::numeric(24,4)::text
-		  FROM sales_invoice_lines l
-		  JOIN sales_invoices h ON h.company_id=l.company_id AND h.id=l.document_id
-		 WHERE l.company_id=$1 AND h.status='POSTED' AND h.document_date BETWEEN $2 AND $3
-		 GROUP BY rate
-		 ORDER BY rate`
+		WITH parts AS (
+			SELECT COALESCE(NULLIF(c.value->>'name',''),NULLIF(c.value->>'code',''),'KDV') AS tax,
+			       trim_scale(COALESCE(NULLIF(c.value->>'rate',''),NULLIF(l.tax_snapshot->>'rate',''),'0')::numeric)::text AS rate,
+			       COALESCE(NULLIF(c.value->>'base_amount','')::numeric,l.net_amount) AS tax_base,
+			       COALESCE(NULLIF(c.value->>'amount','')::numeric,l.tax_amount) AS tax_amount,
+			       CASE WHEN c.ordinality IS NULL OR c.ordinality = 1 THEN l.withholding_amount ELSE 0 END AS withholding_amount
+			  FROM sales_invoice_lines l
+			  JOIN sales_invoices h ON h.company_id=l.company_id AND h.id=l.document_id
+			  LEFT JOIN LATERAL jsonb_array_elements(
+			       CASE WHEN jsonb_typeof(l.tax_components_snapshot)='array'
+			            THEN l.tax_components_snapshot ELSE '[]'::jsonb END)
+			       WITH ORDINALITY AS c(value, ordinality) ON true
+			 WHERE l.company_id=$1 AND h.status='POSTED' AND h.document_date BETWEEN $2 AND $3
+		)
+		SELECT tax,rate,
+		       SUM(tax_base)::numeric(24,4)::text,
+		       SUM(tax_amount)::numeric(24,4)::text,
+		       SUM(withholding_amount)::numeric(24,4)::text
+		  FROM parts
+		 GROUP BY tax,rate
+		 ORDER BY tax,rate`
 	if direction == "PURCHASE" {
 		query = `
-			SELECT CASE WHEN l.tax_base > 0
-			            THEN round(l.tax_amount/l.tax_base*100, 2)::text
-			            ELSE '0' END AS rate,
-			       SUM(l.tax_base)::numeric(24,4)::text,
-			       SUM(l.tax_amount)::numeric(24,4)::text,
-			       SUM(l.withholding_amount)::numeric(24,4)::text
-			  FROM purchase_invoice_lines l
-			  JOIN purchase_invoices h ON h.company_id=l.company_id AND h.id=l.invoice_id
-			 WHERE l.company_id=$1 AND h.status='POSTED' AND h.invoice_date BETWEEN $2 AND $3
-			 GROUP BY rate
-			 ORDER BY rate`
+			WITH parts AS (
+				SELECT COALESCE(NULLIF(c.value->>'name',''),NULLIF(c.value->>'code',''),'KDV') AS tax,
+				       trim_scale(COALESCE(NULLIF(c.value->>'rate','')::numeric,
+				                CASE WHEN l.tax_base > 0 THEN round(l.tax_amount/l.tax_base*100,2) ELSE 0 END))::text AS rate,
+				       COALESCE(NULLIF(c.value->>'base_amount','')::numeric,l.tax_base) AS tax_base,
+				       COALESCE(NULLIF(c.value->>'amount','')::numeric,l.tax_amount) AS tax_amount,
+				       CASE WHEN c.ordinality IS NULL OR c.ordinality = 1 THEN l.withholding_amount ELSE 0 END AS withholding_amount
+				  FROM purchase_invoice_lines l
+				  JOIN purchase_invoices h ON h.company_id=l.company_id AND h.id=l.invoice_id
+				  LEFT JOIN LATERAL jsonb_array_elements(
+				       CASE WHEN jsonb_typeof(l.tax_components_snapshot)='array'
+				            THEN l.tax_components_snapshot ELSE '[]'::jsonb END)
+				       WITH ORDINALITY AS c(value, ordinality) ON true
+				 WHERE l.company_id=$1 AND h.status='POSTED' AND h.invoice_date BETWEEN $2 AND $3
+			)
+			SELECT tax,rate,
+			       SUM(tax_base)::numeric(24,4)::text,
+			       SUM(tax_amount)::numeric(24,4)::text,
+			       SUM(withholding_amount)::numeric(24,4)::text
+			  FROM parts
+			 GROUP BY tax,rate
+			 ORDER BY tax,rate`
 	}
 	rows, err := s.pool.Query(ctx, query, session.CurrentCompanyID, from, to)
 	if err != nil {
@@ -408,7 +436,7 @@ func (s *Service) TaxSummary(ctx context.Context, session identity.Session, from
 	items := []TaxSummaryRow{}
 	for rows.Next() {
 		var item TaxSummaryRow
-		if err = rows.Scan(&item.Rate, &item.TaxBase, &item.TaxAmount, &item.WithholdingAmount); err != nil {
+		if err = rows.Scan(&item.Tax, &item.Rate, &item.TaxBase, &item.TaxAmount, &item.WithholdingAmount); err != nil {
 			return nil, err
 		}
 		items = append(items, item)

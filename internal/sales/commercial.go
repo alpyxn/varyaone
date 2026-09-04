@@ -189,41 +189,44 @@ func invoicePostingDescription(documentType, documentNo, notes string) string {
 }
 
 type CommercialLine struct {
-	ID                               string                    `json:"id"`
-	LineNo                           int                       `json:"line_no"`
-	LineType                         string                    `json:"line_type"`
-	ProductID                        *string                   `json:"product_id,omitempty"`
-	VariantID                        *string                   `json:"variant_id,omitempty"`
-	VariantCode                      string                    `json:"variant_code,omitempty"`
-	VariantAttributes                map[string]any            `json:"variant_attributes,omitempty"`
-	WarehouseID                      *string                   `json:"warehouse_id,omitempty"`
-	WarehouseName                    string                    `json:"warehouse_name,omitempty"`
-	WarehouseCode                    string                    `json:"warehouse_code,omitempty"`
-	UnitCode                         string                    `json:"unit_code"`
-	Quantity                         string                    `json:"quantity"`
-	BaseQuantity                     string                    `json:"base_quantity"`
-	ConversionFactor                 string                    `json:"conversion_factor"`
-	PriceSource                      string                    `json:"price_source"`
-	PriceListSnapshot                map[string]any            `json:"price_list_snapshot,omitempty"`
-	DiscountComponents               []CommercialDiscountInput `json:"discount_components,omitempty"`
-	TaxSnapshot                      map[string]any            `json:"tax_snapshot,omitempty"`
-	TaxComponentsSnapshot            []taxes.TaxComponent      `json:"tax_components_snapshot,omitempty"`
-	Description                      string                    `json:"description"`
-	SourceLineID                     *string                   `json:"source_line_id,omitempty"`
-	RemainingFulfillmentQuantity     string                    `json:"remaining_fulfillment_quantity,omitempty"`
-	RemainingFulfillmentBaseQuantity string                    `json:"remaining_fulfillment_base_quantity,omitempty"`
-	RemainingInvoicingQuantity       string                    `json:"remaining_invoicing_quantity,omitempty"`
-	RemainingInvoicingBaseQuantity   string                    `json:"remaining_invoicing_base_quantity,omitempty"`
-	RemainingReturnQuantity          string                    `json:"remaining_return_quantity,omitempty"`
-	RemainingReturnBaseQuantity      string                    `json:"remaining_return_base_quantity,omitempty"`
-	UnitPrice                        string                    `json:"unit_price"`
-	GrossAmount                      string                    `json:"gross_amount"`
-	DiscountAmount                   string                    `json:"discount_amount"`
-	NetAmount                        string                    `json:"net_amount"`
-	TaxAmount                        string                    `json:"tax_amount"`
-	WithholdingAmount                string                    `json:"withholding_amount"`
-	LineTotal                        string                    `json:"line_total"`
-	PayableAmount                    string                    `json:"payable_amount"`
+	ID                 string                    `json:"id"`
+	LineNo             int                       `json:"line_no"`
+	LineType           string                    `json:"line_type"`
+	ProductID          *string                   `json:"product_id,omitempty"`
+	VariantID          *string                   `json:"variant_id,omitempty"`
+	VariantCode        string                    `json:"variant_code,omitempty"`
+	VariantAttributes  map[string]any            `json:"variant_attributes,omitempty"`
+	WarehouseID        *string                   `json:"warehouse_id,omitempty"`
+	WarehouseName      string                    `json:"warehouse_name,omitempty"`
+	WarehouseCode      string                    `json:"warehouse_code,omitempty"`
+	UnitCode           string                    `json:"unit_code"`
+	Quantity           string                    `json:"quantity"`
+	BaseQuantity       string                    `json:"base_quantity"`
+	ConversionFactor   string                    `json:"conversion_factor"`
+	PriceSource        string                    `json:"price_source"`
+	PriceListSnapshot  map[string]any            `json:"price_list_snapshot,omitempty"`
+	DiscountComponents []CommercialDiscountInput `json:"discount_components,omitempty"`
+	TaxSnapshot        map[string]any            `json:"tax_snapshot,omitempty"`
+	// TaxComponentsSnapshot is the per-line tax breakdown the engine produced:
+	// the VAT component plus every additional tax (ÖTV, ÖİV, a company-defined
+	// tax) with the base it was charged on and the amount it produced.
+	TaxComponentsSnapshot            []taxes.TaxCalculationComponentResult `json:"tax_components_snapshot,omitempty"`
+	Description                      string                                `json:"description"`
+	SourceLineID                     *string                               `json:"source_line_id,omitempty"`
+	RemainingFulfillmentQuantity     string                                `json:"remaining_fulfillment_quantity,omitempty"`
+	RemainingFulfillmentBaseQuantity string                                `json:"remaining_fulfillment_base_quantity,omitempty"`
+	RemainingInvoicingQuantity       string                                `json:"remaining_invoicing_quantity,omitempty"`
+	RemainingInvoicingBaseQuantity   string                                `json:"remaining_invoicing_base_quantity,omitempty"`
+	RemainingReturnQuantity          string                                `json:"remaining_return_quantity,omitempty"`
+	RemainingReturnBaseQuantity      string                                `json:"remaining_return_base_quantity,omitempty"`
+	UnitPrice                        string                                `json:"unit_price"`
+	GrossAmount                      string                                `json:"gross_amount"`
+	DiscountAmount                   string                                `json:"discount_amount"`
+	NetAmount                        string                                `json:"net_amount"`
+	TaxAmount                        string                                `json:"tax_amount"`
+	WithholdingAmount                string                                `json:"withholding_amount"`
+	LineTotal                        string                                `json:"line_total"`
+	PayableAmount                    string                                `json:"payable_amount"`
 }
 
 type CommercialDocument struct {
@@ -727,21 +730,25 @@ func (s *Service) ConvertCommercial(ctx context.Context, session identity.Sessio
 			continue
 		}
 		lineInput := CommercialLineInput{
-			LineNo:                    index + 1,
-			LineType:                  line.LineType,
-			UnitCode:                  line.UnitCode,
-			Quantity:                  quantity,
-			BaseQuantity:              baseQuantity,
-			ConversionFactor:          line.ConversionFactor,
-			PriceSource:               line.PriceSource,
-			PriceListSnapshot:         cloneCommercialMap(line.PriceListSnapshot),
-			DiscountComponents:        conversionDiscountComponents(line),
-			Description:               line.Description,
-			UnitPrice:                 line.UnitPrice,
-			TaxSnapshot:               cloneCommercialMap(line.TaxSnapshot),
-			TaxRate:                   commercialSnapshotString(line.TaxSnapshot, "rate"),
-			TaxIncluded:               commercialSnapshotBool(line.TaxSnapshot, "included"),
-			SourceLineID:              line.ID,
+			LineNo:             index + 1,
+			LineType:           line.LineType,
+			UnitCode:           line.UnitCode,
+			Quantity:           quantity,
+			BaseQuantity:       baseQuantity,
+			ConversionFactor:   line.ConversionFactor,
+			PriceSource:        line.PriceSource,
+			PriceListSnapshot:  cloneCommercialMap(line.PriceListSnapshot),
+			DiscountComponents: conversionDiscountComponents(line),
+			Description:        line.Description,
+			UnitPrice:          line.UnitPrice,
+			TaxSnapshot:        cloneCommercialMap(line.TaxSnapshot),
+			TaxRate:            commercialSnapshotString(line.TaxSnapshot, "rate"),
+			TaxIncluded:        commercialSnapshotBool(line.TaxSnapshot, "included"),
+			SourceLineID:       line.ID,
+			// A conversion keeps the source line's tax profile, so the target
+			// charges the same ÖTV-style components instead of collapsing back
+			// onto the bare KDV rate.
+			taxComponentsSnapshot:     componentsFromSnapshot(line.TaxComponentsSnapshot),
 			WithholdingRate:           commercialSnapshotString(line.TaxSnapshot, "withholding_rate"),
 			variantCodeSnapshot:       line.VariantCode,
 			variantAttributesSnapshot: cloneCommercialMap(line.VariantAttributes),
@@ -2310,10 +2317,13 @@ func (s *Service) resolveCommercialLineDefaults(ctx context.Context, session ide
 
 	if line.TaxRate == "" {
 		line.TaxRate = defaults.TaxRate
-		line.TaxIncluded = defaults.TaxIncluded
 	} else if strings.TrimSpace(line.TaxRate) != strings.TrimSpace(defaults.TaxRate) && !session.HasPermission(commerce.DirectionSales.TaxOverridePermission()) {
 		return commercialError(CommercialErrorTaxProfileInvalid, "vergi profili değişikliği için yetki gereklidir", "tax_rate", lineNumber)
 	}
+	// Whether the price already contains tax is a property of the card, not of
+	// the posted line: a client that omits the flag must not turn a
+	// tax-included price into a tax-exclusive one.
+	line.TaxIncluded = defaults.TaxIncluded
 	if line.WithholdingRate == "" {
 		line.WithholdingRate = defaults.WithholdingRate
 	}
@@ -2359,7 +2369,7 @@ func normalizeCommercialLines(inputs []CommercialLineInput, defaultWarehouse, cu
 		if taxSnapshot == nil {
 			taxSnapshot = map[string]any{}
 		}
-		line := CommercialLine{ID: strings.TrimSpace(input.ID), LineNo: input.LineNo, LineType: strings.ToUpper(strings.TrimSpace(input.LineType)), UnitCode: strings.ToUpper(strings.TrimSpace(input.UnitCode)), Quantity: strings.TrimSpace(input.Quantity), BaseQuantity: strings.TrimSpace(input.BaseQuantity), ConversionFactor: strings.TrimSpace(input.ConversionFactor), PriceSource: strings.ToUpper(strings.TrimSpace(input.PriceSource)), PriceListSnapshot: priceListSnapshot, DiscountComponents: discountComponents, TaxSnapshot: taxSnapshot, TaxComponentsSnapshot: input.taxComponentsSnapshot, Description: strings.TrimSpace(input.Description), UnitPrice: strings.TrimSpace(input.UnitPrice), VariantCode: strings.TrimSpace(input.variantCodeSnapshot), VariantAttributes: cloneCommercialMap(input.variantAttributesSnapshot)}
+		line := CommercialLine{ID: strings.TrimSpace(input.ID), LineNo: input.LineNo, LineType: strings.ToUpper(strings.TrimSpace(input.LineType)), UnitCode: strings.ToUpper(strings.TrimSpace(input.UnitCode)), Quantity: strings.TrimSpace(input.Quantity), BaseQuantity: strings.TrimSpace(input.BaseQuantity), ConversionFactor: strings.TrimSpace(input.ConversionFactor), PriceSource: strings.ToUpper(strings.TrimSpace(input.PriceSource)), PriceListSnapshot: priceListSnapshot, DiscountComponents: discountComponents, TaxSnapshot: taxSnapshot, TaxComponentsSnapshot: componentSnapshot(input.taxComponentsSnapshot), Description: strings.TrimSpace(input.Description), UnitPrice: strings.TrimSpace(input.UnitPrice), VariantCode: strings.TrimSpace(input.variantCodeSnapshot), VariantAttributes: cloneCommercialMap(input.variantAttributesSnapshot)}
 		if line.ID == "" || uuid.Validate(line.ID) != nil {
 			line.ID = uuid.NewString()
 		}
@@ -2504,8 +2514,9 @@ func normalizeCommercialLines(inputs []CommercialLineInput, defaultWarehouse, cu
 			discount = mustCommercialRat(engineLine.DiscountAmount)
 			net = mustCommercialRat(engineLine.TaxableAmount)
 			tax = mustCommercialRat(engineLine.TaxAmount)
-			if len(input.taxComponentsSnapshot) > 0 {
-				taxRate = input.taxComponentsSnapshot[0].Rate
+			line.TaxComponentsSnapshot = engineLine.Components
+			if rate, ok := primaryComponentRate(input.taxComponentsSnapshot); ok {
+				taxRate = rate
 			}
 		} else {
 			rate, rateErr := commercialDecimal(taxRate, false)
@@ -2523,13 +2534,22 @@ func normalizeCommercialLines(inputs []CommercialLineInput, defaultWarehouse, cu
 				tax.Quo(tax, big.NewRat(100, 1))
 			}
 		}
+		// A line that did not go through the engine has exactly one component,
+		// so its breakdown is the line's own tax.
+		if len(line.TaxComponentsSnapshot) == 1 && line.TaxComponentsSnapshot[0].Amount == "" {
+			line.TaxComponentsSnapshot[0].BaseAmount = rat8(net)
+			line.TaxComponentsSnapshot[0].Amount = rat8(tax)
+		}
 		withholding := new(big.Rat)
 		if input.WithholdingRate != "" {
 			wr, werr := commercialDecimal(input.WithholdingRate, false)
 			if werr != nil || wr.Sign() < 0 || wr.Cmp(big.NewRat(100, 1)) > 0 {
 				return nil, commercialTotals{}, commercialError(CommercialErrorTaxProfileInvalid, "tevkifat oranı geçersiz", "withholding_rate", index+1)
 			}
-			withholding.Mul(tax, wr)
+			// Tevkifat is withheld from VAT, never from ÖTV-style additional
+			// taxes, so a line with extra components withholds on the VAT
+			// component alone.
+			withholding.Mul(primaryComponentAmount(line.TaxComponentsSnapshot, tax), wr)
 			withholding.Quo(withholding, big.NewRat(100, 1))
 		}
 		line.GrossAmount, line.DiscountAmount, line.NetAmount, line.TaxAmount, line.WithholdingAmount = rat8(gross), rat8(discount), rat8(net), rat8(tax), rat8(withholding)
@@ -2653,6 +2673,63 @@ func conversionDiscountComponents(line CommercialLine) []CommercialDiscountInput
 	return []CommercialDiscountInput{{Rate: rat8(rate)}}
 }
 
+// componentsFromSnapshot turns a persisted breakdown back into engine input,
+// dropping the amounts it was calculated with.
+func componentsFromSnapshot(snapshot []taxes.TaxCalculationComponentResult) []taxes.TaxComponent {
+	components := make([]taxes.TaxComponent, 0, len(snapshot))
+	for _, entry := range snapshot {
+		if strings.TrimSpace(entry.Rate) == "" {
+			continue
+		}
+		components = append(components, taxes.TaxComponent{
+			Code: entry.Code, Name: entry.Name, Primary: entry.Primary,
+			IncludedInBase: entry.IncludedInBase, CalculationType: entry.CalculationType,
+			Rate: entry.Rate, Withholding: entry.Withholding, Exempt: entry.Exempt,
+		})
+	}
+	return components
+}
+
+// componentSnapshot is the pre-calculation view of a line's components: the
+// resolved profile with no amounts yet. A line whose tax runs through the
+// engine replaces it with the computed breakdown.
+func componentSnapshot(components []taxes.TaxComponent) []taxes.TaxCalculationComponentResult {
+	snapshot := make([]taxes.TaxCalculationComponentResult, 0, len(components))
+	for _, component := range components {
+		snapshot = append(snapshot, taxes.TaxCalculationComponentResult{
+			Code: component.Code, Name: component.Name, Primary: component.Primary,
+			IncludedInBase: component.IncludedInBase, CalculationType: component.CalculationType,
+			Rate: component.Rate, Withholding: component.Withholding, Exempt: component.Exempt,
+		})
+	}
+	return snapshot
+}
+
+// primaryComponentRate is the VAT rate of a resolved profile: the rate that
+// belongs in the line's tax_rate column, never an additional tax's rate.
+func primaryComponentRate(components []taxes.TaxComponent) (string, bool) {
+	for _, component := range components {
+		if component.Primary {
+			return component.Rate, true
+		}
+	}
+	return "", false
+}
+
+// primaryComponentAmount is the VAT part of a computed breakdown, falling back
+// to the line's whole tax amount when no component is marked primary.
+func primaryComponentAmount(components []taxes.TaxCalculationComponentResult, fallback *big.Rat) *big.Rat {
+	for _, component := range components {
+		if !component.Primary || strings.TrimSpace(component.Amount) == "" {
+			continue
+		}
+		if amount, err := commercialDecimal(component.Amount, true); err == nil {
+			return amount
+		}
+	}
+	return fallback
+}
+
 // commercialLineNeedsTaxEngine reports whether a line's resolved tax profile
 // cannot be expressed as this file's single flat-rate formula: more than one
 // component (VAT plus an excise-style component), or any QUANTITY_BASED
@@ -2662,7 +2739,7 @@ func commercialLineNeedsTaxEngine(components []taxes.TaxComponent) bool {
 		return true
 	}
 	for _, component := range components {
-		if component.CalculationType == taxes.TaxQuantityBased {
+		if component.CalculationType != taxes.TaxPercentage || component.IncludedInBase {
 			return true
 		}
 	}
@@ -2799,7 +2876,7 @@ func insertCommercialLineTx(ctx context.Context, tx pgx.Tx, companyID string, sp
 	}
 	components := line.TaxComponentsSnapshot
 	if components == nil {
-		components = []taxes.TaxComponent{}
+		components = []taxes.TaxCalculationComponentResult{}
 	}
 	_, err := tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %s(id,company_id,document_id,line_no,line_type,product_id,variant_id,variant_code_snapshot,variant_attributes_snapshot,warehouse_id,unit_code,quantity,base_quantity,conversion_factor,price_source,price_list_snapshot,discount_components_snapshot,tax_snapshot,tax_components_snapshot,description_snapshot,source_line_id,unit_price,gross_amount,discount_amount,net_amount,tax_amount,withholding_amount,line_total,payable_amount) VALUES($1,$2,$3,$4,$5,NULLIF($6,'')::uuid,NULLIF($7,'')::uuid,$8,$9,NULLIF($10,'')::uuid,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NULLIF($21,'')::uuid,$22,$23,$24,$25,$26,$27,$28,$29)`, spec.lineTable), line.ID, companyID, documentID, line.LineNo, line.LineType, productID, variantID, line.VariantCode, jsonBytes(line.VariantAttributes), warehouseID, line.UnitCode, line.Quantity, line.BaseQuantity, line.ConversionFactor, line.PriceSource, jsonBytes(line.PriceListSnapshot), jsonBytes(line.DiscountComponents), jsonBytes(line.TaxSnapshot), jsonBytes(components), line.Description, sourceLineID, line.UnitPrice, line.GrossAmount, line.DiscountAmount, line.NetAmount, line.TaxAmount, line.WithholdingAmount, line.LineTotal, line.PayableAmount)
 	return err

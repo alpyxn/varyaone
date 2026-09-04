@@ -37,8 +37,12 @@ type TaxCalculationType string
 const (
 	TaxPercentage    TaxCalculationType = "PERCENTAGE"
 	TaxQuantityBased TaxCalculationType = "QUANTITY_BASED"
-	Percentage                          = TaxPercentage
-	QuantityBased                       = TaxQuantityBased
+	// TaxFixedAmount is a flat per-line amount (not per unit). Product tax
+	// profile components accept it, so the engine has to price it.
+	TaxFixedAmount TaxCalculationType = "FIXED_AMOUNT"
+	Percentage                        = TaxPercentage
+	QuantityBased                     = TaxQuantityBased
+	FixedAmount                       = TaxFixedAmount
 )
 
 type TaxDiscount struct {
@@ -53,13 +57,23 @@ type Discount = TaxDiscount
 // provider-specific identifiers. Rate is a percentage for PERCENTAGE and a
 // per-unit amount for QUANTITY_BASED.
 type TaxComponent struct {
-	Code                   string             `json:"code,omitempty"`
-	CalculationType        TaxCalculationType `json:"calculation_type"`
-	Rate                   string             `json:"rate"`
-	Withholding            bool               `json:"withholding,omitempty"`
-	WithholdingNumerator   *int               `json:"withholding_numerator,omitempty"`
-	WithholdingDenominator *int               `json:"withholding_denominator,omitempty"`
-	Exempt                 bool               `json:"exempt,omitempty"`
+	Code string `json:"code,omitempty"`
+	// Name is display-only; it travels with the component so a document line
+	// can label its taxes without another catalog lookup.
+	Name            string             `json:"name,omitempty"`
+	CalculationType TaxCalculationType `json:"calculation_type"`
+	Rate            string             `json:"rate"`
+	// IncludedInBase marks a tax that belongs to the base of the components
+	// that are not themselves included: Turkish ÖTV sits in the KDV base, so
+	// KDV is charged on (net + ÖTV) while ÖTV is charged on net alone.
+	IncludedInBase bool `json:"included_in_base,omitempty"`
+	// Primary marks the line's VAT component, the one whose rate is the
+	// document line's tax_rate.
+	Primary                bool `json:"primary,omitempty"`
+	Withholding            bool `json:"withholding,omitempty"`
+	WithholdingNumerator   *int `json:"withholding_numerator,omitempty"`
+	WithholdingDenominator *int `json:"withholding_denominator,omitempty"`
+	Exempt                 bool `json:"exempt,omitempty"`
 }
 
 type TaxCalculationLine struct {
@@ -90,6 +104,9 @@ type TaxCalculationInput struct {
 
 type TaxCalculationComponentResult struct {
 	Code              string             `json:"code,omitempty"`
+	Name              string             `json:"name,omitempty"`
+	Primary           bool               `json:"primary,omitempty"`
+	IncludedInBase    bool               `json:"included_in_base,omitempty"`
 	CalculationType   TaxCalculationType `json:"calculation_type"`
 	Rate              string             `json:"rate"`
 	BaseAmount        string             `json:"base_amount"`
@@ -343,8 +360,12 @@ func calculateLineFrom(resolved lineBase, headerShare *big.Rat, mode TaxMode, sc
 	discount := new(big.Rat).Add(resolved.discount, headerShare)
 
 	components := make([]validatedComponent, 0, len(line.Components))
-	percentageRate := new(big.Rat)
-	quantityTax := new(big.Rat)
+	// Components split into two layers: the ones flagged as part of the tax
+	// base (ÖTV and friends) are charged on the net amount and then join the
+	// base of every other component, which is how KDV is charged on top of
+	// ÖTV.
+	innerRate, outerRate := new(big.Rat), new(big.Rat)
+	innerFixed, outerFixed := new(big.Rat), new(big.Rat)
 	for _, component := range line.Components {
 		validated, err := validateComponent(component)
 		if err != nil {
@@ -354,22 +375,37 @@ func calculateLineFrom(resolved lineBase, headerShare *big.Rat, mode TaxMode, sc
 		if validated.exempt {
 			continue
 		}
-		if validated.kind == TaxPercentage {
-			percentageRate.Add(percentageRate, validated.rate)
-		} else {
-			quantityTax.Add(quantityTax, new(big.Rat).Mul(quantity, validated.rate))
+		rate, fixed := outerRate, outerFixed
+		if validated.includedInBase {
+			rate, fixed = innerRate, innerFixed
+		}
+		switch validated.kind {
+		case TaxPercentage:
+			rate.Add(rate, validated.rate)
+		case TaxQuantityBased:
+			fixed.Add(fixed, new(big.Rat).Mul(quantity, validated.rate))
+		default:
+			fixed.Add(fixed, validated.rate)
 		}
 	}
 
+	hundred := big.NewRat(100, 1)
+	innerMultiplier := new(big.Rat).Add(big.NewRat(1, 1), new(big.Rat).Quo(innerRate, hundred))
+	outerMultiplier := new(big.Rat).Add(big.NewRat(1, 1), new(big.Rat).Quo(outerRate, hundred))
 	net := new(big.Rat).Set(base)
 	if mode == TaxInclusive {
-		remaining := new(big.Rat).Sub(base, quantityTax)
+		// base = net*innerMultiplier*outerMultiplier + innerFixed*outerMultiplier
+		//        + outerFixed, solved for net.
+		remaining := new(big.Rat).Sub(base, new(big.Rat).Mul(innerFixed, outerMultiplier))
+		remaining.Sub(remaining, outerFixed)
 		if remaining.Sign() < 0 {
 			return TaxCalculationLineResult{}, ErrInvalidTaxCalculation
 		}
-		multiplier := new(big.Rat).Add(big.NewRat(1, 1), new(big.Rat).Quo(percentageRate, big.NewRat(100, 1)))
-		net.Quo(remaining, multiplier)
+		net.Quo(remaining, new(big.Rat).Mul(innerMultiplier, outerMultiplier))
 	}
+	// The base every component that is not itself part of the base is charged
+	// on: the net amount plus the taxes that belong to it.
+	outerBase := new(big.Rat).Add(new(big.Rat).Mul(net, innerMultiplier), innerFixed)
 
 	lineResult := TaxCalculationLineResult{
 		GrossAmount:          formatRounded(gross, scale),
@@ -386,15 +422,20 @@ func calculateLineFrom(resolved lineBase, headerShare *big.Rat, mode TaxMode, sc
 	for _, component := range components {
 		amount := new(big.Rat)
 		componentBase := net
-		if component.kind == TaxQuantityBased {
+		if !component.includedInBase {
+			componentBase = outerBase
+		}
+		switch {
+		case component.exempt:
+			amount.SetInt64(0)
+		case component.kind == TaxQuantityBased:
 			componentBase = quantity
 			amount.Mul(quantity, component.rate)
-		} else if !component.exempt {
-			amount.Mul(net, component.rate)
-			amount.Quo(amount, big.NewRat(100, 1))
-		}
-		if component.exempt {
-			amount.SetInt64(0)
+		case component.kind == TaxFixedAmount:
+			amount.Set(component.rate)
+		default:
+			amount.Mul(componentBase, component.rate)
+			amount.Quo(amount, hundred)
 		}
 		componentWithholding, err := withholdingAmountFor(amount, component)
 		if err != nil {
@@ -404,6 +445,9 @@ func calculateLineFrom(resolved lineBase, headerShare *big.Rat, mode TaxMode, sc
 		withholdingAmount.Add(withholdingAmount, componentWithholding)
 		lineResult.Components = append(lineResult.Components, TaxCalculationComponentResult{
 			Code:              component.code,
+			Name:              component.name,
+			Primary:           component.primary,
+			IncludedInBase:    component.includedInBase,
 			CalculationType:   component.kind,
 			Rate:              component.rateText,
 			BaseAmount:        formatRounded(componentBase, scale),
@@ -428,13 +472,15 @@ func calculateLineFrom(resolved lineBase, headerShare *big.Rat, mode TaxMode, sc
 }
 
 type validatedComponent struct {
-	code, rateText string
-	kind           TaxCalculationType
-	rate           *big.Rat
-	withholding    bool
-	numerator      *int
-	denominator    *int
-	exempt         bool
+	code, name, rateText string
+	kind                 TaxCalculationType
+	rate                 *big.Rat
+	withholding          bool
+	numerator            *int
+	denominator          *int
+	exempt               bool
+	includedInBase       bool
+	primary              bool
 }
 
 func validateComponent(component TaxComponent) (validatedComponent, error) {
@@ -449,7 +495,7 @@ func validateComponent(component TaxComponent) (validatedComponent, error) {
 	if kind == TaxPercentage && rate.Cmp(big.NewRat(100, 1)) > 0 {
 		return validatedComponent{}, ErrInvalidTaxCalculation
 	}
-	if kind != TaxPercentage && kind != TaxQuantityBased {
+	if kind != TaxPercentage && kind != TaxQuantityBased && kind != TaxFixedAmount {
 		return validatedComponent{}, ErrInvalidTaxCalculation
 	}
 	if (component.WithholdingNumerator == nil) != (component.WithholdingDenominator == nil) {
@@ -461,9 +507,10 @@ func validateComponent(component TaxComponent) (validatedComponent, error) {
 		}
 	}
 	return validatedComponent{
-		code: component.Code, rateText: canonicalDecimal(rate), kind: kind, rate: rate,
+		code: component.Code, name: component.Name, rateText: canonicalDecimal(rate), kind: kind, rate: rate,
 		withholding: component.Withholding, numerator: component.WithholdingNumerator,
 		denominator: component.WithholdingDenominator, exempt: component.Exempt,
+		includedInBase: component.IncludedInBase, primary: component.Primary,
 	}, nil
 }
 

@@ -5,6 +5,7 @@ import {
   sourceOptionFromReference,
   variantTitleFromSnapshot,
   contextualDocumentStatusLabel,
+  lineTaxComponents,
   dateOnly
 } from './commercial-record';
 import type { DocumentLine, DocumentRecord, WarehouseOption } from './editor-types';
@@ -109,5 +110,41 @@ describe('helpers', () => {
   it('dateOnly slices an ISO timestamp and honours the fallback', () => {
     expect(dateOnly('2026-08-29T10:00:00Z')).toBe('2026-08-29');
     expect(dateOnly('', '')).toBe('');
+  });
+});
+
+describe('lineTaxComponents', () => {
+  it('reads the additional taxes out of a persisted breakdown', () => {
+    const components = lineTaxComponents({
+      tax_components_snapshot: [
+        { code: 'KDV', primary: true, rate: '20', amount: '22' },
+        {
+          code: 'OTV',
+          name: 'ÖTV',
+          rate: '10.00000000',
+          calculation_type: 'PERCENTAGE',
+          included_in_base: true,
+          amount: '10'
+        }
+      ]
+    });
+    expect(components).toEqual([
+      {
+        code: 'OTV',
+        name: 'ÖTV',
+        calculationType: 'PERCENTAGE',
+        rate: '10',
+        includedInBase: true
+      }
+    ]);
+  });
+
+  it('never turns an older KDV-only snapshot into an additional tax', () => {
+    expect(
+      lineTaxComponents({ tax_components_snapshot: [{ rate: '20', included: false }] })
+    ).toEqual([]);
+    expect(lineTaxComponents({ tax_components_snapshot: [{ code: 'KDV', rate: '20' }] })).toEqual(
+      []
+    );
   });
 });

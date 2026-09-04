@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -28,27 +30,23 @@ func TestDemoEndpointsAndGuard(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err = migrations.New(pool).Up(ctx); err != nil {
+	pool, maintenanceDSN := httpDemoTestPool(t, ctx, databaseURL)
+	if err := migrations.New(pool).Up(ctx); err != nil {
 		t.Fatal(err)
 	}
 	masterKey := bytes.Repeat([]byte{8}, 32)
 	runner := demo.New(pool, demo.Options{
-		MaintenanceDSN: databaseURL,
+		MaintenanceDSN: maintenanceDSN,
 		MasterKey:      masterKey,
 		Email:          "demo@varyaone.test",
 		Password:       "varyaone-demo-2026",
 		ResetInterval:  2 * time.Hour,
 		ResetCooldown:  time.Hour,
 	})
-	if err = runner.Ensure(ctx); err != nil {
+	if err := runner.Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
-	identityService, err := identity.NewService(pool, masterKey, identity.WithMaintenanceDSN(databaseURL))
+	identityService, err := identity.NewService(pool, masterKey, identity.WithMaintenanceDSN(maintenanceDSN))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,4 +163,47 @@ func TestDemoEndpointsAndGuard(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Errorf("without demo mode /api/v1/api-tokens returned %d, want the usual 401", response.Code)
 	}
+}
+
+// httpDemoTestPool gives this test its own schema, plus a maintenance DSN that
+// lands in the same schema. The demo runner purges and reseeds companies over
+// an owner connection it opens itself, so isolating only the pool would leave
+// that connection migrating and seeding `public` — which is what used to leave
+// the shared CI database fully migrated and break the workflow's pending
+// migration check.
+func httpDemoTestPool(t *testing.T, ctx context.Context, databaseURL string) (*pgxpool.Pool, string) {
+	t.Helper()
+	base, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("varya_http_demo_test_%d", time.Now().UnixNano())
+	if _, err = base.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
+		base.Close()
+		t.Fatal(err)
+	}
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		base.Close()
+		t.Fatal(err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		base.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+		_, _ = base.Exec(context.Background(), `DROP SCHEMA `+schema+` CASCADE`)
+		base.Close()
+	})
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	query.Set("search_path", schema)
+	parsed.RawQuery = query.Encode()
+	return pool, parsed.String()
 }

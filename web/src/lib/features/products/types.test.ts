@@ -113,4 +113,32 @@ describe('product code flow', () => {
     expect(payload.sales_tax_treatment).toBeUndefined();
     expect(payload.sales_tax_profile.tax_rate_id).toBe('rate-id');
   });
+
+  it('carries the tax-inclusive flag into both profiles', () => {
+    const input = emptyProduct();
+    input.name = 'KDV Dahil Kart';
+    input.purchase_tax_included = true;
+    input.sales_tax_included = false;
+    input.purchase_tax_profile = { treatment: 'STANDARD', rate: '20', components: [] };
+    input.sales_tax_profile = { treatment: 'STANDARD', rate: '20', components: [] };
+
+    const normalized = normalizeProductInput(input);
+
+    expect(normalized.purchase_tax_profile?.tax_included).toBe(true);
+    expect(normalized.sales_tax_profile?.tax_included).toBe(false);
+  });
+
+  it('lets an explicit profile flag override the card-level fallback', () => {
+    const input = emptyProduct();
+    input.name = 'Profil Bayrağı Öncelikli';
+    input.sales_tax_included = false;
+    input.sales_tax_profile = {
+      treatment: 'STANDARD',
+      rate: '10',
+      tax_included: true,
+      components: []
+    };
+
+    expect(normalizeProductInput(input).sales_tax_profile?.tax_included).toBe(true);
+  });
 });

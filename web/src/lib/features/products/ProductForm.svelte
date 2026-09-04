@@ -36,6 +36,7 @@
     vat_rate_id?: string;
     tax_code?: string;
     rate?: string;
+    tax_included?: boolean;
     components?: TaxComponent[];
   };
 
@@ -171,11 +172,13 @@
     const manualRate = String(next.rate ?? formValue()[`${side}_tax_rate`] ?? '').trim();
     const hasVat = manualRate !== '';
     const treatment = hasVat ? 'STANDARD' : 'NOT_APPLICABLE';
+    const taxIncluded = Boolean(next.tax_included);
     const nestedProfile = {
       ...next,
       treatment,
       tax_code: hasVat ? 'KDV' : 'YOK',
       rate: manualRate,
+      tax_included: taxIncluded,
       tax_definition_id: '',
       tax_rate_id: '',
       vat_rate_id: '',
@@ -188,22 +191,10 @@
       [`${side}_tax_rate_id`]: '',
       [`${side}_vat_rate_id`]: '',
       [`${side}_tax_type`]: hasVat ? 'KDV' : 'YOK',
-      [`${side}_tax_rate`]: manualRate
+      [`${side}_tax_rate`]: manualRate,
+      [`${side}_tax_included`]: taxIncluded
     };
     value = { ...formValue(), ...patch } as ProductInput;
-  }
-
-  function sharedProfile() {
-    const sales = profile('sales');
-    const purchase = profile('purchase');
-    return sales.rate?.trim() || (sales.components?.length ?? 0) > 0 ? sales : purchase;
-  }
-
-  function sharedComponents() {
-    return (sharedProfile().components ?? []).filter((component) => {
-      const definition = taxCatalog.find((item) => item.id === component.tax_definition_id);
-      return !definition || !isKDVDefinition(definition);
-    });
   }
 
   function isKDVDefinition(definition: TaxDefinition) {
@@ -213,9 +204,67 @@
     );
   }
 
-  function writeSharedTaxes(rate: string, components: TaxComponent[]) {
-    writeProfile('purchase', { ...profile('purchase'), rate, components });
-    writeProfile('sales', { ...profile('sales'), rate, components });
+  /** Additional (non-KDV) tax components declared on one side of the card. */
+  function componentsFor(side: TaxSide) {
+    return (profile(side).components ?? []).filter((component) => {
+      const definition = taxCatalog.find((item) => item.id === component.tax_definition_id);
+      return !definition || !isKDVDefinition(definition);
+    });
+  }
+
+  function componentSignature(component: TaxComponent) {
+    return [
+      component.tax_definition_id,
+      componentRate(component),
+      component.calculation_type ?? 'PERCENTAGE',
+      component.included_in_tax_base !== false
+    ].join('|');
+  }
+
+  /** Whether the purchase and sales additional-tax lists are identical. Drives
+   *  the initial state of the "same on both sides" checkbox. */
+  function componentsSideMatch() {
+    const purchase = componentsFor('purchase').map(componentSignature);
+    const sales = componentsFor('sales').map(componentSignature);
+    return purchase.length === sales.length && purchase.every((sig, i) => sig === sales[i]);
+  }
+
+  // When the card links both sides, `sales` is the single source of truth that
+  // the shared list reads from and both sides are written to.
+  const LINKED_SIDE: TaxSide = 'sales';
+  let taxLinked = $state(componentsSideMatch());
+
+  function displayComponents(side: TaxSide) {
+    return componentsFor(taxLinked ? LINKED_SIDE : side);
+  }
+
+  function vatRate() {
+    const sales = profile('sales').rate?.trim();
+    return sales ? (profile('sales').rate ?? '') : (profile('purchase').rate ?? '');
+  }
+
+  function writeComponents(side: TaxSide, components: TaxComponent[]) {
+    const target = taxLinked ? LINKED_SIDE : side;
+    if (taxLinked) {
+      writeProfile('purchase', { ...profile('purchase'), components });
+      writeProfile('sales', { ...profile('sales'), components });
+      return;
+    }
+    writeProfile(target, { ...profile(target), components });
+  }
+
+  function copySalesComponentsToPurchase() {
+    writeProfile('purchase', {
+      ...profile('purchase'),
+      components: profile('sales').components ?? []
+    });
+  }
+
+  function setTaxLinked(linked: boolean) {
+    // Linking: the sales list becomes the single list. Unlinking: seed the
+    // purchase side from the current (sales) list so it can diverge.
+    copySalesComponentsToPurchase();
+    taxLinked = linked;
   }
 
   async function loadTaxCatalog() {
@@ -228,11 +277,13 @@
   }
 
   function updateVatRate(rate: string) {
-    writeSharedTaxes(rate, sharedComponents());
+    // The KDV rate is product-bound, not direction-bound: always both sides.
+    writeProfile('purchase', { ...profile('purchase'), rate });
+    writeProfile('sales', { ...profile('sales'), rate });
   }
 
-  function updateComponentDefinition(index: number, definitionID: string) {
-    const components = [...sharedComponents()];
+  function updateComponentDefinition(side: TaxSide, index: number, definitionID: string) {
+    const components = [...displayComponents(side)];
     const definition = taxCatalog.find((item) => item.id === definitionID);
     components[index] = {
       ...components[index],
@@ -242,7 +293,7 @@
       calculation_type: definition?.calculation_type ?? 'PERCENTAGE',
       metadata: { ...(components[index].metadata ?? {}), rate: definition?.rate ?? '' }
     };
-    writeSharedTaxes(sharedProfile().rate ?? '', components);
+    writeComponents(side, components);
   }
 
   function componentRate(component: TaxComponent) {
@@ -253,43 +304,54 @@
     return component.calculation_type === 'QUANTITY_BASED' ? 'Birim tutar' : 'Oran (%)';
   }
 
-  function updateComponentRate(index: number, rate: string) {
-    const components = [...sharedComponents()];
+  function updateComponentRate(side: TaxSide, index: number, rate: string) {
+    const components = [...displayComponents(side)];
     components[index] = {
       ...components[index],
       tax_rate_id: '',
       rate_id: '',
       metadata: { ...(components[index].metadata ?? {}), rate }
     };
-    writeSharedTaxes(sharedProfile().rate ?? '', components);
+    writeComponents(side, components);
   }
 
-  function updateComponentType(index: number, calculationType: TaxComponent['calculation_type']) {
-    const components = [...sharedComponents()];
+  function updateComponentType(
+    side: TaxSide,
+    index: number,
+    calculationType: TaxComponent['calculation_type']
+  ) {
+    const components = [...displayComponents(side)];
     components[index] = {
       ...components[index],
       calculation_type: calculationType || 'PERCENTAGE'
     };
-    writeSharedTaxes(sharedProfile().rate ?? '', components);
+    writeComponents(side, components);
   }
 
-  function addComponent() {
+  function updateComponentBase(side: TaxSide, index: number, includedInTaxBase: boolean) {
+    const components = [...displayComponents(side)];
+    components[index] = { ...components[index], included_in_tax_base: includedInTaxBase };
+    writeComponents(side, components);
+  }
+
+  function addComponent(side: TaxSide) {
     const definition = additionalTaxDefinitions()[0];
-    writeSharedTaxes(sharedProfile().rate ?? '', [
-      ...sharedComponents(),
+    writeComponents(side, [
+      ...displayComponents(side),
       {
         tax_definition_id: definition?.id ?? '',
         tax_rate_id: '',
         calculation_type: definition?.calculation_type ?? 'PERCENTAGE',
+        included_in_tax_base: true,
         metadata: { rate: definition?.rate ?? '' }
       }
     ]);
   }
 
-  function removeComponent(index: number) {
-    writeSharedTaxes(
-      sharedProfile().rate ?? '',
-      sharedComponents().filter((_, componentIndex) => componentIndex !== index)
+  function removeComponent(side: TaxSide, index: number) {
+    writeComponents(
+      side,
+      displayComponents(side).filter((_, componentIndex) => componentIndex !== index)
     );
   }
 
@@ -297,32 +359,47 @@
     return taxCatalog.filter((definition) => !isKDVDefinition(definition));
   }
 
+  /** The additional taxes on one side of the card, split by whether they sit in
+   *  the KDV base. */
   function additionalTaxTotals(side: TaxSide) {
-    let percentage = 0;
-    let fixed = 0;
-    for (const component of sharedComponents()) {
+    const totals = { percentage: 0, fixed: 0, basePercentage: 0, baseFixed: 0 };
+    for (const component of componentsFor(side)) {
       const amount = Number(componentRate(component).replace(',', '.'));
       if (!Number.isFinite(amount)) continue;
-      if (component.calculation_type === 'PERCENTAGE') percentage += amount;
-      else if (
-        component.calculation_type === 'QUANTITY_BASED' ||
-        component.calculation_type === 'FIXED_AMOUNT'
-      )
-        fixed += amount;
+      const inBase = component.included_in_tax_base !== false;
+      if (component.calculation_type === 'PERCENTAGE') {
+        if (inBase) totals.basePercentage += amount;
+        else totals.percentage += amount;
+      } else if (inBase) totals.baseFixed += amount;
+      else totals.fixed += amount;
     }
-    return { percentage, fixed };
+    return totals;
+  }
+
+  function taxIncludedFor(side: TaxSide) {
+    return Boolean(profile(side).tax_included ?? formValue()[`${side}_tax_included`]);
+  }
+
+  function setTaxIncluded(side: TaxSide, included: boolean) {
+    writeProfile(side, { ...profile(side), tax_included: included });
   }
 
   function inclusivePrice(side: TaxSide) {
     const price = parsePriceNumber(String(formValue()[`${side}_price`] ?? '0'));
+    if (!Number.isFinite(price) || price < 0) return '—';
+    // A tax-inclusive price already carries every tax; show it verbatim, the
+    // way the server treats it (products.service sales_tax_summary).
+    if (taxIncludedFor(side)) return formatMoney(price.toFixed(2), baseCurrency);
     const vatRate = Number(
       String(profile(side).rate ?? formValue()[`${side}_tax_rate`] ?? '0').replace(',', '.') || 0
     );
     const additional = additionalTaxTotals(side);
-    if (!Number.isFinite(price) || !Number.isFinite(vatRate) || price < 0 || vatRate < 0)
-      return '—';
+    if (!Number.isFinite(vatRate) || vatRate < 0) return '—';
+    // Taxes inside the KDV base are charged first and then carried into the
+    // KDV base, which is how ÖTV works.
+    const withBaseTaxes = price * (1 + additional.basePercentage / 100) + additional.baseFixed;
     return formatMoney(
-      (price * (1 + (vatRate + additional.percentage) / 100) + additional.fixed).toFixed(2),
+      (withBaseTaxes * (1 + (vatRate + additional.percentage) / 100) + additional.fixed).toFixed(2),
       baseCurrency
     );
   }
@@ -582,9 +659,86 @@
       <p>
         Fiyatları vergiler hariç girin. Vergi oranına göre vergiler dahil tutar otomatik hesaplanır.
       </p>
+      {#snippet taxRows(side: TaxSide)}
+        {#if displayComponents(side).length === 0}<p class="muted">
+            KDV dışında ek vergi yok.
+          </p>{/if}
+        {#each displayComponents(side) as component, componentIndex}
+          <div class="additional-tax-row">
+            <select
+              value={component.tax_definition_id}
+              {disabled}
+              aria-label="Vergi türü"
+              onchange={(event) =>
+                updateComponentDefinition(side, componentIndex, event.currentTarget.value)}
+            >
+              <option value="">Vergi türü seçin</option>
+              {#each additionalTaxDefinitions() as definition}<option value={definition.id}
+                  >{definition.name}</option
+                >{/each}
+            </select>
+            <Input
+              value={componentRate(component)}
+              {disabled}
+              inputmode="decimal"
+              placeholder={componentValuePlaceholder(component)}
+              aria-label={component.calculation_type === 'QUANTITY_BASED'
+                ? 'Ek vergi birim tutarı'
+                : 'Ek vergi oranı'}
+              oninput={(event) =>
+                updateComponentRate(side, componentIndex, event.currentTarget.value)}
+            />
+            <select
+              value={component.calculation_type || 'PERCENTAGE'}
+              {disabled}
+              aria-label="Ek vergi hesaplama yöntemi"
+              onchange={(event) =>
+                updateComponentType(
+                  side,
+                  componentIndex,
+                  event.currentTarget.value as TaxComponent['calculation_type']
+                )}
+            >
+              <option value="PERCENTAGE">Oran</option>
+              <option value="QUANTITY_BASED">Miktar bazlı</option>
+              <option value="FIXED_AMOUNT">Sabit tutar</option>
+            </select>
+            <label class="base-choice"
+              ><input
+                type="checkbox"
+                checked={component.included_in_tax_base !== false}
+                {disabled}
+                onchange={(event) =>
+                  updateComponentBase(side, componentIndex, event.currentTarget.checked)}
+              /><span>KDV matrahına dahil</span></label
+            >
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              {disabled}
+              aria-label="Ek vergiyi kaldır"
+              onclick={() => removeComponent(side, componentIndex)}><Trash2 size={14} /></Button
+            >
+          </div>
+        {/each}
+      {/snippet}
+      {#snippet addTaxButton(side: TaxSide)}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          {disabled}
+          onclick={() => addComponent(side)}><Plus size={13} />Vergi ekle</Button
+        >
+      {/snippet}
       <div class="price-grid">
         <label
-          ><span>Alış fiyatı ({baseCurrency}, vergiler hariç)</span><Input
+          ><span
+            >Alış fiyatı ({baseCurrency}, {taxIncludedFor('purchase')
+              ? 'vergiler dahil'
+              : 'vergiler hariç'})</span
+          ><Input
             value={value.purchase_price}
             {disabled}
             inputmode="decimal"
@@ -592,8 +746,20 @@
             oninput={(event) => setField('purchase_price', event.currentTarget.value)}
           /></label
         >
+        <label class="checkbox-line"
+          ><input
+            type="checkbox"
+            checked={taxIncludedFor('purchase')}
+            {disabled}
+            onchange={(event) => setTaxIncluded('purchase', event.currentTarget.checked)}
+          /><span>Alış fiyatı KDV dahil</span></label
+        >
         <label
-          ><span>Satış fiyatı ({baseCurrency}, vergiler hariç)</span><Input
+          ><span
+            >Satış fiyatı ({baseCurrency}, {taxIncludedFor('sales')
+              ? 'vergiler dahil'
+              : 'vergiler hariç'})</span
+          ><Input
             value={value.sales_price}
             {disabled}
             inputmode="decimal"
@@ -601,9 +767,17 @@
             oninput={(event) => setField('sales_price', event.currentTarget.value)}
           /></label
         >
+        <label class="checkbox-line"
+          ><input
+            type="checkbox"
+            checked={taxIncludedFor('sales')}
+            {disabled}
+            onchange={(event) => setTaxIncluded('sales', event.currentTarget.checked)}
+          /><span>Satış fiyatı KDV dahil</span></label
+        >
         <label
           ><span>KDV oranı (%)</span><Input
-            value={sharedProfile().rate ?? ''}
+            value={vatRate()}
             {disabled}
             inputmode="decimal"
             placeholder="Boş bırakılırsa KDV uygulanmaz"
@@ -614,62 +788,31 @@
       <div class="additional-tax-grid">
         <div class="additional-tax-card">
           <div class="additional-tax-heading">
-            <strong>Ek vergiler</strong><Button
-              type="button"
-              variant="outline"
-              size="sm"
-              {disabled}
-              onclick={addComponent}><Plus size={13} />Vergi ekle</Button
+            <strong>Ek vergiler</strong>
+            <label class="base-choice"
+              ><input
+                type="checkbox"
+                checked={taxLinked}
+                {disabled}
+                onchange={(event) => setTaxLinked(event.currentTarget.checked)}
+              /><span>Alış ve satışta aynı</span></label
             >
           </div>
-          {#if sharedComponents().length === 0}<p class="muted">KDV dışında ek vergi yok.</p>{/if}
-          {#each sharedComponents() as component, componentIndex}
-            <div class="additional-tax-row">
-              <select
-                value={component.tax_definition_id}
-                {disabled}
-                aria-label="Vergi türü"
-                onchange={(event) =>
-                  updateComponentDefinition(componentIndex, event.currentTarget.value)}
-              >
-                <option value="">Vergi türü seçin</option>
-                {#each additionalTaxDefinitions() as definition}<option value={definition.id}
-                    >{definition.name}</option
-                  >{/each}
-              </select>
-              <Input
-                value={componentRate(component)}
-                {disabled}
-                inputmode="decimal"
-                placeholder={componentValuePlaceholder(component)}
-                aria-label={component.calculation_type === 'QUANTITY_BASED'
-                  ? 'Ek vergi birim tutarı'
-                  : 'Ek vergi oranı'}
-                oninput={(event) => updateComponentRate(componentIndex, event.currentTarget.value)}
-              />
-              <select
-                value={component.calculation_type || 'PERCENTAGE'}
-                {disabled}
-                aria-label="Ek vergi hesaplama yöntemi"
-                onchange={(event) =>
-                  updateComponentType(
-                    componentIndex,
-                    event.currentTarget.value as TaxComponent['calculation_type']
-                  )}
-              >
-                <option value="PERCENTAGE">Oran</option>
-                <option value="QUANTITY_BASED">Miktar bazlı</option>
-              </select>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                {disabled}
-                aria-label="Ek vergiyi kaldır"
-                onclick={() => removeComponent(componentIndex)}><Trash2 size={14} /></Button
-              >
+          {#if taxLinked}
+            <div class="additional-tax-subheading">
+              <span></span>{@render addTaxButton('sales')}
             </div>
-          {/each}
+            {@render taxRows('sales')}
+          {:else}
+            <div class="additional-tax-subheading">
+              <strong>Alışta</strong>{@render addTaxButton('purchase')}
+            </div>
+            {@render taxRows('purchase')}
+            <div class="additional-tax-subheading">
+              <strong>Satışta</strong>{@render addTaxButton('sales')}
+            </div>
+            {@render taxRows('sales')}
+          {/if}
           {#if additionalTaxDefinitions().length === 0}<a
               class="definition-link"
               href="/ayarlar/vergi-tanimlari">Ek vergi tanımla</a
@@ -909,11 +1052,28 @@
   .additional-tax-heading strong {
     font-size: 11px;
   }
+  .additional-tax-subheading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .additional-tax-subheading strong {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
   .additional-tax-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(120px, 0.8fr) minmax(130px, 0.8fr) auto;
+    grid-template-columns:
+      minmax(0, 1fr) minmax(110px, 0.7fr) minmax(125px, 0.7fr)
+      minmax(150px, auto) auto;
     gap: 6px;
     align-items: center;
+  }
+  .additional-tax-row .base-choice {
+    align-self: center;
+    white-space: nowrap;
   }
   .tax-error {
     margin: 9px 0 0;

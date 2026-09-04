@@ -485,7 +485,7 @@ func (s *Service) CreatePurchaseOrder(ctx context.Context, session identity.Sess
 	if err != nil {
 		return PurchaseOrder{}, err
 	}
-	total := "0"
+	total, orderGross, orderDiscount := "0", "0", "0"
 	for index := range input.Lines {
 		line := &input.Lines[index]
 		if err = validateOrderLine(line, input.Currency); err != nil {
@@ -514,9 +514,13 @@ func (s *Service) CreatePurchaseOrder(ctx context.Context, session identity.Sess
 		lineID := uuid.NewString()
 		lineNo := index + 1
 		line.ID, line.LineNo = lineID, lineNo
-		total = add(total, multiply(line.OrderedQuantity, line.UnitPrice))
+		// The order total is what the supplier will be owed for the lines, so
+		// it follows net_amount and never ignores a line discount.
+		orderGross = add(orderGross, multiply(line.OrderedQuantity, line.UnitPrice))
+		orderDiscount = add(orderDiscount, line.DiscountAmount)
+		total = add(total, line.NetAmount)
 	}
-	if err = insertPurchaseDocumentAnchorTx(ctx, tx, session, orderID, "PURCHASE_ORDER", orderNo, input.BranchID, input.WarehouseID, input.SupplierID, input.OrderDate, nil, input.Currency, input.ExchangeRate, "Alış siparişi", total, "0", "0", total); err != nil {
+	if err = insertPurchaseDocumentAnchorTx(ctx, tx, session, orderID, "PURCHASE_ORDER", orderNo, input.BranchID, input.WarehouseID, input.SupplierID, input.OrderDate, nil, input.Currency, input.ExchangeRate, "Alış siparişi", orderGross, orderDiscount, "0", total); err != nil {
 		return PurchaseOrder{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO purchase_orders(id,company_id,document_id,order_no,supplier_id,branch_id,warehouse_id,order_date,currency,over_delivery_policy,notes,total,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)`, orderID, session.CurrentCompanyID, orderID, orderNo, input.SupplierID, input.BranchID, input.WarehouseID, input.OrderDate, input.Currency, input.OverDeliveryPolicy, strings.TrimSpace(input.Notes), total, session.User.ID); err != nil {
@@ -2875,18 +2879,13 @@ func validateInvoiceLine(line *PurchaseInvoiceLine) error {
 	if compare(line.DiscountAmount, line.GrossAmount) > 0 {
 		return validation("alış faturası indirimi satır tutarını aşamaz")
 	}
-	expectedGross := multiply(line.Quantity, line.UnitPrice)
-	if compare(expectedGross, line.GrossAmount) != 0 {
+	if compare(multiply(line.Quantity, line.UnitPrice), line.GrossAmount) != 0 {
 		return validation("alış faturası brüt tutarı miktar ve fiyatla eşleşmiyor")
 	}
-	expectedTaxBase := subtract(line.GrossAmount, line.DiscountAmount)
-	if compare(expectedTaxBase, line.TaxBase) != 0 {
-		return validation("alış faturası vergi matrahı indirimle eşleşmiyor")
-	}
-	expectedPayable := subtract(add(line.TaxBase, line.TaxAmount), line.WithholdingAmount)
-	if compare(expectedPayable, "0") < 0 || compare(expectedPayable, line.PayableAmount) != 0 {
-		return validation("alış faturası ödenecek tutarı satır tutarlarıyla eşleşmiyor")
-	}
+	// The tax base, tax and payable amounts are recomputed from the product's
+	// resolved tax profile in resolvePurchaseInvoiceLineDefaults: a
+	// tax-included price or an ÖTV-style component makes the client's own
+	// arithmetic a preview, not the posted figure.
 	return nil
 }
 

@@ -5,9 +5,11 @@ import {
   decimalMultiply,
   decimalDivide,
   lineAmounts,
+  lineComponentAmounts,
   formTotals,
   discountRateFromAmounts
 } from './commercial-calc';
+import type { LineTaxComponent } from './editor-types';
 
 describe('fixed-point decimal helpers', () => {
   it('adds and subtracts without floating-point drift', () => {
@@ -28,6 +30,14 @@ describe('fixed-point decimal helpers', () => {
   });
 });
 
+const otv = (rate: string): LineTaxComponent => ({
+  code: 'OTV',
+  name: 'ÖTV',
+  calculationType: 'PERCENTAGE',
+  rate,
+  includedInBase: true
+});
+
 describe('lineAmounts', () => {
   const base = {
     quantity: '10',
@@ -43,6 +53,8 @@ describe('lineAmounts', () => {
       discount: '0',
       taxBase: '1000',
       tax: '200',
+      vat: '200',
+      additionalTax: '0',
       total: '1200'
     });
   });
@@ -53,8 +65,75 @@ describe('lineAmounts', () => {
       discount: '100',
       taxBase: '900',
       tax: '180',
+      vat: '180',
+      additionalTax: '0',
       total: '1080'
     });
+  });
+
+  it('charges KDV on top of an ÖTV that belongs to the KDV base', () => {
+    const amounts = lineAmounts({
+      ...base,
+      quantity: '1',
+      taxRate: '20',
+      taxComponents: [otv('10')]
+    });
+    expect(amounts.taxBase).toBe('100');
+    expect(amounts.additionalTax).toBe('10');
+    expect(amounts.vat).toBe('22');
+    expect(amounts.total).toBe('132');
+  });
+
+  it('keeps a tax charged next to KDV out of the KDV base', () => {
+    const amounts = lineAmounts({
+      ...base,
+      quantity: '1',
+      taxRate: '20',
+      taxComponents: [{ ...otv('10'), code: 'TRT', name: 'TRT Payı', includedInBase: false }]
+    });
+    expect(amounts.vat).toBe('20');
+    expect(amounts.additionalTax).toBe('10');
+    expect(amounts.total).toBe('130');
+  });
+
+  it('backs a tax-inclusive price out of the KDV and ÖTV cascade', () => {
+    const amounts = lineAmounts({
+      ...base,
+      quantity: '1',
+      unitPrice: '132',
+      taxRate: '20',
+      taxIncluded: true,
+      taxComponents: [otv('10')]
+    });
+    expect(amounts.taxBase).toBe('100');
+    expect(amounts.additionalTax).toBe('10');
+    expect(amounts.vat).toBe('22');
+    expect(amounts.total).toBe('132');
+  });
+
+  it('charges a quantity-based tax once per unit', () => {
+    const amounts = lineAmounts({
+      ...base,
+      quantity: '3',
+      unitPrice: '100',
+      taxRate: '20',
+      taxComponents: [{ ...otv('5'), calculationType: 'QUANTITY_BASED' }]
+    });
+    expect(amounts.additionalTax).toBe('15');
+    expect(amounts.vat).toBe('63');
+  });
+
+  it('reports what each additional tax costs on its own base', () => {
+    const components = lineComponentAmounts({
+      ...base,
+      quantity: '1',
+      taxRate: '20',
+      taxComponents: [otv('10'), { ...otv('5'), code: 'TRT', name: 'TRT', includedInBase: false }]
+    });
+    expect(components.map((component) => [component.code, component.amount])).toEqual([
+      ['OTV', '10'],
+      ['TRT', '5.5']
+    ]);
   });
 
   it('backs the base out of a tax-inclusive price', () => {
@@ -81,6 +160,8 @@ describe('lineAmounts', () => {
       discount: '0',
       taxBase: '-200',
       tax: '-40',
+      vat: '-40',
+      additionalTax: '0',
       total: '-240'
     });
   });
@@ -103,6 +184,8 @@ describe('formTotals', () => {
       subtotal: '0',
       discountTotal: '0',
       taxTotal: '0',
+      vatTotal: '0',
+      additionalTaxTotal: '0',
       payableTotal: '0'
     });
   });

@@ -46,7 +46,8 @@
     decimalSubtract,
     decimalDivide,
     lineAmounts,
-    formTotals as computeFormTotals
+    formTotals as computeFormTotals,
+    lineComponentAmounts
   } from './commercial-calc';
   import { buildDocumentPayload } from './commercial-payload';
   import {
@@ -92,6 +93,7 @@
     DocumentLine,
     DocumentRecord,
     LineDraft,
+    LineTaxComponent,
     DocumentForm
   } from './editor-types';
 
@@ -268,6 +270,7 @@
         discountRate: line.discountRate,
         taxRate: line.taxRate,
         taxIncluded: line.taxIncluded,
+        taxComponents: line.taxComponents,
         description: line.description,
         sourceLineID: line.sourceLineID ?? '',
         purchaseOrderLineID: line.purchaseOrderLineID ?? '',
@@ -560,10 +563,38 @@
           String(
             product[isSales ? 'sales_tax_included' : 'purchase_tax_included']
           ).toLowerCase() === 'true',
+        taxComponents: productTaxComponents(
+          product[isSales ? 'sales_tax_components' : 'purchase_tax_components']
+        ),
         variantsEnabled: product.variants_enabled === true,
         meta: text(product.kind).toUpperCase() === 'SERVICE' ? 'Hizmet' : 'Ürün'
       };
     });
+  }
+
+  /** The card's taxes besides KDV, as the catalog resolved them. */
+  function productTaxComponents(value: unknown): LineTaxComponent[] {
+    if (!Array.isArray(value)) return [];
+    const components: LineTaxComponent[] = [];
+    for (const entry of value) {
+      if (!entry || typeof entry !== 'object') continue;
+      const record = entry as Record<string, unknown>;
+      const code = text(record.code);
+      const name = text(record.name) || code;
+      if (!code && !name) continue;
+      const calculationType = text(record.calculation_type).toUpperCase();
+      components.push({
+        code,
+        name,
+        calculationType:
+          calculationType === 'QUANTITY_BASED' || calculationType === 'FIXED_AMOUNT'
+            ? calculationType
+            : 'PERCENTAGE',
+        rate: trimDecimalZeros(text(record.rate, '0')) || '0',
+        includedInBase: record.included_in_base === true
+      });
+    }
+    return components;
   }
 
   function priceFromBase(basePrice: string) {
@@ -1050,6 +1081,7 @@
     line.unitPrice = resolveLineUnitPrice(line.lineType, option.unitPrice, line.baseUnitPrice);
     line.taxRate = option.taxRate || '0';
     line.taxIncluded = option.taxIncluded ?? false;
+    line.taxComponents = option.taxComponents ?? [];
     line.manualPrice = false;
     line.warehouse = line.lineType === 'PRODUCT' ? (line.warehouse ?? form.defaultWarehouse) : null;
     if (line.lineType === 'PRODUCT' && option.variantsEnabled) void loadVariantOptionsForLine(line);
@@ -1080,6 +1112,7 @@
       line.unitCode = line.product?.unit || 'ADET';
       line.taxRate = line.product?.taxRate || '0';
       line.taxIncluded = line.product?.taxIncluded ?? false;
+      line.taxComponents = line.product?.taxComponents ?? [];
       line.description = line.product?.title || 'Hizmet';
     } else {
       line.warehouse = line.warehouse ?? form.defaultWarehouse;
@@ -1091,6 +1124,7 @@
       line.unitCode = line.product?.unit || 'ADET';
       line.taxRate = line.product?.taxRate || '0';
       line.taxIncluded = line.product?.taxIncluded ?? false;
+      line.taxComponents = line.product?.taxComponents ?? [];
       line.unitPrice = line.product?.unitPrice || (line.product ? line.unitPrice : '');
       line.description = line.product?.title || '';
     }
@@ -1431,6 +1465,8 @@
             subtotal: text(displaySubtotal, '0'),
             discount: text(displayDiscountTotal, '0'),
             tax: text(displayTaxTotal, '0'),
+            vat: text(displayVatTotal, '0'),
+            additionalTax: text(displayAdditionalTaxTotal, '0'),
             grand: text(displayGrandTotal, '0')
           },
           company,
@@ -1609,6 +1645,26 @@
     return formatMoney(lineAmounts(line).total, currency);
   }
 
+  /** Every tax the line carries besides KDV, labelled with its rate and what
+   *  it adds to the line. Empty for a line that only carries KDV. */
+  function lineTaxBreakdown(line: LineDraft) {
+    return lineComponentAmounts(line).map((component) => ({
+      label: componentLabel(component, line.unitCode),
+      amount: formatMoney(component.amount, currency)
+    }));
+  }
+
+  function componentLabel(component: LineTaxComponent, unitCode: string) {
+    const name = component.name || component.code;
+    if (component.calculationType === 'PERCENTAGE') {
+      return `${name} %${formatQuantity(component.rate)}`;
+    }
+    if (component.calculationType === 'QUANTITY_BASED') {
+      return `${name} ${formatMoney(component.rate, currency)}/${unitCode || 'ADET'}`;
+    }
+    return `${name} ${formatMoney(component.rate, currency)}`;
+  }
+
   function lineProgressText(line: LineDraft) {
     if (isNew || resource !== 'orders') return '';
     const ordered = line.orderedQuantity ?? line.quantity;
@@ -1650,6 +1706,14 @@
   );
   const displayTaxTotal = $derived(
     !isEditable && record?.tax_total ? record.tax_total : formTotals.taxTotal
+  );
+  // Additional taxes always come from the lines: a posted document carries its
+  // own component breakdown, so the KDV row is what is left of the tax total.
+  const displayAdditionalTaxTotal = $derived(formTotals.additionalTaxTotal);
+  const displayVatTotal = $derived(
+    !isEditable && record?.tax_total
+      ? decimalSubtract(text(record.tax_total), formTotals.additionalTaxTotal)
+      : formTotals.vatTotal
   );
   const displayGrandTotal = $derived(
     !isEditable && serverGrandTotal ? serverGrandTotal : formTotal
@@ -2294,7 +2358,12 @@
                       >{/if}</td
                   >
                   <td class="numeric total-cell" data-label="Satır toplamı"
-                    >{lineDisplayTotal(line)}</td
+                    >{lineDisplayTotal(line)}{#if lineTaxBreakdown(line).length > 0}<span
+                        class="line-taxes"
+                        >{#each lineTaxBreakdown(line) as component}<small
+                            ><span>{component.label}</span><span>{component.amount}</span></small
+                          >{/each}</span
+                      >{/if}</td
                   >
                   <td class="line-action-col" data-label="İşlem">
                     {#if isEditable}<Button
@@ -2370,7 +2439,10 @@
         <div class="totals-grid">
           <span>Brüt toplam</span><strong>{formatMoney(displaySubtotal, currency)}</strong>
           <span>İskonto</span><strong>{formatMoney(displayDiscountTotal, currency)}</strong>
-          <span>KDV</span><strong>{formatMoney(displayTaxTotal, currency)}</strong>
+          <span>KDV</span><strong>{formatMoney(displayVatTotal, currency)}</strong>
+          {#if decimalParts(displayAdditionalTaxTotal)[0] !== 0n}<span>Ek vergiler</span><strong
+              >{formatMoney(displayAdditionalTaxTotal, currency)}</strong
+            ><span>Toplam vergi</span><strong>{formatMoney(displayTaxTotal, currency)}</strong>{/if}
           <span>Vergili toplam</span><strong>{formatMoney(displayGrandTotal, currency)}</strong>
           {#if !isEditable && resource === 'invoices' && record?.payable_total && record.payable_total !== serverGrandTotal}<span
               >Fatura borç toplamı</span
@@ -2864,6 +2936,19 @@
   .related-card p {
     color: var(--text-muted);
   }
+  .line-taxes {
+    display: grid;
+    gap: 2px;
+    margin-top: 4px;
+  }
+  .line-taxes small {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
   .totals-card {
     display: flex;
     justify-content: space-between;
@@ -3187,6 +3272,20 @@
     .span-2 {
       grid-column: span 2;
     }
+    .line-taxes {
+      display: grid;
+      gap: 2px;
+      margin-top: 4px;
+    }
+
+    .line-taxes small {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
     .totals-card {
       flex-direction: column;
     }

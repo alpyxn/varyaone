@@ -334,3 +334,87 @@ func TestNormalizeCommercialLinesAppliesEveryResolvedTaxComponent(t *testing.T) 
 		t.Fatalf("document tax total = %s, want 50.00000000", totals.TaxTotal)
 	}
 }
+
+// ÖTV belongs to the KDV base, so a line carrying both charges KDV on the
+// amount ÖTV already raised, and the persisted breakdown says so.
+func TestNormalizeCommercialLinesChargesVATOnTopOfBaseIncludedTax(t *testing.T) {
+	input := CommercialLineInput{
+		LineType: "PRODUCT", ProductID: "00000000-0000-4000-8000-000000000001",
+		WarehouseID: "00000000-0000-4000-8000-000000000002", UnitCode: "ADET",
+		Quantity: "1", UnitPrice: "100", TaxRate: "20",
+	}
+	input.taxComponentsSnapshot = []taxes.TaxComponent{
+		{Code: "KDV", Name: "KDV", CalculationType: taxes.TaxPercentage, Rate: "20", Primary: true},
+		{Code: "OTV", Name: "ÖTV", CalculationType: taxes.TaxPercentage, Rate: "10", IncludedInBase: true},
+	}
+
+	lines, _, err := normalizeCommercialLines([]CommercialLineInput{input}, "", "TRY")
+	if err != nil {
+		t.Fatalf("normalizeCommercialLines returned error: %v", err)
+	}
+	if lines[0].TaxAmount != "32.00000000" || lines[0].PayableAmount != "132.00000000" {
+		t.Fatalf("ÖTV must raise the KDV base: %+v", lines[0])
+	}
+	snapshot := lines[0].TaxComponentsSnapshot
+	if len(snapshot) != 2 || snapshot[0].Amount != "22" || snapshot[1].Amount != "10" {
+		t.Fatalf("persisted breakdown = %+v", snapshot)
+	}
+	if lines[0].TaxSnapshot["rate"] != "20" {
+		t.Fatalf("line tax rate must stay the VAT rate, got %v", lines[0].TaxSnapshot["rate"])
+	}
+}
+
+// Tevkifat is withheld from VAT alone; an additional tax on the same line must
+// not enlarge the withheld amount.
+func TestNormalizeCommercialLinesWithholdsOnVATOnly(t *testing.T) {
+	input := CommercialLineInput{
+		LineType: "PRODUCT", ProductID: "00000000-0000-4000-8000-000000000001",
+		WarehouseID: "00000000-0000-4000-8000-000000000002", UnitCode: "ADET",
+		Quantity: "1", UnitPrice: "100", TaxRate: "20", WithholdingRate: "50",
+	}
+	input.taxComponentsSnapshot = []taxes.TaxComponent{
+		{Code: "KDV", CalculationType: taxes.TaxPercentage, Rate: "20", Primary: true},
+		{Code: "OTV", CalculationType: taxes.TaxPercentage, Rate: "10", IncludedInBase: true},
+	}
+
+	lines, _, err := normalizeCommercialLines([]CommercialLineInput{input}, "", "TRY")
+	if err != nil {
+		t.Fatalf("normalizeCommercialLines returned error: %v", err)
+	}
+	if lines[0].WithholdingAmount != "11.00000000" {
+		t.Fatalf("withholding = %s, want half of the 22.00 KDV", lines[0].WithholdingAmount)
+	}
+}
+
+// A single component that is not a plain percentage cannot go through the flat
+// rate path, or its value is lost.
+func TestCommercialLineNeedsTaxEngineForNonPercentageComponents(t *testing.T) {
+	cases := []struct {
+		name       string
+		components []taxes.TaxComponent
+		want       bool
+	}{
+		{"single VAT", []taxes.TaxComponent{{CalculationType: taxes.TaxPercentage, Rate: "20"}}, false},
+		{"fixed amount", []taxes.TaxComponent{{CalculationType: taxes.TaxFixedAmount, Rate: "15"}}, true},
+		{"quantity based", []taxes.TaxComponent{{CalculationType: taxes.TaxQuantityBased, Rate: "5"}}, true},
+		{"base included", []taxes.TaxComponent{{CalculationType: taxes.TaxPercentage, Rate: "10", IncludedInBase: true}}, true},
+	}
+	for _, test := range cases {
+		if got := commercialLineNeedsTaxEngine(test.components); got != test.want {
+			t.Fatalf("%s: commercialLineNeedsTaxEngine = %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+func TestPrimaryComponentRatePicksTheVATComponent(t *testing.T) {
+	rate, ok := primaryComponentRate([]taxes.TaxComponent{
+		{Code: "OTV", Rate: "10"},
+		{Code: "KDV", Rate: "20", Primary: true},
+	})
+	if !ok || rate != "20" {
+		t.Fatalf("primaryComponentRate = %q, %v", rate, ok)
+	}
+	if _, ok := primaryComponentRate([]taxes.TaxComponent{{Code: "OTV", Rate: "10"}}); ok {
+		t.Fatal("a profile without a VAT component must not report a rate")
+	}
+}

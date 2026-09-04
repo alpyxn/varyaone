@@ -12,7 +12,6 @@ import (
 	"github.com/alpyxn/varyaone/internal/identity"
 	"github.com/alpyxn/varyaone/internal/platform/database"
 	"github.com/alpyxn/varyaone/internal/platform/migrations"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestResetSchedulingAndLocking covers the machinery the shared demo depends
@@ -26,16 +25,12 @@ func TestResetSchedulingAndLocking(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err = migrations.New(pool).Up(ctx); err != nil {
+	pool, maintenanceDSN := isolatedDemo(t, ctx, databaseURL)
+	if err := migrations.New(pool).Up(ctx); err != nil {
 		t.Fatal(err)
 	}
 	runner := New(pool, Options{
-		MaintenanceDSN: databaseURL,
+		MaintenanceDSN: maintenanceDSN,
 		MasterKey:      bytes.Repeat([]byte{9}, 32),
 		Email:          "demo@varyaone.test",
 		Password:       "varyaone-demo-2026",
@@ -45,7 +40,7 @@ func TestResetSchedulingAndLocking(t *testing.T) {
 		// staying fast; production uses minutes.
 		ResetCooldown: time.Second,
 	})
-	if err = runner.Ensure(ctx); err != nil {
+	if err := runner.Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -53,7 +48,7 @@ func TestResetSchedulingAndLocking(t *testing.T) {
 	// keeps an existing next-reset time (a restart must not postpone a reset),
 	// so a database another test already seeded would leave a partly elapsed
 	// schedule here.
-	if err = runner.Reset(ctx); err != nil {
+	if err := runner.Reset(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -79,14 +74,14 @@ func TestResetSchedulingAndLocking(t *testing.T) {
 
 	// A rebuild counts as a reset, so a visitor cannot immediately wipe a demo
 	// that was just rebuilt.
-	if err = runner.RequestReset(ctx); !errors.Is(err, ErrResetTooSoon) {
+	if err := runner.RequestReset(ctx); !errors.Is(err, ErrResetTooSoon) {
 		t.Fatalf("reset right after seeding returned %v, want ErrResetTooSoon", err)
 	}
 	time.Sleep(1100 * time.Millisecond)
-	if err = runner.RequestReset(ctx); err != nil {
+	if err := runner.RequestReset(ctx); err != nil {
 		t.Fatalf("visitor reset after the cooldown failed: %v", err)
 	}
-	if err = runner.RequestReset(ctx); !errors.Is(err, ErrResetTooSoon) {
+	if err := runner.RequestReset(ctx); !errors.Is(err, ErrResetTooSoon) {
 		t.Fatalf("second visitor reset returned %v, want ErrResetTooSoon", err)
 	}
 
@@ -129,22 +124,18 @@ func TestResetIntervalZeroDisablesTheTimer(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err = migrations.New(pool).Up(ctx); err != nil {
+	pool, maintenanceDSN := isolatedDemo(t, ctx, databaseURL)
+	if err := migrations.New(pool).Up(ctx); err != nil {
 		t.Fatal(err)
 	}
 	runner := New(pool, Options{
-		MaintenanceDSN: databaseURL,
+		MaintenanceDSN: maintenanceDSN,
 		MasterKey:      bytes.Repeat([]byte{9}, 32),
 		Email:          "demo@varyaone.test",
 		Password:       "varyaone-demo-2026",
 		Now:            func() time.Time { return time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC) },
 	})
-	if err = runner.Ensure(ctx); err != nil {
+	if err := runner.Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
 	due, err := runner.DueForReset(ctx)
@@ -167,30 +158,26 @@ func TestEnsureReconcilesTheDemoAccount(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err = migrations.New(pool).Up(ctx); err != nil {
+	pool, maintenanceDSN := isolatedDemo(t, ctx, databaseURL)
+	if err := migrations.New(pool).Up(ctx); err != nil {
 		t.Fatal(err)
 	}
 	masterKey := bytes.Repeat([]byte{9}, 32)
 	options := Options{
-		MaintenanceDSN: databaseURL,
+		MaintenanceDSN: maintenanceDSN,
 		MasterKey:      masterKey,
 		Email:          "first@varyaone.test",
 		Password:       "varyaone-demo-2026",
 		Now:            func() time.Time { return time.Date(2026, 6, 15, 9, 0, 0, 0, time.UTC) },
 	}
-	if err = New(pool, options).Ensure(ctx); err != nil {
+	if err := New(pool, options).Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
 
 	// The deployment changes its demo account; the company already exists.
 	options.Email = "second@varyaone.test"
 	options.Password = "baska-bir-demo-parolasi"
-	if err = New(pool, options).Ensure(ctx); err != nil {
+	if err := New(pool, options).Ensure(ctx); err != nil {
 		t.Fatal(err)
 	}
 

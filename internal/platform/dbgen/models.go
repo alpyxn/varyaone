@@ -431,6 +431,8 @@ type Company struct {
 	FinanceNegativeBalancePolicy    string
 	Logo                            string
 	HrDefaultContributionSchemeCode pgtype.Text
+	// Disposable demo company: may be purged and reseeded by the demo tooling. Always false in a normal installation.
+	IsDemo bool
 }
 
 type CompanyBusinessSequence struct {
@@ -493,6 +495,14 @@ type CompanySmtpSetting struct {
 	CreatedAt             pgtype.Timestamptz
 	UpdatedAt             pgtype.Timestamptz
 	Version               int64
+}
+
+type DemoState struct {
+	Singleton   bool
+	Status      string
+	LastResetAt pgtype.Timestamptz
+	NextResetAt pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
 }
 
 type Document struct {
@@ -1054,6 +1064,14 @@ type FinanceInvoicePosting struct {
 	IdempotencyKey     string
 	PostedBy           pgtype.UUID
 	PostedAt           pgtype.Timestamptz
+}
+
+type FinanceInvoiceReturnAttribution struct {
+	CompanyID          pgtype.UUID
+	DocumentID         pgtype.UUID
+	ReturnDocumentID   pgtype.UUID
+	ReturnDocumentDate pgtype.Date
+	Amount             pgtype.Numeric
 }
 
 type FinanceManualEntry struct {
