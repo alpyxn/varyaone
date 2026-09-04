@@ -5,11 +5,11 @@
       "mandatory": false,
       "min_version": "",
       "pg_major": 18,
-      "version": "v0.1.6-alpha",
-      "notes_md": "Vergi motoru geliştirildi\n\n## Yenilikler\n- **Ek vergiler artık gerçekten hesaplanıyor.** ÖTV, ÖİV, TRT payı gibi KDV\n  dışı satır vergileri belge tutarına işliyor. Matraha dahil olanlar önce\n  uygulanıp KDV matrahına taşınıyor, matrah dışındakiler KDV'den sonra\n  ekleniyor. Önceden kartta bir ek vergi bileşeni tanımlıysa KDV oranı\n  düşüyordu; belge ya düz KDV ile ya da hiç vergisiz kesiliyordu.\n- **Stok kartında alış / satış vergi ayrımı.** Ek vergiler iki yöne ayrı\n  tanımlanabiliyor: \"Alış ve satışta aynı\" kutusu kaldırıldığında \"Alışta\" ve\n  \"Satışta\" listeleri bağımsız düzenleniyor. Bayi senaryosu böylece doğru\n  çalışıyor — alışta gömülü ÖTV, satış faturasında yalnız KDV. KDV oranı mala\n  bağlı olduğu için iki yönde ortak kalmaya devam ediyor.\n- **\"Fiyat KDV dahil\" seçeneği.** Alış ve satış fiyatı vergiler dahil\n  girilebiliyor; alan başlıkları ve net fiyat önizlemesi buna göre değişiyor.\n  Bu bayrak daha önce yalnızca içe aktarımla yazılabiliyordu, arayüzden\n  tanımlanamıyordu.\n- **Yeni hazır vergi tanımları:** TRT Payı ve Konaklama Vergisi. ÖİV ile\n  konaklama vergisi kanuni oranlarıyla geliyor; oranı mala göre değişenler\n  (ÖTV, TRT payı) kartta giriliyor.\n\n## İyileştirmeler\n- Fatura toplamlarında \"Ek vergiler\" ve \"Toplam vergi\" satırları görünüyor.\n- Vergi tanımları ekranında hazır tanımlar \"Hazır tanım\" etiketiyle ayrılıyor.\n- Mevcut kartlardaki ÖTV bileşenleri \"KDV matrahına dahil\" olarak düzeltildi.\n  Kanun gereği matraha dahildir; bu bileşenler bu sürüme kadar hiç\n  fiyatlanmadığı için kesilmiş belgeler etkilenmiyor.\n- Demo modu, çalışan bir compose kurulumunda sonradan açılabiliyor.",
-      "published_at": "2026-09-04T09:57:42Z",
-      "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.6-alpha/varyaone-v0.1.6-alpha-windows-amd64.zip",
-      "windows_sha256": "8b550676fd5437c395980277dd8df9808bf55697d0eb47c83b3c047745e2044c"
+      "version": "v0.1.7-alpha",
+      "notes_md": "Güncelleme kontrolü düzeltildi\n\n## Düzeltmeler\n- **Güncelleme kontrolü hiçbir sürümü bulamıyordu.** Sunucu, sürüm kataloğunu\n  yalnızca içerik türü \"json\" olarak etiketlenmişse kabul ediyordu. Kataloğu\n  sunan iki adresin ikisi de başka bir tür gönderiyor: GitHub sürüm dosyasını\n  `application/octet-stream`, raw.githubusercontent.com ise `text/plain`\n  olarak veriyor. Katalog bu yüzden her seferinde okunmadan reddediliyor,\n  \"Kontrol et\" düğmesi de altı saatte bir çalışan otomatik kontrol de her\n  zaman \"güncelleme yok\" diyordu. Windows kurulumları, compose kurulumları ve\n  arayüzdeki kontrol aynı koddan geçtiği için üçü birden etkileniyordu.\n\n## Bu sürüm bir defaya mahsus elle kurulmalıdır\nHatalı kontrol, çalışan sürümün kendi içinde olduğu için v0.1.6 ve öncesindeki\nkurulumlar bu güncellemeyi kendiliğinden bulamaz. Compose kurulumlarında\n`./deploy.sh`, Windows'ta kurulum sihirbazı ile bir kez elle güncelleyin.\nBundan sonraki sürümler kendiliğinden görünecek.\n\n## v0.1.6 ile gelenler\nv0.1.5'ten geliyorsanız bu sürüm vergi motoru geliştirmelerini de içeriyor:\nek vergilerin (ÖTV, ÖİV, TRT payı) gerçekten hesaplanması, stok kartında alış\nve satış vergilerinin ayrılması, \"fiyat KDV dahil\" seçeneği ve yeni hazır\nvergi tanımları. Ayrıntılar v0.1.6-alpha sürüm notlarında.",
+      "published_at": "2026-09-04T10:22:54Z",
+      "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.7-alpha/varyaone-v0.1.7-alpha-windows-amd64.zip",
+      "windows_sha256": "6cbdf23862fcb64bcb7a07247be504041652fcd77b45b9b48da4c3f121cfa7ab"
     }
   },
   "yanked": [],
@@ -33,6 +33,16 @@
       "published_at": "2026-09-03T22:26:52Z",
       "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.5-alpha/varyaone-v0.1.5-alpha-windows-amd64.zip",
       "windows_sha256": "3cd1a5bc60c1675074b71c9f2c129e7ee4995ebd4bddc763e3bd4fcd399965e9"
+    },
+    {
+      "mandatory": false,
+      "min_version": "",
+      "pg_major": 18,
+      "version": "v0.1.6-alpha",
+      "notes_md": "Vergi motoru geliştirildi\n\n## Yenilikler\n- **Ek vergiler artık gerçekten hesaplanıyor.** ÖTV, ÖİV, TRT payı gibi KDV\n  dışı satır vergileri belge tutarına işliyor. Matraha dahil olanlar önce\n  uygulanıp KDV matrahına taşınıyor, matrah dışındakiler KDV'den sonra\n  ekleniyor. Önceden kartta bir ek vergi bileşeni tanımlıysa KDV oranı\n  düşüyordu; belge ya düz KDV ile ya da hiç vergisiz kesiliyordu.\n- **Stok kartında alış / satış vergi ayrımı.** Ek vergiler iki yöne ayrı\n  tanımlanabiliyor: \"Alış ve satışta aynı\" kutusu kaldırıldığında \"Alışta\" ve\n  \"Satışta\" listeleri bağımsız düzenleniyor. Bayi senaryosu böylece doğru\n  çalışıyor — alışta gömülü ÖTV, satış faturasında yalnız KDV. KDV oranı mala\n  bağlı olduğu için iki yönde ortak kalmaya devam ediyor.\n- **\"Fiyat KDV dahil\" seçeneği.** Alış ve satış fiyatı vergiler dahil\n  girilebiliyor; alan başlıkları ve net fiyat önizlemesi buna göre değişiyor.\n  Bu bayrak daha önce yalnızca içe aktarımla yazılabiliyordu, arayüzden\n  tanımlanamıyordu.\n- **Yeni hazır vergi tanımları:** TRT Payı ve Konaklama Vergisi. ÖİV ile\n  konaklama vergisi kanuni oranlarıyla geliyor; oranı mala göre değişenler\n  (ÖTV, TRT payı) kartta giriliyor.\n\n## İyileştirmeler\n- Fatura toplamlarında \"Ek vergiler\" ve \"Toplam vergi\" satırları görünüyor.\n- Vergi tanımları ekranında hazır tanımlar \"Hazır tanım\" etiketiyle ayrılıyor.\n- Mevcut kartlardaki ÖTV bileşenleri \"KDV matrahına dahil\" olarak düzeltildi.\n  Kanun gereği matraha dahildir; bu bileşenler bu sürüme kadar hiç\n  fiyatlanmadığı için kesilmiş belgeler etkilenmiyor.\n- Demo modu, çalışan bir compose kurulumunda sonradan açılabiliyor.",
+      "published_at": "2026-09-04T09:57:42Z",
+      "windows_artifact_url": "https://github.com/alpyxn/varyaone/releases/download/v0.1.6-alpha/varyaone-v0.1.6-alpha-windows-amd64.zip",
+      "windows_sha256": "8b550676fd5437c395980277dd8df9808bf55697d0eb47c83b3c047745e2044c"
     }
   ]
 }
