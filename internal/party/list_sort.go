@@ -34,7 +34,7 @@ func parsePartySort(value string) ([]partySort, error) {
 	for _, part := range strings.Split(value, ",") {
 		pair := strings.Split(strings.TrimSpace(part), ":")
 		if len(pair) != 2 || (pair[1] != "asc" && pair[1] != "desc") || seen[pair[0]] {
-			return nil, fmt.Errorf("%w: Cari sıralama bilgisi geçersiz.", identity.ErrValidation)
+			return nil, fmt.Errorf("%w: Cari sıralama bilgisi geçersiz", identity.ErrValidation)
 		}
 		item := partySort{Field: pair[0], Direction: pair[1]}
 		switch item.Field {
@@ -62,7 +62,7 @@ func parsePartySort(value string) ([]partySort, error) {
 		case "created_at", "updated_at":
 			item.Expression = "to_char(p." + item.Field + " AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS.US')"
 		default:
-			return nil, fmt.Errorf("%w: Bu cari sütunu sıralanamaz.", identity.ErrValidation)
+			return nil, fmt.Errorf("%w: Bu cari sütunu sıralanamaz", identity.ErrValidation)
 		}
 		seen[item.Field] = true
 		result = append(result, item)
@@ -84,11 +84,11 @@ func sortedPartyQuery(base string, args []any, sort, cursor string, limit int) (
 	if cursor != "" {
 		raw, e := base64.RawURLEncoding.DecodeString(cursor)
 		if e != nil || json.Unmarshal(raw, &after) != nil || after.Sort != sort || len(after.Values) != len(order) || uuid.Validate(after.ID) != nil {
-			return "", nil, nil, fmt.Errorf("%w: Sayfalama bilgisi sıralamayla eşleşmiyor. Listeyi yenileyin.", identity.ErrValidation)
+			return "", nil, nil, fmt.Errorf("%w: Sayfalama bilgisi sıralamayla eşleşmiyor. Listeyi yenileyin", identity.ErrValidation)
 		}
 		for i, item := range order {
 			if item.Numeric && !sortNumber.MatchString(after.Values[i]) {
-				return "", nil, nil, fmt.Errorf("%w: Sayfalama değeri geçersiz. Listeyi yenileyin.", identity.ErrValidation)
+				return "", nil, nil, fmt.Errorf("%w: Sayfalama değeri geçersiz. Listeyi yenileyin", identity.ErrValidation)
 			}
 		}
 	}

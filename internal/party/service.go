@@ -956,7 +956,7 @@ func (s *Service) ListSorted(ctx context.Context, session identity.Session, quer
 		afterName, afterID, err = decodeCursor(cursor)
 	}
 	if err != nil {
-		return ListResult{}, fmt.Errorf("%w: Sayfalama bilgisi geçersiz. Listeyi yenileyin.", identity.ErrValidation)
+		return ListResult{}, fmt.Errorf("%w: Sayfalama bilgisi geçersiz. Listeyi yenileyin", identity.ErrValidation)
 	}
 	rawQuery := strings.TrimSpace(query)
 	query = normalizePartySearchQuery(query)

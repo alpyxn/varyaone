@@ -1041,10 +1041,6 @@ func (s *Service) createSession(ctx context.Context, tx pgx.Tx, user User, compa
 	return Session{ID: id, Token: token, CSRFToken: csrf, User: user, Companies: companies, CurrentCompanyID: companyID, ExpiresAt: expires, Permissions: permissions, Modules: modules}, err
 }
 
-func (s *Service) companies(ctx context.Context, userID string) ([]Company, error) {
-	return scanCompanies(s.pool.Query(ctx, `SELECT c.id,c.legal_name,c.trade_name,c.entity_type,c.base_currency,c.timezone,c.version FROM companies c JOIN company_memberships m ON m.company_id=c.id WHERE m.user_id=$1 AND m.is_active AND c.is_active ORDER BY c.trade_name`, userID))
-}
-
 func companiesTx(ctx context.Context, tx pgx.Tx, userID string) ([]Company, error) {
 	return scanCompanies(tx.Query(ctx, `SELECT c.id,c.legal_name,c.trade_name,c.entity_type,c.base_currency,c.timezone,c.version FROM companies c JOIN company_memberships m ON m.company_id=c.id WHERE m.user_id=$1 AND m.is_active AND c.is_active ORDER BY c.trade_name`, userID))
 }

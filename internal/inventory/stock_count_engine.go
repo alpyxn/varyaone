@@ -228,7 +228,7 @@ func normalizeStockCountEngineStart(input StockCountEngineStartInput) (StockCoun
 	// the field in the persisted contract for old rows, but reject attempts to
 	// create a blind count at the domain boundary.
 	if input.BlindCount {
-		return StockCountEngineStartInput{}, nil, fmt.Errorf("%w: Kör sayım artık desteklenmiyor.", identity.ErrValidation)
+		return StockCountEngineStartInput{}, nil, fmt.Errorf("%w: Kör sayım artık desteklenmiyor", identity.ErrValidation)
 	}
 	input.CompanyID, err = requireUUID("company_id", strings.TrimSpace(input.CompanyID))
 	if err != nil {
@@ -254,14 +254,14 @@ func normalizeStockCountEngineStart(input StockCountEngineStartInput) (StockCoun
 		input.MovementPolicy = StockCountEngineContinue
 	}
 	if input.MovementPolicy != StockCountEngineContinue && input.MovementPolicy != StockCountEngineLockScope {
-		return StockCountEngineStartInput{}, nil, fmt.Errorf("%w: Sayım sırasında stok hareketlerine ilişkin ayar geçersiz.", identity.ErrValidation)
+		return StockCountEngineStartInput{}, nil, fmt.Errorf("%w: Sayım sırasında stok hareketlerine ilişkin ayar geçersiz", identity.ErrValidation)
 	}
 	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
 	if input.IdempotencyKey == "" {
 		input.IdempotencyKey = "count-engine:" + input.ID
 	}
 	if len(input.IdempotencyKey) > 255 {
-		return StockCountEngineStartInput{}, nil, fmt.Errorf("%w: İşlem kimliği en fazla 255 karakter olabilir.", identity.ErrValidation)
+		return StockCountEngineStartInput{}, nil, fmt.Errorf("%w: İşlem kimliği en fazla 255 karakter olabilir", identity.ErrValidation)
 	}
 	if input.ActorUserID != "" {
 		input.ActorUserID, err = requireUUID("actor_user_id", input.ActorUserID)
@@ -286,7 +286,7 @@ func normalizeStockCountEngineStart(input StockCountEngineStartInput) (StockCoun
 		}
 		key := strings.Join([]string{input.Scopes[i].ProductID, input.Scopes[i].VariantID, input.Scopes[i].LocationID, input.Scopes[i].LotID, input.Scopes[i].SerialID}, ":")
 		if _, ok := seen[key]; ok {
-			return StockCountEngineStartInput{}, nil, fmt.Errorf("%w: Aynı stok kapsamı sayıma birden fazla kez eklenemez.", identity.ErrValidation)
+			return StockCountEngineStartInput{}, nil, fmt.Errorf("%w: Aynı stok kapsamı sayıma birden fazla kez eklenemez", identity.ErrValidation)
 		}
 		seen[key] = struct{}{}
 	}
@@ -310,7 +310,7 @@ func normalizeStockCountEngineEvent(input StockCountEngineEventInput, countID, p
 	var err error
 	input.EventID = strings.TrimSpace(input.EventID)
 	if input.EventID == "" || len(input.EventID) > 255 {
-		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Sayım işlemi kimliği gerekli ve en fazla 255 karakter olmalıdır.", identity.ErrValidation)
+		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Sayım işlemi kimliği gerekli ve en fazla 255 karakter olmalıdır", identity.ErrValidation)
 	}
 	input.CountID, err = requireUUID("count_id", countID)
 	if err != nil {
@@ -336,13 +336,13 @@ func normalizeStockCountEngineEvent(input StockCountEngineEventInput, countID, p
 	}
 	input.EventType = strings.ToUpper(strings.TrimSpace(input.EventType))
 	if input.EventType != StockCountEngineScan && input.EventType != StockCountEngineCorrection && input.EventType != StockCountEngineZero {
-		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Sayım işlemi türü geçersiz.", identity.ErrValidation)
+		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Sayım işlemi türü geçersiz", identity.ErrValidation)
 	}
 	input.Barcode = strings.TrimSpace(input.Barcode)
 	input.Reason = strings.TrimSpace(input.Reason)
 	input.ScopeID = strings.TrimSpace(input.ScopeID)
 	if input.EventType == StockCountEngineScan && input.Barcode == "" {
-		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Barkod gereklidir.", identity.ErrValidation)
+		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Barkod gereklidir", identity.ErrValidation)
 	}
 	if input.EventType != StockCountEngineScan {
 		input.ScopeID, err = requireUUID("scope_id", input.ScopeID)
@@ -351,7 +351,7 @@ func normalizeStockCountEngineEvent(input StockCountEngineEventInput, countID, p
 		}
 	}
 	if input.EventType == StockCountEngineCorrection && input.Reason == "" {
-		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Miktar düzeltmesi için gerekçe girin.", identity.ErrValidation)
+		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Miktar düzeltmesi için gerekçe girin", identity.ErrValidation)
 	}
 	input.Quantity, err = parseNonNegative("quantity", strings.TrimSpace(input.Quantity))
 	if err != nil {
@@ -359,7 +359,7 @@ func normalizeStockCountEngineEvent(input StockCountEngineEventInput, countID, p
 	}
 	input.Quantity = trimEngineDecimal(input.Quantity)
 	if input.EventType == StockCountEngineZero && input.Quantity != "0" {
-		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Sıfır onayı için miktar sıfır olmalıdır.", identity.ErrValidation)
+		return StockCountEngineEventInput{}, nil, fmt.Errorf("%w: Sıfır onayı için miktar sıfır olmalıdır", identity.ErrValidation)
 	}
 	// Company binding is enforced by the batch transaction, not duplicated in
 	// the client event payload hash.
@@ -550,7 +550,7 @@ func (s *Service) StartStockCountPass(ctx context.Context, input StockCountEngin
 	}
 	mode := strings.ToUpper(strings.TrimSpace(input.Mode))
 	if mode != StockCountEngineOpen {
-		return StockCountEnginePass{}, fmt.Errorf("%w: Sayım turu türü geçersiz.", identity.ErrValidation)
+		return StockCountEnginePass{}, fmt.Errorf("%w: Sayım turu türü geçersiz", identity.ErrValidation)
 	}
 	actor := strings.TrimSpace(input.ActorUserID)
 	if actor != "" {
@@ -583,7 +583,7 @@ func (s *Service) StartStockCountPass(ctx context.Context, input StockCountEngin
 		return StockCountEnginePass{}, err
 	}
 	if state != StockCountEngineInProgress {
-		return StockCountEnginePass{}, fmt.Errorf("%w: Sayımın mevcut durumunda yeni tur başlatılamaz.", identity.ErrValidation)
+		return StockCountEnginePass{}, fmt.Errorf("%w: Sayımın mevcut durumunda yeni tur başlatılamaz", identity.ErrValidation)
 	}
 	if err = ensureWarehouseAccess(ctx, tx, companyID, actor, warehouseID); err != nil {
 		return StockCountEnginePass{}, err
@@ -593,7 +593,7 @@ func (s *Service) StartStockCountPass(ctx context.Context, input StockCountEngin
 	var existing StockCountEnginePass
 	if err = tx.QueryRow(ctx, `SELECT id,pass_no,mode,state FROM stock_count_engine_passes WHERE company_id=$1 AND count_id=$2 AND state='IN_PROGRESS' ORDER BY pass_no LIMIT 1`, companyID, countID).Scan(&existing.ID, &existing.PassNo, &existing.Mode, &existing.State); err == nil {
 		if existing.Mode != StockCountEngineOpen {
-			return StockCountEnginePass{}, fmt.Errorf("%w: Kör sayım turu desteklenmiyor.", identity.ErrValidation)
+			return StockCountEnginePass{}, fmt.Errorf("%w: Kör sayım turu desteklenmiyor", identity.ErrValidation)
 		}
 		if err = tx.Commit(ctx); err != nil {
 			return StockCountEnginePass{}, err
@@ -644,7 +644,7 @@ func (s *Service) SubmitStockCountPass(ctx context.Context, countID, passID, act
 		return StockCountEnginePass{}, err
 	}
 	if countState != StockCountEngineInProgress {
-		return StockCountEnginePass{}, fmt.Errorf("%w: Sayım devam etmiyor. İşlem yapmadan önce sayımın durumunu kontrol edin.", identity.ErrValidation)
+		return StockCountEnginePass{}, fmt.Errorf("%w: Sayım devam etmiyor. İşlem yapmadan önce sayımın durumunu kontrol edin", identity.ErrValidation)
 	}
 	if err = ensureWarehouseAccess(ctx, tx, companyID, actor, warehouseID); err != nil {
 		return StockCountEnginePass{}, err
@@ -793,7 +793,7 @@ func (s *Service) StartStockCountSession(ctx context.Context, input StockCountEn
 	}
 	client := strings.TrimSpace(input.ClientSessionID)
 	if client == "" {
-		return "", fmt.Errorf("%w: Sayım oturumu gerekli. Sayfayı yenileyip tekrar deneyin.", identity.ErrValidation)
+		return "", fmt.Errorf("%w: Sayım oturumu gerekli. Sayfayı yenileyip tekrar deneyin", identity.ErrValidation)
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -912,13 +912,13 @@ func (s *Service) AddStockCountEngineScope(ctx context.Context, input StockCount
 		return StockCountEngine{}, err
 	}
 	if state != StockCountEngineInProgress {
-		return StockCountEngine{}, fmt.Errorf("%w: Sayım devam etmiyor. İşlem yapmadan önce sayımın durumunu kontrol edin.", identity.ErrValidation)
+		return StockCountEngine{}, fmt.Errorf("%w: Sayım devam etmiyor. İşlem yapmadan önce sayımın durumunu kontrol edin", identity.ErrValidation)
 	}
 	if err = ensureWarehouseAccess(ctx, tx, companyID, actor, warehouseID); err != nil {
 		return StockCountEngine{}, err
 	}
 	if scopeMode != "FULL" {
-		return StockCountEngine{}, fmt.Errorf("%w: Kısmi sayımın kapsamı genişletilemez.", identity.ErrValidation)
+		return StockCountEngine{}, fmt.Errorf("%w: Kısmi sayımın kapsamı genişletilemez", identity.ErrValidation)
 	}
 	if _, status, scopeErr := ensureFullCountScopeTx(ctx, tx, companyID, countID, warehouseID, scopeMode, productID, variantID, snapshotAt); scopeErr != nil {
 		return StockCountEngine{}, scopeErr
@@ -968,7 +968,7 @@ func (s *Service) BatchScanStockCount(ctx context.Context, input StockCountEngin
 		return nil, err
 	}
 	if state != StockCountEngineInProgress {
-		return nil, fmt.Errorf("%w: Sayım devam etmiyor. İşlem yapmadan önce sayımın durumunu kontrol edin.", identity.ErrValidation)
+		return nil, fmt.Errorf("%w: Sayım devam etmiyor. İşlem yapmadan önce sayımın durumunu kontrol edin", identity.ErrValidation)
 	}
 	actor := strings.TrimSpace(input.ActorUserID)
 	if actor != "" {
@@ -996,7 +996,7 @@ func (s *Service) BatchScanStockCount(ctx context.Context, input StockCountEngin
 		return nil, err
 	}
 	if passState != "IN_PROGRESS" {
-		return nil, fmt.Errorf("%w: Sayım turu kapalı. Yeni bir sayım turu başlatın.", identity.ErrValidation)
+		return nil, fmt.Errorf("%w: Sayım turu kapalı. Yeni bir sayım turu başlatın", identity.ErrValidation)
 	}
 	result := make([]StockCountEngineEvent, 0, len(input.Events))
 	for _, raw := range input.Events {
@@ -1445,7 +1445,7 @@ func (s *Service) SubmitStockCountReview(ctx context.Context, companyID, countID
 		return StockCountEngine{}, err
 	}
 	if state != StockCountEngineInProgress && state != StockCountEngineReview {
-		return StockCountEngine{}, fmt.Errorf("%w: Sayım mevcut durumunda incelemeye gönderilemez.", identity.ErrValidation)
+		return StockCountEngine{}, fmt.Errorf("%w: Sayım mevcut durumunda incelemeye gönderilemez", identity.ErrValidation)
 	}
 	if expectedVersion > 0 && expectedVersion != version {
 		return StockCountEngine{}, ErrConflict
@@ -1508,7 +1508,7 @@ func (s *Service) ReopenStockCountEngineForRecount(ctx context.Context, input St
 	}
 	key := strings.TrimSpace(input.IdempotencyKey)
 	if key == "" || len(key) > 255 {
-		return StockCountEngine{}, fmt.Errorf("%w: Yeniden sayım işlem kimliği eksik. Sayfayı yenileyip tekrar deneyin.", identity.ErrValidation)
+		return StockCountEngine{}, fmt.Errorf("%w: Yeniden sayım işlem kimliği eksik. Sayfayı yenileyip tekrar deneyin", identity.ErrValidation)
 	}
 
 	payload, _ := json.Marshal(input)
@@ -1613,7 +1613,7 @@ func (s *Service) ResolveStockCountEngineException(ctx context.Context, companyI
 	}
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		return StockCountEngine{}, fmt.Errorf("%w: İnceleme kaydını kapatmak için gerekçe girin.", identity.ErrValidation)
+		return StockCountEngine{}, fmt.Errorf("%w: İnceleme kaydını kapatmak için gerekçe girin", identity.ErrValidation)
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -1627,7 +1627,7 @@ func (s *Service) ResolveStockCountEngineException(ctx context.Context, companyI
 		return StockCountEngine{}, err
 	}
 	if state != StockCountEngineReview {
-		return StockCountEngine{}, fmt.Errorf("%w: İnceleme kaydı yalnızca sayım inceleme aşamasındayken kapatılabilir.", identity.ErrValidation)
+		return StockCountEngine{}, fmt.Errorf("%w: İnceleme kaydı yalnızca sayım inceleme aşamasındayken kapatılabilir", identity.ErrValidation)
 	}
 	if err = ensureWarehouseAccess(ctx, tx, companyID, actor, warehouseID); err != nil {
 		return StockCountEngine{}, err
@@ -1666,7 +1666,7 @@ func (s *Service) PostStockCountEngine(ctx context.Context, input StockCountEngi
 	}
 	key := strings.TrimSpace(input.IdempotencyKey)
 	if key == "" || len(key) > 255 {
-		return StockCountEngine{}, fmt.Errorf("%w: Sayımı işleme kimliği eksik. Sayfayı yenileyip tekrar deneyin.", identity.ErrValidation)
+		return StockCountEngine{}, fmt.Errorf("%w: Sayımı işleme kimliği eksik. Sayfayı yenileyip tekrar deneyin", identity.ErrValidation)
 	}
 	payload, _ := json.Marshal(input)
 	ph := sha256.Sum256(payload)
@@ -1711,7 +1711,7 @@ func (s *Service) PostStockCountEngine(ctx context.Context, input StockCountEngi
 		return StockCountEngine{}, err
 	}
 	if state != StockCountEngineReview {
-		return StockCountEngine{}, fmt.Errorf("%w: Stoklara işlemeden önce sayımı incelemeye gönderin.", identity.ErrValidation)
+		return StockCountEngine{}, fmt.Errorf("%w: Stoklara işlemeden önce sayımı incelemeye gönderin", identity.ErrValidation)
 	}
 	if input.ExpectedVersion > 0 && input.ExpectedVersion != version {
 		return StockCountEngine{}, ErrConflict
@@ -1845,7 +1845,7 @@ func (s *Service) CancelStockCountEngine(ctx context.Context, input StockCountEn
 		}
 	}
 	if strings.TrimSpace(input.Reason) == "" || strings.TrimSpace(input.IdempotencyKey) == "" {
-		return StockCountEngine{}, fmt.Errorf("%w: İptal gerekçesi ve işlem kimliği gereklidir.", identity.ErrValidation)
+		return StockCountEngine{}, fmt.Errorf("%w: İptal gerekçesi ve işlem kimliği gereklidir", identity.ErrValidation)
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {

@@ -4180,7 +4180,7 @@ func (s *Service) CancelTransfer(ctx context.Context, companyID, id, reason, act
 
 func (s *Service) StartStockCount(ctx context.Context, input StockCountInput) (StockCount, error) {
 	if input.BlindCount {
-		return StockCount{}, fmt.Errorf("%w: Kör sayım artık desteklenmiyor.", identity.ErrValidation)
+		return StockCount{}, fmt.Errorf("%w: Kör sayım artık desteklenmiyor", identity.ErrValidation)
 	}
 	companyID, err := requireUUID("company_id", input.CompanyID)
 	if err != nil {
