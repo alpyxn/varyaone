@@ -146,6 +146,9 @@ jobs:
       # config.Load() always requires a key; migrate/status never decrypt with
       # it. 32 zero bytes, base64 — matches the config package's own fixtures.
       VARYAONE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      # `migrate up` gates on opctl now, which needs a writable control
+      # directory. The default (/var/lib/varyaone/control) is root-owned.
+      VARYAONE_CONTROL_DIR: ${{ runner.temp }}/varyaone-control
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

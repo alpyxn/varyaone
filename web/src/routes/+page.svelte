@@ -14,6 +14,11 @@
     shortcutCatalog
   } from '$lib/features/dashboard/shortcuts';
   import { toRecentActivityView } from '$lib/features/dashboard/recent';
+  import { mediaQuery, PHONE_QUERY } from '$lib/design/viewport.svelte';
+
+  // The full wordmark is nowrap; at 72px it no longer fits a phone-width
+  // viewport alongside its own padding.
+  const phone = mediaQuery(PHONE_QUERY);
 
   const catalogKeys = new Set(shortcutCatalog.map((shortcut) => shortcut.key));
 
@@ -96,7 +101,7 @@
 <svelte:head><title>Çalışma Alanı · Varya One</title></svelte:head>
 
 <header class="home-hero">
-  <Logo size={72} variant="full" />
+  <Logo size={phone.matches ? 44 : 72} variant="full" />
 </header>
 
 {#if loading}

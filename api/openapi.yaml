@@ -5264,6 +5264,12 @@ paths:
     post: { operationId: testCompanyEmailSettings, summary: Test TLS SMTP with bounded timeout and redacted errors, x-varya-permission: settings.email.test, responses: { "200": { description: SMTP test result } } }
 
 components:
+  responses:
+    ErrorResponse:
+      description: Hata
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
   securitySchemes:
     browserSession:
       type: apiKey

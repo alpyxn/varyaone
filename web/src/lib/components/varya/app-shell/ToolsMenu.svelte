@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { MoreVertical, Moon, Sun } from '@lucide/svelte';
+  import { MoreVertical, Moon, Sun, Calculator, CalendarDays } from '@lucide/svelte';
   import { Button } from '$lib/components/ui/button';
   import { themePreference } from '$lib/design/theme.svelte';
+
+  let { onCalculator, onCalendar }: { onCalculator: () => void; onCalendar: () => void } = $props();
 
   let open = $state(false);
   let wrap = $state<HTMLDivElement>();
@@ -32,6 +34,12 @@
   >
   {#if open}
     <div class="tools-pop" role="menu">
+      <button type="button" role="menuitem" class="tools-item" onclick={() => run(onCalculator)}>
+        <Calculator size={15} aria-hidden="true" /><span>Hesap makinesi</span>
+      </button>
+      <button type="button" role="menuitem" class="tools-item" onclick={() => run(onCalendar)}>
+        <CalendarDays size={15} aria-hidden="true" /><span>Takvim</span>
+      </button>
       <button
         type="button"
         role="menuitem"

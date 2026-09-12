@@ -336,6 +336,34 @@ const (
 	PartyInputRiskPolicyWARN  PartyInputRiskPolicy = "WARN"
 )
 
+// Defines values for PaymentPlanInstallmentsStatus.
+const (
+	PaymentPlanInstallmentsStatusCANCELLED PaymentPlanInstallmentsStatus = "CANCELLED"
+	PaymentPlanInstallmentsStatusCLOSED    PaymentPlanInstallmentsStatus = "CLOSED"
+	PaymentPlanInstallmentsStatusOVERDUE   PaymentPlanInstallmentsStatus = "OVERDUE"
+	PaymentPlanInstallmentsStatusPARTIAL   PaymentPlanInstallmentsStatus = "PARTIAL"
+	PaymentPlanInstallmentsStatusPENDING   PaymentPlanInstallmentsStatus = "PENDING"
+)
+
+// Defines values for PaymentPlanSide.
+const (
+	PaymentPlanSidePAYABLE    PaymentPlanSide = "PAYABLE"
+	PaymentPlanSideRECEIVABLE PaymentPlanSide = "RECEIVABLE"
+)
+
+// Defines values for PaymentPlanInputSide.
+const (
+	PaymentPlanInputSidePAYABLE    PaymentPlanInputSide = "PAYABLE"
+	PaymentPlanInputSideRECEIVABLE PaymentPlanInputSide = "RECEIVABLE"
+)
+
+// Defines values for PaymentPlanSummaryStatus.
+const (
+	PaymentPlanSummaryStatusCANCELLED PaymentPlanSummaryStatus = "CANCELLED"
+	PaymentPlanSummaryStatusCLOSED    PaymentPlanSummaryStatus = "CLOSED"
+	PaymentPlanSummaryStatusOPEN      PaymentPlanSummaryStatus = "OPEN"
+)
+
 // Defines values for PaymentRequestPaymentKind.
 const (
 	COLLECTION PaymentRequestPaymentKind = "COLLECTION"
@@ -480,8 +508,8 @@ const (
 
 // Defines values for StockCountEngineScopeMode.
 const (
-	StockCountEngineScopeModeFULL    StockCountEngineScopeMode = "FULL"
-	StockCountEngineScopeModePARTIAL StockCountEngineScopeMode = "PARTIAL"
+	FULL    StockCountEngineScopeMode = "FULL"
+	PARTIAL StockCountEngineScopeMode = "PARTIAL"
 )
 
 // Defines values for StockCountEngineState.
@@ -507,9 +535,9 @@ const (
 
 // Defines values for StockCountPassState.
 const (
-	StockCountPassStateCANCELLED  StockCountPassState = "CANCELLED"
-	StockCountPassStateCOMPLETED  StockCountPassState = "COMPLETED"
-	StockCountPassStateINPROGRESS StockCountPassState = "IN_PROGRESS"
+	CANCELLED  StockCountPassState = "CANCELLED"
+	COMPLETED  StockCountPassState = "COMPLETED"
+	INPROGRESS StockCountPassState = "IN_PROGRESS"
 )
 
 // Defines values for StockMovementRequestDirection.
@@ -1454,6 +1482,16 @@ type OpenItem struct {
 	DocumentNo      *string             `json:"document_no,omitempty"`
 	DueDate         *openapi_types.Date `json:"due_date"`
 
+	// DueSchedule Remaining dated portions of a planned invoice; invoice balance and identity are unchanged.
+	DueSchedule *[]struct {
+		DueDate       *time.Time `json:"due_date,omitempty"`
+		InstallmentNo int        `json:"installment_no"`
+
+		// OpenAmount Exact base-10 decimal; never an IEEE-754 number.
+		OpenAmount Decimal             `json:"open_amount"`
+		PlanId     *openapi_types.UUID `json:"plan_id,omitempty"`
+	} `json:"due_schedule,omitempty"`
+
 	// ExchangeRate Exact base-10 decimal; never an IEEE-754 number.
 	ExchangeRate *Decimal           `json:"exchange_rate,omitempty"`
 	Id           openapi_types.UUID `json:"id"`
@@ -1850,6 +1888,90 @@ type PartyTransfer struct {
 // Payment defines model for Payment.
 type Payment = PaymentRequest
 
+// PaymentPlan defines model for PaymentPlan.
+type PaymentPlan struct {
+	CancelReason *string            `json:"cancel_reason,omitempty"`
+	CancelledAt  *time.Time         `json:"cancelled_at,omitempty"`
+	CreatedAt    time.Time          `json:"created_at"`
+	Currency     string             `json:"currency"`
+	Description  string             `json:"description"`
+	Id           openapi_types.UUID `json:"id"`
+	Installments []struct {
+		Allocations *[]struct {
+			// Amount Exact base-10 decimal; never an IEEE-754 number.
+			Amount     *Decimal            `json:"amount,omitempty"`
+			OpenItemId *openapi_types.UUID `json:"open_item_id,omitempty"`
+		} `json:"allocations,omitempty"`
+
+		// Amount Exact base-10 decimal; never an IEEE-754 number.
+		Amount *Decimal `json:"amount,omitempty"`
+
+		// ClosedAmount Exact base-10 decimal; never an IEEE-754 number.
+		ClosedAmount *Decimal            `json:"closed_amount,omitempty"`
+		DueDate      *openapi_types.Date `json:"due_date,omitempty"`
+		Number       *int                `json:"number,omitempty"`
+
+		// OpenAmount Exact base-10 decimal; never an IEEE-754 number.
+		OpenAmount *Decimal                       `json:"open_amount,omitempty"`
+		Status     *PaymentPlanInstallmentsStatus `json:"status,omitempty"`
+	} `json:"installments"`
+	PartyId   openapi_types.UUID `json:"party_id"`
+	PartyName *string            `json:"party_name,omitempty"`
+	Side      PaymentPlanSide    `json:"side"`
+	Sources   []struct {
+		// Amount Exact base-10 decimal; never an IEEE-754 number.
+		Amount     *Decimal            `json:"amount,omitempty"`
+		DocumentId *openapi_types.UUID `json:"document_id,omitempty"`
+		DocumentNo *string             `json:"document_no,omitempty"`
+		OpenItemId *openapi_types.UUID `json:"open_item_id,omitempty"`
+	} `json:"sources"`
+
+	// TotalAmount Exact base-10 decimal; never an IEEE-754 number.
+	TotalAmount Decimal `json:"total_amount"`
+	Version     int64   `json:"version"`
+}
+
+// PaymentPlanInstallmentsStatus defines model for PaymentPlan.Installments.Status.
+type PaymentPlanInstallmentsStatus string
+
+// PaymentPlanSide defines model for PaymentPlan.Side.
+type PaymentPlanSide string
+
+// PaymentPlanInput defines model for PaymentPlanInput.
+type PaymentPlanInput struct {
+	Currency     string `json:"currency"`
+	Description  string `json:"description"`
+	Installments []struct {
+		// Amount Exact base-10 decimal; never an IEEE-754 number.
+		Amount  Decimal            `json:"amount"`
+		DueDate openapi_types.Date `json:"due_date"`
+	} `json:"installments"`
+	OpenItemIds []openapi_types.UUID `json:"open_item_ids"`
+	PartyId     openapi_types.UUID   `json:"party_id"`
+	Side        PaymentPlanInputSide `json:"side"`
+}
+
+// PaymentPlanInputSide defines model for PaymentPlanInput.Side.
+type PaymentPlanInputSide string
+
+// PaymentPlanSummary defines model for PaymentPlanSummary.
+type PaymentPlanSummary struct {
+	CreatedAt     *time.Time                `json:"created_at,omitempty"`
+	Currency      *string                   `json:"currency,omitempty"`
+	Description   *string                   `json:"description,omitempty"`
+	Id            *openapi_types.UUID       `json:"id,omitempty"`
+	NextDueDate   *openapi_types.Date       `json:"next_due_date,omitempty"`
+	OpenAmount    *string                   `json:"open_amount,omitempty"`
+	OverdueAmount *string                   `json:"overdue_amount,omitempty"`
+	PartyId       *openapi_types.UUID       `json:"party_id,omitempty"`
+	PartyName     *string                   `json:"party_name,omitempty"`
+	Status        *PaymentPlanSummaryStatus `json:"status,omitempty"`
+	TotalAmount   *string                   `json:"total_amount,omitempty"`
+}
+
+// PaymentPlanSummaryStatus defines model for PaymentPlanSummary.Status.
+type PaymentPlanSummaryStatus string
+
 // PaymentRequest defines model for PaymentRequest.
 type PaymentRequest struct {
 	// AccountId Required for CASH
@@ -1857,14 +1979,20 @@ type PaymentRequest struct {
 	Allocations *[]map[string]interface{} `json:"allocations,omitempty"`
 
 	// Amount Exact base-10 decimal; never an IEEE-754 number.
-	Amount          Decimal                     `json:"amount"`
-	Currency        string                      `json:"currency"`
-	Description     string                      `json:"description"`
-	OverrideReason  *string                     `json:"override_reason,omitempty"`
-	PartyId         openapi_types.UUID          `json:"party_id"`
-	PaymentKind     PaymentRequestPaymentKind   `json:"payment_kind"`
-	PaymentMethod   PaymentRequestPaymentMethod `json:"payment_method"`
-	TransactionDate openapi_types.Date          `json:"transaction_date"`
+	Amount      Decimal `json:"amount"`
+	Currency    string  `json:"currency"`
+	Description string  `json:"description"`
+
+	// InstallmentNo En eski açık taksit; allocations bu taksitin kaynak fatura paylarını aşamaz
+	InstallmentNo  *int                        `json:"installment_no,omitempty"`
+	OverrideReason *string                     `json:"override_reason,omitempty"`
+	PartyId        openapi_types.UUID          `json:"party_id"`
+	PaymentKind    PaymentRequestPaymentKind   `json:"payment_kind"`
+	PaymentMethod  PaymentRequestPaymentMethod `json:"payment_method"`
+
+	// PaymentPlanId Taksitten yapılan ödeme için kaynak plan
+	PaymentPlanId   *openapi_types.UUID `json:"payment_plan_id,omitempty"`
+	TransactionDate openapi_types.Date  `json:"transaction_date"`
 }
 
 // PaymentRequestPaymentKind defines model for PaymentRequest.PaymentKind.

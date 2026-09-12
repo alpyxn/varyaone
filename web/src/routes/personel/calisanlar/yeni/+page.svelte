@@ -392,9 +392,8 @@
                 bind:checked={employment.is_minimum_wage}
                 onchange={onMinimumWageToggle}
               />
-              Asgari ücretli — tutarı <a class="wage-link" href="/ayarlar/tanimlar/asgari-ucret"
-                >asgari ücret tanımından</a
-              > değiştirebilirsiniz
+              Asgari ücretli — tutarı
+              <a class="wage-link" href="/ayarlar/tanimlar/asgari-ucret">asgari ücret tanımından</a> değiştirebilirsiniz
             </label>
           </Field.Field>
           <Field.Field>

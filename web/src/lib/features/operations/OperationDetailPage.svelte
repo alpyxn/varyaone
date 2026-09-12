@@ -665,7 +665,10 @@
       }
       if (!Object.keys(record).length) error = 'Kayıt bulunamadı.';
       reversalOriginalNumber = '';
-      if ((kind === 'collection' || kind === 'payment') && hasValue(firstValue(record, ['reversal_of_id']))) {
+      if (
+        (kind === 'collection' || kind === 'payment') &&
+        hasValue(firstValue(record, ['reversal_of_id']))
+      ) {
         const originalID = String(firstValue(record, ['reversal_of_id']));
         try {
           const original = normalizePayload(

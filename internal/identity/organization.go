@@ -137,8 +137,8 @@ type Role struct {
 }
 
 type Member struct {
-	User     User     `json:"user"`
-	IsActive bool     `json:"is_active"`
+	User     User `json:"user"`
+	IsActive bool `json:"is_active"`
 	// IsInstanceOwner is true for the account that completed the one-time
 	// setup. It can never be deactivated, mirroring the protection
 	// DeleteCompany already gives it against being locked out.

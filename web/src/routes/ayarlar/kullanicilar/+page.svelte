@@ -707,8 +707,9 @@
               </div>
             {:else}
               <div class="u-roles">
-                {#if member.is_instance_owner}<span class="tag" title="İlk kurulumu tamamlayan kullanıcı"
-                    >İlk kullanıcı</span
+                {#if member.is_instance_owner}<span
+                    class="tag"
+                    title="İlk kurulumu tamamlayan kullanıcı">İlk kullanıcı</span
                   >{/if}
                 {#if !member.is_active}<span class="tag warn">Pasif</span>{/if}
                 {#each member.role_ids as id (id)}

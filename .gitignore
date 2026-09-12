@@ -3,6 +3,9 @@
 .env.tmp.*
 .DS_Store
 *.log
+__pycache__/
+*.pyc
+/node_modules/
 CHANGELOG.md
 CONTEXT.md
 AGENTS.md
@@ -29,6 +32,7 @@ docs/
 .claude/
 graphify-out/
 varya-pulse/
+/output/
 
 
 # Desktop bundle: only the placeholder index.html is tracked; the real static

@@ -144,12 +144,13 @@
               />{/if}</Button
           >
         {/if}
-        {#if !phone.matches}
-          <Calculator bind:open={calculatorOpen} />
-          <Calendar bind:open={calendarOpen} />
-        {/if}
+        <Calculator bind:open={calculatorOpen} showTrigger={!phone.matches} />
+        <Calendar bind:open={calendarOpen} showTrigger={!phone.matches} />
         {#if phone.matches}
-          <ToolsMenu />
+          <ToolsMenu
+            onCalculator={() => (calculatorOpen = true)}
+            onCalendar={() => (calendarOpen = true)}
+          />
         {/if}
         {#if session}<UserMenu
             displayName={session.user.display_name}
