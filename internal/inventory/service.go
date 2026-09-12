@@ -288,14 +288,28 @@ func ensureTransferReadAccess(ctx context.Context, q interface {
 	return ensureWarehouseScope(ctx, q, companyID, userID, transitID)
 }
 
+// Field names stay stable in requests; validation text uses the visible labels.
+func inventoryFieldLabel(name string) string {
+	labels := map[string]string{
+		"id": "Kayıt kimliği", "company_id": "Firma", "warehouse_id": "Depo", "product_id": "Stok kartı",
+		"variant_id": "Varyant", "actor_user_id": "İşlemi yapan kullanıcı", "location_id": "Depo konumu",
+		"lot_id": "Lot", "serial_id": "Seri numarası", "count_id": "Sayım", "pass_id": "Sayım turu",
+		"session_id": "Sayım oturumu", "scope_id": "Sayım satırı", "transfer_id": "Transfer",
+	}
+	if label, ok := labels[name]; ok {
+		return label
+	}
+	return "Kayıt kimliği"
+}
+
 func requireUUID(name, value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "", validationError(fmt.Sprintf("%s is required", name))
+		return "", validationError(fmt.Sprintf("%s gereklidir.", inventoryFieldLabel(name)))
 	}
 	id, err := uuid.Parse(value)
 	if err != nil {
-		return "", validationError(fmt.Sprintf("%s is invalid: %v", name, err))
+		return "", validationError(fmt.Sprintf("%s seçimi geçersiz.", inventoryFieldLabel(name)))
 	}
 	return id.String(), nil
 }
@@ -307,7 +321,7 @@ func optionalUUID(value string) (any, error) {
 	}
 	id, err := uuid.Parse(value)
 	if err != nil {
-		return nil, validationError(fmt.Sprintf("UUID is invalid: %v", err))
+		return nil, validationError("Kayıt kimliği geçersiz. Seçimi yenileyin.")
 	}
 	return id.String(), nil
 }
@@ -362,7 +376,7 @@ func normalizeMovement(input MovementInput) (MovementInput, error) {
 	input.CompanyID = strings.TrimSpace(input.CompanyID)
 	var err error
 	if input.CompanyID == "" {
-		return MovementInput{}, validationError("company_id is required")
+		return MovementInput{}, validationError("Firma seçimi gereklidir.")
 	}
 	if _, err = requireUUID("company_id", input.CompanyID); err != nil {
 		return MovementInput{}, err
@@ -374,7 +388,7 @@ func normalizeMovement(input MovementInput) (MovementInput, error) {
 		return MovementInput{}, err
 	}
 	if input.WarehouseID == "" {
-		return MovementInput{}, validationError("warehouse_id is required")
+		return MovementInput{}, validationError("Depo seçimi gereklidir.")
 	}
 	for name, value := range map[string]*string{
 		"location_id": &input.LocationID, "variant_id": &input.VariantID,
@@ -390,11 +404,11 @@ func normalizeMovement(input MovementInput) (MovementInput, error) {
 	}
 	input.Direction = strings.ToUpper(strings.TrimSpace(input.Direction))
 	if input.Direction != DirectionIn && input.Direction != DirectionOut {
-		return MovementInput{}, validationError("direction must be IN or OUT")
+		return MovementInput{}, validationError("Hareket yönü giriş veya çıkış olmalıdır.")
 	}
 	input.MovementType = strings.ToUpper(strings.TrimSpace(input.MovementType))
 	if !validMovementType(input.MovementType) {
-		return MovementInput{}, validationError("movement_type is invalid")
+		return MovementInput{}, validationError("Stok hareketi türü geçersiz.")
 	}
 	if input.Quantity, err = cleanQuantity("quantity", input.Quantity, true); err != nil {
 		return MovementInput{}, err
@@ -437,13 +451,13 @@ func normalizeMovement(input MovementInput) (MovementInput, error) {
 	if input.Currency != "" && (len(input.Currency) != 3 || input.Currency < "A" || input.Currency > "ZZZ") {
 		// The comparison above intentionally rejects non-ASCII values; the
 		// database check remains the final authority for the format.
-		return MovementInput{}, validationError("currency must be a three-letter code")
+		return MovementInput{}, validationError("Geçerli bir para birimi seçin.")
 	}
 	input.ReasonCode = strings.ToUpper(strings.TrimSpace(input.ReasonCode))
 	input.ReasonDescription = strings.TrimSpace(input.ReasonDescription)
 	if input.ReasonCode == "" {
 		if input.MovementType == MovementManualAdjustment || input.MovementType == MovementDamage || input.MovementType == MovementWaste {
-			return MovementInput{}, codeError(ErrInvalidReason.Error(), ErrInvalidReason, "manuel hareket için reason code gereklidir")
+			return MovementInput{}, codeError(ErrInvalidReason.Error(), ErrInvalidReason, "Manuel hareket için işlem nedeni seçin.")
 		}
 		input.ReasonCode = input.MovementType
 	}
@@ -482,7 +496,7 @@ func normalizeMovement(input MovementInput) (MovementInput, error) {
 	}
 	input.ExpiryOverrideReason = strings.TrimSpace(input.ExpiryOverrideReason)
 	if input.ExpiryOverride && input.ExpiryOverrideReason == "" {
-		return MovementInput{}, validationError("expiry override reason is required")
+		return MovementInput{}, validationError("Son kullanma tarihi geçmiş lot için işlem gerekçesi girin.")
 	}
 	if input.LotManufacturedAt != nil && input.LotExpiresAt != nil && input.LotExpiresAt.Before(*input.LotManufacturedAt) {
 		return MovementInput{}, validationError("lot son kullanma tarihi üretim tarihinden önce olamaz")
@@ -1639,15 +1653,19 @@ func (s *Service) GetPosition(ctx context.Context, companyID, warehouseID, produ
 // movement ledger. PostedAtTo is inclusive so date-only UI filters can cover
 // the whole selected day without relying on database/session time zones.
 type MovementListFilter struct {
-	CompanyID    string
-	WarehouseID  string
-	ProductID    string
-	Query        string
-	Direction    string
-	PostedAtFrom *time.Time
-	PostedAtTo   *time.Time
-	Limit        int
-	UserID       string
+	MovementType   string
+	BeforeTime     *time.Time
+	BeforeID       string
+	StandaloneOnly bool
+	CompanyID      string
+	WarehouseID    string
+	ProductID      string
+	Query          string
+	Direction      string
+	PostedAtFrom   *time.Time
+	PostedAtTo     *time.Time
+	Limit          int
+	UserID         string
 }
 
 func normalizeMovementListFilter(filter MovementListFilter) (MovementListFilter, error) {
@@ -1664,6 +1682,14 @@ func normalizeMovementListFilter(filter MovementListFilter) (MovementListFilter,
 	filter.ProductID = strings.TrimSpace(filter.ProductID)
 	if filter.ProductID != "" {
 		if _, err := requireUUID("product_id", filter.ProductID); err != nil {
+			return MovementListFilter{}, err
+		}
+	}
+	if filter.MovementType != "" && !validMovementType(filter.MovementType) {
+		return MovementListFilter{}, fmt.Errorf("%w: hareket türü geçersiz", identity.ErrValidation)
+	}
+	if filter.BeforeID != "" {
+		if _, err := requireUUID("cursor", filter.BeforeID); err != nil {
 			return MovementListFilter{}, err
 		}
 	}
@@ -1730,7 +1756,11 @@ func (s *Service) ListMovementsFiltered(ctx context.Context, filter MovementList
 			args = append(args, "%"+token+"%")
 			param := len(args)
 			query += fmt.Sprintf(` AND (
-				lower(CAST(movement_type AS text)) LIKE $%d
+				lower(CAST(movement_type AS text)) LIKE $%[1]d
+                OR id::text LIKE $%[1]d
+                OR EXISTS(SELECT 1 FROM documents d WHERE d.company_id=stock_movements.company_id AND d.id=stock_movements.source_id AND lower(d.document_no) LIKE $%[1]d)
+                OR EXISTS(SELECT 1 FROM product_variants v WHERE v.company_id=stock_movements.company_id AND v.id=stock_movements.variant_id AND lower(v.variant_code) LIKE $%[1]d)
+                OR EXISTS(SELECT 1 FROM product_variant_values vv JOIN variant_definition_options opt ON opt.company_id=vv.company_id AND opt.definition_id=vv.definition_id AND opt.id=vv.option_id WHERE vv.company_id=stock_movements.company_id AND vv.variant_id=stock_movements.variant_id AND lower(opt.name) LIKE $%[1]d)
 				OR lower(CASE movement_type
 					WHEN 'MANUAL_ADJUSTMENT' THEN 'manuel düzeltme'
 					WHEN 'PURCHASE_RECEIPT' THEN 'alış mal kabul'
@@ -1742,11 +1772,11 @@ func (s *Service) ListMovementsFiltered(ctx context.Context, filter MovementList
 					WHEN 'COUNT_ADJUSTMENT' THEN 'sayım düzeltmesi'
 					WHEN 'DAMAGE' THEN 'hasar'
 					WHEN 'WASTE' THEN 'fire zayi'
-					ELSE '' END) LIKE $%d
-				OR lower(CAST(direction AS text)) LIKE $%d
-				OR lower(CASE direction WHEN 'IN' THEN 'giriş' WHEN 'OUT' THEN 'çıkış' ELSE '' END) LIKE $%d
-				OR lower(COALESCE(metadata->>'unit_code', '')) LIKE $%d
-				OR lower(CAST(reason_code AS text)) LIKE $%d
+					ELSE '' END) LIKE $%[1]d
+				OR lower(CAST(direction AS text)) LIKE $%[1]d
+				OR lower(CASE direction WHEN 'IN' THEN 'giriş' WHEN 'OUT' THEN 'çıkış' ELSE '' END) LIKE $%[1]d
+				OR lower(COALESCE(metadata->>'unit_code', '')) LIKE $%[1]d
+				OR lower(CAST(reason_code AS text)) LIKE $%[1]d
 				OR lower(CASE reason_code
 					WHEN 'PURCHASE_RECEIPT' THEN 'alış mal kabul'
 					WHEN 'SALES_DISPATCH' THEN 'satış sevk'
@@ -1756,20 +1786,20 @@ func (s *Service) ListMovementsFiltered(ctx context.Context, filter MovementList
 					WHEN 'DAMAGE' THEN 'hasar'
 					WHEN 'WASTE' THEN 'fire zayi'
 					WHEN 'OPENING' THEN 'açılış'
-					ELSE '' END) LIKE $%d
-				OR lower(COALESCE(reason_description, '')) LIKE $%d
-				OR CAST(quantity AS text) LIKE $%d
+					ELSE '' END) LIKE $%[1]d
+				OR lower(COALESCE(reason_description, '')) LIKE $%[1]d
+				OR CAST(quantity AS text) LIKE $%[1]d
 				OR EXISTS (
 					SELECT 1 FROM products p
 					WHERE p.company_id=stock_movements.company_id AND p.id=stock_movements.product_id
-					AND (lower(COALESCE(p.code, '')) LIKE $%d OR lower(COALESCE(p.name, '')) LIKE $%d)
+					AND (lower(COALESCE(p.code, '')) LIKE $%[1]d OR lower(COALESCE(p.name, '')) LIKE $%[1]d)
 				)
 				OR EXISTS (
 					SELECT 1 FROM warehouses w
 					WHERE w.company_id=stock_movements.company_id AND w.id=stock_movements.warehouse_id
-					AND (lower(COALESCE(w.code, '')) LIKE $%d OR lower(COALESCE(w.name, '')) LIKE $%d)
+					AND (lower(COALESCE(w.code, '')) LIKE $%[1]d OR lower(COALESCE(w.name, '')) LIKE $%[1]d)
 				)
-			)`, param, param, param, param, param, param, param, param, param, param, param, param, param)
+			)`, param)
 		}
 	}
 	if filter.Direction != "" {
@@ -1783,6 +1813,17 @@ func (s *Service) ListMovementsFiltered(ctx context.Context, filter MovementList
 	if filter.PostedAtTo != nil {
 		args = append(args, *filter.PostedAtTo)
 		query += fmt.Sprintf(" AND posted_at <= $%d", len(args))
+	}
+	if filter.MovementType != "" {
+		args = append(args, filter.MovementType)
+		query += fmt.Sprintf(" AND movement_type=$%d", len(args))
+	}
+	if filter.StandaloneOnly {
+		query += " AND COALESCE(source_type,'')<>'STOCK_MOVEMENT_OPERATION'"
+	}
+	if filter.BeforeTime != nil {
+		args = append(args, *filter.BeforeTime, filter.BeforeID)
+		query += fmt.Sprintf(" AND (posted_at,id)<($%d,$%d::uuid)", len(args)-1, len(args))
 	}
 	args = append(args, filter.Limit)
 	query += fmt.Sprintf(" ORDER BY posted_at DESC,id DESC LIMIT $%d", len(args))
@@ -4139,7 +4180,7 @@ func (s *Service) CancelTransfer(ctx context.Context, companyID, id, reason, act
 
 func (s *Service) StartStockCount(ctx context.Context, input StockCountInput) (StockCount, error) {
 	if input.BlindCount {
-		return StockCount{}, fmt.Errorf("%w: blind count is no longer supported", identity.ErrValidation)
+		return StockCount{}, fmt.Errorf("%w: Kör sayım artık desteklenmiyor.", identity.ErrValidation)
 	}
 	companyID, err := requireUUID("company_id", input.CompanyID)
 	if err != nil {
@@ -4554,6 +4595,7 @@ func (s *Service) ListLots(ctx context.Context, companyID, productID, search str
 								 )
 							  )
 						)
+					)
 					THEN sm.quantity_delta
 					ELSE 0
 				END

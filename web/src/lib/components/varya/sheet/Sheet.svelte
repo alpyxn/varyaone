@@ -3,20 +3,33 @@
   import { X } from '@lucide/svelte';
   import type { Snippet } from 'svelte';
   import { cn } from '$lib/utils';
+  import type { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
 
   let {
     open = $bindable(false),
     title,
     description,
     side = 'right',
+    guard,
     children
   }: {
     open?: boolean;
     title: string;
     description?: string;
     side?: 'left' | 'right';
+    /**
+     * Form modu. Verildiğinde dış alana tıklamak pencereyi kapatmaz; X, Esc ve
+     * Vazgeç aynı kontrollü kapatma akışından geçer.
+     */
+    guard?: UnsavedChangesGuard;
     children?: Snippet;
   } = $props();
+
+  function requestClose() {
+    if (guard) guard.requestClose();
+    else open = false;
+  }
 </script>
 
 <Dialog.Root bind:open>
@@ -24,6 +37,14 @@
     <Dialog.Overlay class="varya-sheet-overlay" />
     <Dialog.Content
       class={cn('varya-sheet', side === 'left' ? 'varya-sheet-left' : 'varya-sheet-right')}
+      onInteractOutside={(event) => {
+        if (guard) event.preventDefault();
+      }}
+      onEscapeKeydown={(event) => {
+        if (!guard) return;
+        event.preventDefault();
+        guard.requestClose();
+      }}
     >
       <div class="varya-sheet-heading">
         <div>
@@ -31,14 +52,33 @@
               >{description}</Dialog.Description
             >{/if}
         </div>
-        <Dialog.Close class="varya-sheet-close" aria-label="Kapat"
-          ><X size={17} aria-hidden="true" /></Dialog.Close
+        <button
+          class="varya-sheet-close"
+          type="button"
+          aria-label="Kapat"
+          disabled={guard?.busy}
+          onclick={requestClose}><X size={17} aria-hidden="true" /></button
         >
       </div>
-      <div class="varya-sheet-body">{@render children?.()}</div>
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="varya-sheet-body"
+        oninput={() => guard?.noteUserInput()}
+        onchange={() => guard?.noteUserInput()}
+      >
+        {@render children?.()}
+      </div>
     </Dialog.Content>
   </Dialog.Portal>
 </Dialog.Root>
+
+{#if guard}
+  <UnsavedChangesDialog
+    bind:open={guard.confirmOpen}
+    onKeepEditing={() => guard.keepEditing()}
+    onDiscard={() => guard.discardAndClose()}
+  />
+{/if}
 
 <style>
   :global(.varya-sheet-overlay) {

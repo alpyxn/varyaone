@@ -139,8 +139,12 @@ type Role struct {
 type Member struct {
 	User     User     `json:"user"`
 	IsActive bool     `json:"is_active"`
-	Version  int64    `json:"version"`
-	Roles    []string `json:"role_ids"`
+	// IsInstanceOwner is true for the account that completed the one-time
+	// setup. It can never be deactivated, mirroring the protection
+	// DeleteCompany already gives it against being locked out.
+	IsInstanceOwner bool     `json:"is_instance_owner"`
+	Version         int64    `json:"version"`
+	Roles           []string `json:"role_ids"`
 }
 
 type MemberInput struct {
@@ -553,7 +557,8 @@ func (s *Service) ListMembers(ctx context.Context, session Session) ([]Member, e
 		return nil, ErrForbidden
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT u.id,u.email,u.display_name,m.is_active,m.version,
+		SELECT u.id,u.email,u.display_name,m.is_active,
+		       EXISTS (SELECT 1 FROM instance_setup WHERE completed_by=u.id),m.version,
 		       COALESCE(array_agg(mr.role_id::text ORDER BY mr.role_id) FILTER (WHERE mr.role_id IS NOT NULL),'{}')
 		FROM company_memberships m JOIN users u ON u.id=m.user_id
 		LEFT JOIN membership_roles mr ON mr.company_id=m.company_id AND mr.user_id=m.user_id
@@ -565,7 +570,7 @@ func (s *Service) ListMembers(ctx context.Context, session Session) ([]Member, e
 	members := []Member{}
 	for rows.Next() {
 		var member Member
-		if err := rows.Scan(&member.User.ID, &member.User.Email, &member.User.DisplayName, &member.IsActive, &member.Version, &member.Roles); err != nil {
+		if err := rows.Scan(&member.User.ID, &member.User.Email, &member.User.DisplayName, &member.IsActive, &member.IsInstanceOwner, &member.Version, &member.Roles); err != nil {
 			return nil, err
 		}
 		members = append(members, member)
@@ -634,6 +639,98 @@ func (s *Service) AddMember(ctx context.Context, session Session, input MemberIn
 		return Member{}, err
 	}
 	return Member{User: user, IsActive: true, Version: membershipVersion, Roles: input.RoleIDs}, nil
+}
+
+// SetMemberPassword lets an admin reset another member's password. There is
+// no self-service "forgot password" flow in this product, so this is how a
+// locked-out employee recovers — the admin does not need to know the old
+// password, only prove they hold "security.user.manage".
+func (s *Service) SetMemberPassword(ctx context.Context, session Session, userID, newPassword string, meta RequestMeta) error {
+	if session.CurrentCompanyID == "" || !session.HasPermission("security.user.manage") {
+		return ErrForbidden
+	}
+	userID = strings.TrimSpace(userID)
+	var isMember bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM company_memberships WHERE company_id=$1 AND user_id=$2)`, session.CurrentCompanyID, userID).Scan(&isMember); err != nil {
+		return err
+	}
+	if !isMember {
+		return ErrNotFound
+	}
+	newHash, err := HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrValidation, err)
+	}
+	result, err := s.pool.Exec(ctx, `UPDATE users SET password_hash=$1,updated_at=now(),version=version+1 WHERE id=$2`, newHash, userID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	_ = s.audit(ctx, session.CurrentCompanyID, session.User.ID, "MEMBER_PASSWORD_RESET", "user", userID, nil, meta)
+	return nil
+}
+
+// SetMemberActive activates or deactivates a member's access to the current
+// company. There is no membership delete — deactivation is the only way to
+// cut someone off, which keeps their history (audit trail, records they
+// created) attributable instead of orphaning it. The instance owner (the
+// account that completed first-time setup) can never be deactivated, mirroring
+// the same protection DeleteCompany gives them against being locked out; a
+// caller also cannot deactivate themselves, so there is always at least one
+// usable admin session.
+func (s *Service) SetMemberActive(ctx context.Context, session Session, userID string, active bool, expectedVersion int64, meta RequestMeta) (Member, error) {
+	if session.CurrentCompanyID == "" || !session.HasPermission("security.user.manage") {
+		return Member{}, ErrForbidden
+	}
+	userID = strings.TrimSpace(userID)
+	if !active {
+		if userID == session.User.ID {
+			return Member{}, fmt.Errorf("%w: kendinizi pasife alamazsınız", ErrValidation)
+		}
+		var isOwner bool
+		if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM instance_setup WHERE completed_by=$1)`, userID).Scan(&isOwner); err != nil {
+			return Member{}, err
+		}
+		if isOwner {
+			return Member{}, fmt.Errorf("%w: ilk kullanıcı pasife alınamaz", ErrValidation)
+		}
+	}
+	var version int64
+	err := s.pool.QueryRow(ctx, `UPDATE company_memberships SET is_active=$1,updated_at=now(),version=version+1 WHERE company_id=$2 AND user_id=$3 AND version=$4 RETURNING version`,
+		active, session.CurrentCompanyID, userID, expectedVersion).Scan(&version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		if checkErr := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM company_memberships WHERE company_id=$1 AND user_id=$2)`, session.CurrentCompanyID, userID).Scan(&exists); checkErr != nil {
+			return Member{}, checkErr
+		}
+		if !exists {
+			return Member{}, ErrNotFound
+		}
+		return Member{}, ErrConflict
+	}
+	if err != nil {
+		return Member{}, err
+	}
+	eventType := "MEMBER_DEACTIVATED"
+	if active {
+		eventType = "MEMBER_ACTIVATED"
+	}
+	_ = s.audit(ctx, session.CurrentCompanyID, session.User.ID, eventType, "user", userID, nil, meta)
+	var member Member
+	if err = s.pool.QueryRow(ctx, `
+		SELECT u.id,u.email,u.display_name,m.is_active,
+		       EXISTS (SELECT 1 FROM instance_setup WHERE completed_by=u.id),m.version,
+		       COALESCE(array_agg(mr.role_id::text ORDER BY mr.role_id) FILTER (WHERE mr.role_id IS NOT NULL),'{}')
+		FROM company_memberships m JOIN users u ON u.id=m.user_id
+		LEFT JOIN membership_roles mr ON mr.company_id=m.company_id AND mr.user_id=m.user_id
+		WHERE m.company_id=$1 AND m.user_id=$2 GROUP BY u.id,u.email,u.display_name,m.is_active,m.version`,
+		session.CurrentCompanyID, userID).
+		Scan(&member.User.ID, &member.User.Email, &member.User.DisplayName, &member.IsActive, &member.IsInstanceOwner, &member.Version, &member.Roles); err != nil {
+		return Member{}, err
+	}
+	return member, nil
 }
 
 func validatePermissions(ctx context.Context, tx pgx.Tx, permissions []string) error {

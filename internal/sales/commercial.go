@@ -2123,9 +2123,9 @@ func (s *Service) normalizeCommercialInput(ctx context.Context, session identity
 		}
 	}
 	var partyActive, partyCustomer bool
-	var partyPaymentTermID, partySalesRepID *string
+	var partySalesRepID *string
 	var partyDefaultDiscount string
-	if err := s.pool.QueryRow(ctx, `SELECT is_active,is_customer,payment_term_id::text,sales_rep_user_id::text,default_discount_rate::text FROM parties WHERE company_id=$1 AND id=$2`, session.CurrentCompanyID, input.PartyID).Scan(&partyActive, &partyCustomer, &partyPaymentTermID, &partySalesRepID, &partyDefaultDiscount); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT is_active,is_customer,sales_rep_user_id::text,default_discount_rate::text FROM parties WHERE company_id=$1 AND id=$2`, session.CurrentCompanyID, input.PartyID).Scan(&partyActive, &partyCustomer, &partySalesRepID, &partyDefaultDiscount); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return commercialError(CommercialErrorInvalidPartyRole, "satış carisi bulunamadı", "party_id", 0)
 		}
@@ -2137,13 +2137,10 @@ func (s *Service) normalizeCommercialInput(ctx context.Context, session identity
 	if !partyCustomer {
 		return commercialError(CommercialErrorInvalidPartyRole, "satış işlemi için müşteri carisi gereklidir", "party_id", 0)
 	}
-	// A blank sales rep or payment term always falls back to the customer
-	// card's own default; an explicit input value is never overridden.
+	// Sales representatives still default from the customer card. Payment terms
+	// are document-specific; historical party defaults no longer determine due dates.
 	if input.SalesRepUserID == "" && partySalesRepID != nil {
 		input.SalesRepUserID = *partySalesRepID
-	}
-	if input.PaymentTermID == "" && partyPaymentTermID != nil {
-		input.PaymentTermID = *partyPaymentTermID
 	}
 	// A blank due date is derived from the resolved payment term's due_days,
 	// counted from the document date; an explicitly supplied due date is

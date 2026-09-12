@@ -144,6 +144,12 @@ export type PartyStatementReport = {
 };
 
 export type PartyOpenItem = {
+  due_schedule?: {
+    plan_id?: string;
+    installment_no: number;
+    due_date?: string;
+    open_amount: string;
+  }[];
   id: string;
   document_id: string;
   document_no?: string;

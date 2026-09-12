@@ -90,29 +90,12 @@ func (s *Service) PartyAging(ctx context.Context, session identity.Session, asOf
 	args := []any{session.CurrentCompanyID, asOf.Format("2006-01-02")}
 	query := `
 WITH open_items AS (
-    SELECT oi.party_id, oi.side, oi.currency,
-           GREATEST(oi.original_amount
-                    - COALESCE((SELECT SUM(CASE WHEN a.reversal_of_id IS NULL THEN a.amount ELSE -a.amount END)
-                                  FROM finance_payment_allocations a
-                                  JOIN finance_payments p ON p.company_id=a.company_id AND p.id=a.payment_id
-                                 WHERE a.company_id=oi.company_id AND a.open_item_id=oi.id
-                                   AND p.transaction_date <= $2::date), 0)
-                    - COALESCE((SELECT r.amount FROM finance_invoice_open_item_reversals r
-                                  JOIN party_ledger_entries l ON l.company_id=r.company_id AND l.id=r.reversal_ledger_entry_id
-                                 WHERE r.company_id=oi.company_id AND r.open_item_id=oi.id
-                                   AND l.document_date <= $2::date), 0)
-                    - COALESCE(returns.returned_amount, 0), 0) AS open_amount,
-           COALESCE(oi.due_date, oi.document_date) AS effective_due
+    SELECT oi.party_id, oi.side, oi.currency, sd.open_amount,
+           COALESCE(sd.due_date, oi.document_date) AS effective_due
       FROM finance_invoice_open_items oi
       JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
        AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
-      LEFT JOIN LATERAL (
-          SELECT COALESCE(SUM(attribution.amount),0) AS returned_amount
-            FROM finance_invoice_return_attributions attribution
-           WHERE attribution.company_id=oi.company_id
-             AND attribution.document_id=oi.document_id
-             AND attribution.return_document_date <= $2::date
-      ) returns ON TRUE
+      JOIN finance_scheduled_dues($1,$2::date) sd ON sd.open_item_id=oi.id
      WHERE oi.company_id=$1 AND oi.document_date <= $2::date`
 	if session.User.ID != "" {
 		args = append(args, session.User.ID)

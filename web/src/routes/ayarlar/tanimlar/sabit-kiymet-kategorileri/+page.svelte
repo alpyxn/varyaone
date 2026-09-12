@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { api, type Session } from '$lib/api';
@@ -54,7 +55,7 @@
       await refresh();
       message = ok;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'İşlem tamamlanamadı.';
+      error = errorMessage(cause, 'İşlem tamamlanamadı.');
     } finally {
       saving = false;
     }

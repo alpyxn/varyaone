@@ -50,7 +50,20 @@ const forward: RequestHandler = async ({ request, params, fetch, getClientAddres
     const responseHeaders = new Headers({
       'content-type': upstream.headers.get('content-type') || 'application/json'
     });
-    for (const name of ['content-disposition', 'x-request-id', 'retry-after']) {
+    for (const name of [
+      'content-disposition',
+      'x-request-id',
+      'retry-after',
+      // The operation id is how a client that loses this connection finds out
+      // what happened to a restore. It arrives with the headers, before the
+      // body, so dropping it here would throw away the one piece of
+      // information that survives a lost response.
+      'x-operation-id',
+      // A backup is the whole installation. No intermediary may cache it.
+      'cache-control',
+      'pragma',
+      'x-content-type-options'
+    ]) {
       const value = upstream.headers.get(name);
       if (value) responseHeaders.set(name, value);
     }

@@ -9,6 +9,7 @@ export default defineConfig({
     __SPA__: JSON.stringify(process.env.VARYAONE_ADAPTER === 'static')
   },
   ssr: { noExternal: ['@lucide/svelte'] },
+  resolve: process.env.VITEST ? { conditions: ['browser'] } : undefined,
   test: {
     environment: 'jsdom',
     include: ['src/**/*.test.ts']

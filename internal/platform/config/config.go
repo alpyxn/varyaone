@@ -4,10 +4,21 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
 )
+
+// defaultTrustedProxyCIDRs covers the two ways a trusted reverse proxy ever
+// reaches the API: the Docker default bridge network range used by the
+// compose frontend container, and loopback, used by a host nginx in domainli
+// mode (deploy.sh binds api/frontend to 127.0.0.1 there) and by the Windows
+// desktop server talking to itself. It deliberately excludes common LAN
+// ranges (192.168.0.0/16, most of 10.0.0.0/8) so a client on the same network
+// as a domainsiz LAN install cannot forge X-Forwarded-For by hitting the API
+// port directly.
+const defaultTrustedProxyCIDRs = "172.16.0.0/12,127.0.0.1/32,::1/128"
 
 type Config struct {
 	Environment string
@@ -25,7 +36,12 @@ type Config struct {
 	// serving traffic. Point it at the non-superuser varyaone_app role so the
 	// row-level-security company isolation policies are enforced. Empty falls
 	// back to DatabaseURL (unchanged behaviour).
-	AppDatabaseURL   string
+	AppDatabaseURL string
+	// TrustedProxyNets are the only source addresses the server accepts an
+	// incoming X-Forwarded-For header from (used for login rate-limit bucketing
+	// and audit trails); everything else falls back to RemoteAddr. See
+	// defaultTrustedProxyCIDRs.
+	TrustedProxyNets []*net.IPNet
 	LogLevel         string
 	Release          string
 	ShutdownTimeout  time.Duration
@@ -39,8 +55,13 @@ type Config struct {
 	StorageSecretKey string
 	StoragePathStyle bool
 	PostgresBinDir   string
-	PulseEndpoint    string
-	PulseIngestKey   string
+	// ControlDir holds the operation lease, journal and state. It must live
+	// outside both the database and the storage tree, because those are exactly
+	// what a restore replaces: a record of an interrupted restore kept inside
+	// the thing being restored is lost at the moment it becomes evidence.
+	ControlDir     string
+	PulseEndpoint  string
+	PulseIngestKey string
 	// PulseInstallPing sends the one-off anonymous install-count ping whenever a
 	// collector is configured. It is opt-out (default true). It is the only
 	// thing the collector is told about this instance besides user-submitted
@@ -127,6 +148,7 @@ func Load(getenv Getenv) (Config, error) {
 		StorageSecretKey:        strings.TrimSpace(getenv("VARYAONE_STORAGE_SECRET_KEY")),
 		StoragePathStyle:        strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_STORAGE_PATH_STYLE")), "true"),
 		PostgresBinDir:          strings.TrimSpace(getenv("VARYAONE_POSTGRES_BIN")),
+		ControlDir:              valueOr(getenv("VARYAONE_CONTROL_DIR"), "/var/lib/varyaone/control"),
 		PulseEndpoint:           strings.TrimRight(strings.TrimSpace(getenv("VARYAONE_PULSE_ENDPOINT")), "/"),
 		PulseIngestKey:          strings.TrimSpace(getenv("VARYAONE_PULSE_INGEST_KEY")),
 		PulseInstallPing:        !strings.EqualFold(strings.TrimSpace(getenv("VARYAONE_PULSE_INSTALL_PING")), "false"),
@@ -168,6 +190,18 @@ func Load(getenv Getenv) (Config, error) {
 	case "debug", "info", "warn", "error":
 	default:
 		return Config{}, fmt.Errorf("VARYAONE_LOG_LEVEL must be one of debug, info, warn, error")
+	}
+	trustedProxyCIDRs := valueOr(getenv("VARYAONE_TRUSTED_PROXY_CIDRS"), defaultTrustedProxyCIDRs)
+	for _, raw := range strings.Split(trustedProxyCIDRs, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		_, network, parseErr := net.ParseCIDR(raw)
+		if parseErr != nil {
+			return Config{}, fmt.Errorf("VARYAONE_TRUSTED_PROXY_CIDRS: %q is not a valid CIDR", raw)
+		}
+		cfg.TrustedProxyNets = append(cfg.TrustedProxyNets, network)
 	}
 	if cfg.PulseEndpoint != "" || cfg.PulseIngestKey != "" {
 		if cfg.PulseEndpoint == "" || cfg.PulseIngestKey == "" {

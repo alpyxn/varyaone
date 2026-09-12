@@ -26,21 +26,31 @@ func TOTPURI(secret, email string) string {
 }
 
 func VerifyTOTP(secret, code string, now time.Time) bool {
+	_, ok := VerifyTOTPStep(secret, code, now)
+	return ok
+}
+
+// VerifyTOTPStep is VerifyTOTP plus the matched 30-second time step, so a
+// caller (Login) can atomically record it as spent and reject a second use of
+// the same code within its acceptance window.
+func VerifyTOTPStep(secret, code string, now time.Time) (int64, bool) {
 	code = strings.TrimSpace(code)
 	if len(code) != 6 {
-		return false
+		return 0, false
 	}
 	for _, r := range code {
 		if r < '0' || r > '9' {
-			return false
+			return 0, false
 		}
 	}
+	base := now.Unix() / 30
 	for offset := int64(-1); offset <= 1; offset++ {
-		if generateTOTP(secret, uint64(now.Unix()/30+offset)) == code {
-			return true
+		step := base + offset
+		if generateTOTP(secret, uint64(step)) == code {
+			return step, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 func generateTOTP(secret string, counter uint64) string {

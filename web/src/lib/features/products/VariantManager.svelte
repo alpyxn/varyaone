@@ -1,4 +1,5 @@
 <script module lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { trimDecimalZeros } from '$lib/design/decimal';
   import type { ProductBarcode } from './types';
 
@@ -517,7 +518,7 @@
         return 'Varyant başka bir ürüne ait görünüyor. Sayfayı yenileyin.';
       if (message) return message;
     }
-    return cause instanceof Error ? cause.message : fallback;
+    return errorMessage(cause, fallback);
   }
 
   function effectivePrice(variant: ProductVariant, side: 'purchase' | 'sales') {
@@ -703,7 +704,13 @@
         <span>Boyut ve seçenekleri seçip eksik kombinasyonları üretin.</span>
       </div>
     {:else}
-      <div class="variant-table-wrap">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="variant-table-wrap table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Varyant matrisi — yatay kaydırılabilir"
+      >
         <table class="variant-table">
           <caption>Varyant matrisi</caption>
           <thead>

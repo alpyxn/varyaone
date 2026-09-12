@@ -24,6 +24,7 @@ func mountInventoryRoutes(router chi.Router, identityService *identity.Service, 
 	read := router.With(auth.requireSession)
 	read.Get("/api/v1/stock-movements", h.listMovements)
 	read.Get("/api/v1/stock-movements/{movementID}", h.getMovement)
+	read.Get("/api/v1/stock-movement-feed", h.listStockMovementFeed)
 	read.Get("/api/v1/stock-movement-operations", h.listStockMovementOperations)
 	read.Get("/api/v1/stock-movement-operations/{operationID}", h.getStockMovementOperation)
 	read.Get("/api/v1/stock/positions", h.position)
@@ -145,6 +146,7 @@ func movementListFilterFromRequest(r *http.Request) (inventory.MovementListFilte
 		return inventory.MovementListFilter{}, errors.New("posted_at tarih aralığı geçersiz")
 	}
 	return inventory.MovementListFilter{
+		MovementType: query.Get("movement_type"),
 		WarehouseID:  query.Get("warehouse_id"),
 		ProductID:    query.Get("product_id"),
 		Query:        query.Get("q"),

@@ -1,4 +1,5 @@
 <script module lang="ts">
+  import { errorMessage } from '$lib/errors';
   let comboboxSequence = 0;
 </script>
 
@@ -148,7 +149,7 @@
       if (payload !== undefined) resolvedResults = extractEntityOptions<T>(payload);
     } catch (cause) {
       if (controller.signal.aborted || requestId !== requestSequence) return;
-      searchError = cause instanceof Error && cause.message ? cause.message : errorText;
+      searchError = errorMessage(cause, errorText);
     } finally {
       if (requestId === requestSequence) searching = false;
     }
@@ -165,6 +166,7 @@
     editing = false;
     query = '';
     searchError = '';
+    searching = false;
   }
 
   function selectOption(option: T) {
@@ -221,15 +223,22 @@
     }
   }
 
-  function handleFocusOut() {
-    setTimeout(() => {
-      if (dialogOpen) return;
-      if (rootElement && rootElement.contains(document.activeElement)) return;
-      open = false;
-      editing = false;
-      query = '';
-    }, 0);
+  // Pointer dismissal handles non-focusable outside targets and touch scrolling.
+  // A null relatedTarget is not evidence that the user left this picker.
+  function handleFocusOut(event: FocusEvent) {
+    if (dialogOpen || !open) return;
+    if (event.relatedTarget instanceof Node && !rootElement?.contains(event.relatedTarget))
+      closeList();
   }
+
+  $effect(() => {
+    if (!open || dialogOpen) return;
+    const outside = (event: PointerEvent) => {
+      if (rootElement && !event.composedPath().includes(rootElement)) closeList();
+    };
+    document.addEventListener('pointerdown', outside, true);
+    return () => document.removeEventListener('pointerdown', outside, true);
+  });
 </script>
 
 <div

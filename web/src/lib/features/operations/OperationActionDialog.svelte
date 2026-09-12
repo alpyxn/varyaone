@@ -28,6 +28,8 @@
   import NegativeBalanceReason from '$lib/features/finance/NegativeBalanceReason.svelte';
   import { CurrencySelect } from '$lib/components/varya/currency-select';
   import { getExchangeRateDashboard } from '$lib/features/pricing/api';
+  import { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
 
   export type OperationActionKind =
     'manual' | 'collection' | 'payment' | 'stock-movement' | 'warehouse' | 'transfer' | 'count';
@@ -223,33 +225,39 @@
     return `${value.getFullYear()}-${month}-${day}`;
   };
 
-  const manual = $state({
-    partyID: '',
-    entryKind: 'DEBIT',
-    currency: 'TRY',
-    amount: '',
-    exchangeRate: '1',
-    description: '',
-    transactionDate: today(),
-    dueDate: '',
-    referenceNo: ''
-  });
+  function blankManual() {
+    return {
+      partyID: '',
+      entryKind: 'DEBIT',
+      currency: 'TRY',
+      amount: '',
+      exchangeRate: '1',
+      description: '',
+      transactionDate: today(),
+      dueDate: '',
+      referenceNo: ''
+    };
+  }
+  const manual = $state(blankManual());
 
-  const payment = $state({
-    partyID: '',
-    method: 'CASH',
-    accountID: '',
-    currency: 'TRY',
-    amount: '',
-    exchangeRate: '1',
-    referenceNo: '',
-    description: '',
-    transactionDate: today(),
-    instrumentNo: '',
-    instrumentDueDate: '',
-    instrumentBankName: '',
-    instrumentDrawerName: ''
-  });
+  function blankPayment() {
+    return {
+      partyID: '',
+      method: 'CASH',
+      accountID: '',
+      currency: 'TRY',
+      amount: '',
+      exchangeRate: '1',
+      referenceNo: '',
+      description: '',
+      transactionDate: today(),
+      instrumentNo: '',
+      instrumentDueDate: '',
+      instrumentBankName: '',
+      instrumentDrawerName: ''
+    };
+  }
+  const payment = $state(blankPayment());
 
   const paymentAccounts = $derived(
     accounts.filter(
@@ -258,25 +266,26 @@
     )
   );
 
-  const stock = $state({
-    warehouseID: '',
-    productID: '',
-    variantID: '',
-    direction: 'IN',
-    quantity: '',
-    unitCode: '',
-    unitCost: '',
-    currency: 'TRY',
-    reasonCode: '',
-    reasonDescription: ''
-  });
+  function blankStock() {
+    return {
+      warehouseID: '',
+      productID: '',
+      variantID: '',
+      direction: 'IN',
+      quantity: '',
+      unitCode: '',
+      unitCost: '',
+      currency: 'TRY',
+      reasonCode: '',
+      reasonDescription: ''
+    };
+  }
+  const stock = $state(blankStock());
 
-  const warehouse = $state({
-    code: '',
-    name: '',
-    type: 'STANDARD',
-    address: ''
-  });
+  function blankWarehouse() {
+    return { code: '', name: '', type: 'STANDARD', address: '' };
+  }
+  const warehouse = $state(blankWarehouse());
 
   function newTransferLine(productID = ''): TransferLineDraft {
     return {
@@ -294,21 +303,28 @@
     };
   }
 
+  function blankTransfer() {
+    return {
+      transferNo: '',
+      sourceWarehouseID: '',
+      destinationWarehouseID: '',
+      transferType: 'QUICK',
+      lines: [newTransferLine()]
+    };
+  }
+
   const transfer = $state<{
     transferNo: string;
     sourceWarehouseID: string;
     destinationWarehouseID: string;
     transferType: string;
     lines: TransferLineDraft[];
-  }>({
-    transferNo: '',
-    sourceWarehouseID: '',
-    destinationWarehouseID: '',
-    transferType: 'QUICK',
-    lines: [newTransferLine()]
-  });
+  }>(blankTransfer());
 
-  const count = $state({ warehouseID: '' });
+  function blankCount() {
+    return { warehouseID: '' };
+  }
+  const count = $state(blankCount());
 
   function accountLabel(method: string) {
     if (method === 'CASH') return 'Kasa';
@@ -1508,8 +1524,7 @@
           })
         });
       }
-      if (kind === 'stock-movement') resetStockMovementProductState(true);
-      open = false;
+      unsaved.closeAfterSave();
       onComplete?.();
     } catch (cause) {
       if (kind === 'transfer' && apiErrorCode(cause) === 'INSUFFICIENT_STOCK') {
@@ -1533,27 +1548,116 @@
     }
   }
 
-  function close() {
-    if (!submitting) {
+  /**
+   * Kayda giden form modelinden üretilen karşılaştırma değeri. Her işlem
+   * türünün kendi alanları ayrı ayrı snapshot'a dahil edilir.
+   */
+  function formSnapshot() {
+    if (kind === 'manual') return { kind, ...manual };
+    if (kind === 'collection' || kind === 'payment')
+      return {
+        kind,
+        ...payment,
+        overrideReason,
+        autoAllocateRequested,
+        allocations: allocationRows.map((row) => ({ id: row.id, applied: row.applied }))
+      };
+    if (kind === 'stock-movement')
+      return {
+        kind,
+        ...stock,
+        variantRows: stockVariantRows.map((row) => ({
+          id: row.id,
+          variantID: row.variant_id ?? '',
+          quantity: row.quantity ?? ''
+        }))
+      };
+    if (kind === 'warehouse') return { kind, ...warehouse };
+    if (kind === 'transfer')
+      return {
+        kind,
+        transferNo: transfer.transferNo,
+        sourceWarehouseID: transfer.sourceWarehouseID,
+        destinationWarehouseID: transfer.destinationWarehouseID,
+        transferType: transfer.transferType,
+        lines: transfer.lines.map((line) => ({
+          productID: line.productID,
+          variantID: line.variantID,
+          quantity: line.quantity
+        }))
+      };
+    return { kind, ...count };
+  }
+
+  // X, Esc, Vazgeç ve dış kapatmalar tek kontrollü akıştan geçer. Dış alana
+  // tıklamak pencereyi kapatmaz.
+  const unsaved = new UnsavedChangesGuard({
+    snapshot: formSnapshot,
+    isBusy: () => submitting,
+    onClose: () => {
       error = '';
       negativeBalancePrompt = false;
       overrideReason = '';
       if (kind === 'stock-movement') resetStockMovementProductState(true);
+      resetForms();
       open = false;
     }
+  });
+
+  /**
+   * Boşaltma: pencere kapandığında formlar da başlangıç durumuna döner.
+   *
+   * Pencere kapanınca yok edilmiyor, yalnızca gizleniyor. Bu sıfırlama olmadan
+   * "Değişiklikleri sil ve çık" sadece pencereyi kapatıyor, kullanıcı formu
+   * tekrar açtığında attığını sandığı veriyle karşılaşıyordu.
+   */
+  function resetForms() {
+    Object.assign(manual, blankManual());
+    Object.assign(payment, blankPayment());
+    Object.assign(stock, blankStock());
+    Object.assign(warehouse, blankWarehouse());
+    Object.assign(transfer, blankTransfer());
+    Object.assign(count, blankCount());
+    allocationRows = [];
+    autoAllocateRequested = false;
+    stockVariantRows = [];
+  }
+
+  function close() {
+    unsaved.requestClose();
   }
 
   function handleWindowKeydown(event: KeyboardEvent) {
     if (!open || event.key !== 'Escape' || event.defaultPrevented || submitting) return;
-    if (typeof document !== 'undefined' && document.querySelector('.entity-picker-dialog')) return;
+    // Onay penceresi ve iç içe seçiciler Esc'yi kendileri karşılar.
+    if (unsaved.confirmOpen) return;
+    if (
+      typeof document !== 'undefined' &&
+      document.querySelector('.entity-picker-dialog, .unsaved-dialog')
+    )
+      return;
     close();
   }
 
   $effect(() => {
     if (open) {
-      void loadReferences();
+      // Her açılışta yeni bir başlangıç; referanslar ve varsayılanlar
+      // yüklendikten sonra temiz durum bir kez daha alınır.
+      unsaved.reset();
+      void loadReferences().then(() => unsaved.captureInitial());
+    } else {
+      unsaved.release();
     }
   });
+
+  $effect(() => {
+    if (!open) return;
+    // Kayıt/işlem türü değişimiyle form sıfırlanırsa da aynı korumadan geçer.
+    kind;
+    unsaved.reset();
+  });
+
+  $effect(() => unsaved.registerPageGuard(label));
 
   $effect(() => {
     if (open && (kind === 'collection' || kind === 'payment')) {
@@ -1616,13 +1720,8 @@
 <svelte:window onkeydown={handleWindowKeydown} />
 
 {#if open}
-  <div
-    class="modal-backdrop"
-    role="presentation"
-    onclick={(event) => {
-      if (event.target === event.currentTarget) close();
-    }}
-  >
+  <!-- Veri giriş penceresinde dış alana tıklamak pencereyi kapatmaz. -->
+  <div class="modal-backdrop" role="presentation">
     <dialog class="modal" open aria-modal="true" aria-labelledby="operation-dialog-title">
       <header class="modal-header">
         <div>
@@ -1640,6 +1739,8 @@
 
       <form
         class="form-grid"
+        oninput={() => unsaved.noteUserInput()}
+        onchange={() => unsaved.noteUserInput()}
         onsubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -2321,6 +2422,12 @@
       </form>
     </dialog>
   </div>
+
+  <UnsavedChangesDialog
+    bind:open={unsaved.confirmOpen}
+    onKeepEditing={() => unsaved.keepEditing()}
+    onDiscard={() => unsaved.discardAndClose()}
+  />
 {/if}
 
 <style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { api, type Session } from '$lib/api';
@@ -40,7 +41,7 @@
       name = '';
       message = 'Marka eklendi.';
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Marka eklenemedi.';
+      error = errorMessage(cause, 'Marka eklenemedi.');
     } finally {
       saving = false;
     }
@@ -59,7 +60,7 @@
       )) as ProductBrand;
       items = items.map((x) => (x.id === item.id ? updated : x));
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Marka durumu güncellenemedi.';
+      error = errorMessage(cause, 'Marka durumu güncellenemedi.');
     } finally {
       saving = false;
     }

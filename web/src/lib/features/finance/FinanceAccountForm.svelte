@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { goto } from '$app/navigation';
   import { ArrowLeft, Save } from '@lucide/svelte';
   import { api, APIRequestError, type Session } from '$lib/api';
@@ -69,7 +70,7 @@
         if (company?.base_currency) form.currency = company.base_currency;
       }
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Oturum bilgisi alınamadı.';
+      error = errorMessage(cause, 'Oturum bilgisi alınamadı.');
     }
   }
 
@@ -120,7 +121,7 @@
       hasMovements =
         Boolean(movements.items && movements.items.length > 0) || balance.balance !== '0.0000';
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Hesap bilgileri alınamadı.';
+      error = errorMessage(cause, 'Hesap bilgileri alınamadı.');
     }
   }
 
@@ -184,7 +185,7 @@
         await goto(`/finans/hesaplar/${encodeURIComponent(id)}`);
       }
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Hesap kaydedilemedi.';
+      error = errorMessage(cause, 'Hesap kaydedilemedi.');
     } finally {
       saving = false;
     }
@@ -200,7 +201,7 @@
     if (cause instanceof APIRequestError && cause.code === 'EXCHANGE_RATE_REQUIRED') {
       return `Hesap oluşturuldu, açılış bakiyesi kaydedilemedi: bugün için ${currency} kuru yok. Ayarlar > Döviz Kurları ekranından kuru güncelleyip tekrar deneyin.`;
     }
-    const message = cause instanceof Error ? cause.message : 'Açılış bakiyesi kaydedilemedi.';
+    const message = errorMessage(cause, 'Açılış bakiyesi kaydedilemedi.');
     return `Hesap oluşturuldu, açılış bakiyesi kaydedilemedi: ${message}`;
   }
 

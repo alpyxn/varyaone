@@ -5,6 +5,7 @@
   import { goto } from '$app/navigation';
   import { toast } from 'svelte-sonner';
   import { api, type APIError, type Session } from '$lib/api';
+  import { session as sessionStore } from '$lib/session.svelte';
   import { moduleForPath, MODULE_CATALOG } from '$lib/modules';
   import { Button } from '$lib/components/ui/button';
   import { densityPreference } from '$lib/design/density.svelte';
@@ -18,26 +19,31 @@
   import FeedbackDialog from './FeedbackDialog.svelte';
   import Calculator from './Calculator.svelte';
   import Calendar from './Calendar.svelte';
+  import ToolsMenu from './ToolsMenu.svelte';
   import CompanySwitcher from './CompanySwitcher.svelte';
   import GlobalSearch from './GlobalSearch.svelte';
   import Breadcrumbs from './Breadcrumbs.svelte';
   import { Toaster } from '$lib/components/ui/sonner';
+  import { mediaQuery, PHONE_QUERY } from '$lib/design/viewport.svelte';
+  import { afterNavigate } from '$app/navigation';
   let { children }: { children: import('svelte').Snippet } = $props();
-  let session = $state<Session | null>(null);
   let globalSearchOpen = $state(false);
   let feedbackOpen = $state(false);
   let menuOpen = $state(false);
+  let calculatorOpen = $state(false);
+  let calendarOpen = $state(false);
+  // Below this width the topbar cannot hold theme + calculator + calendar next
+  // to the company switcher; calculator and calendar are hidden there (mobile
+  // has no room for them) and only the theme toggle survives, tucked into a
+  // tools menu.
+  const phone = mediaQuery(PHONE_QUERY);
   let topbarError = $state('');
-  let sessionReady = $state(false);
-  async function loadSession() {
-    try {
-      session = await api<Session>('/session');
-    } catch {
-      session = null;
-    } finally {
-      sessionReady = true;
-    }
-  }
+  // The layout has normally already fetched this while the boot splash was up,
+  // in which case the call below resolves from the shared store without a
+  // request. A failure leaves `session` null and the shell renders with no
+  // permissions, exactly as before.
+  const session = $derived(sessionStore.current);
+  const sessionReady = $derived(sessionStore.settled);
   $effect(() => {
     if (!sessionReady || !session) return;
     const required = moduleForPath(page.url.pathname);
@@ -47,10 +53,16 @@
       void goto('/');
     }
   });
+  // A link inside the drawer closes it, but a redirect, a breadcrumb or the
+  // browser's back button must close it too.
+  afterNavigate(() => {
+    menuOpen = false;
+  });
+
   onMount(() => {
     densityPreference.load();
     themePreference.load();
-    void loadSession();
+    void sessionStore.load().catch(() => {});
     return registerVaryaKeyboardShortcuts({
       search: () => (globalSearchOpen = true),
       new: () => dispatchVaryaShortcut('new'),
@@ -68,6 +80,7 @@
       });
       // Yeni şirkete geçince bağlam tamamen değişir; anasayfaya dönüp
       // oturumu baştan yükleyelim.
+      sessionStore.clear();
       location.href = '/';
     } catch (cause) {
       topbarError =
@@ -80,6 +93,7 @@
     topbarError = '';
     try {
       await api<void>('/auth/logout', { method: 'POST', body: '{}' });
+      sessionStore.clear();
       location.href = '/giris';
     } catch (cause) {
       topbarError =
@@ -105,6 +119,8 @@
         variant="ghost"
         size="icon"
         aria-label="Ana menüyü aç"
+        aria-controls="app-sidebar"
+        aria-expanded={menuOpen}
         onclick={() => (menuOpen = true)}><Menu size={19} /></Button
       >
       <CompanySwitcher {session} onchange={selectCompany} oncreate={() => goto('/firma-ekle')} />
@@ -115,19 +131,26 @@
         modules={session?.modules}
       />
       <div class="top-actions">
-        <Button
-          variant="ghost"
-          size="icon"
-          class="theme-toggle"
-          aria-label={themePreference.value === 'dark' ? 'Açık temaya geç' : 'Koyu temaya geç'}
-          title={themePreference.value === 'dark' ? 'Açık tema' : 'Koyu tema'}
-          onclick={() => themePreference.toggle()}
-          >{#if themePreference.value === 'dark'}<Sun size={17} />{:else}<Moon
-              size={17}
-            />{/if}</Button
-        >
-        <Calculator />
-        <Calendar />
+        {#if !phone.matches}
+          <Button
+            variant="ghost"
+            size="icon"
+            class="theme-toggle"
+            aria-label={themePreference.value === 'dark' ? 'Açık temaya geç' : 'Koyu temaya geç'}
+            title={themePreference.value === 'dark' ? 'Açık tema' : 'Koyu tema'}
+            onclick={() => themePreference.toggle()}
+            >{#if themePreference.value === 'dark'}<Sun size={17} />{:else}<Moon
+                size={17}
+              />{/if}</Button
+          >
+        {/if}
+        {#if !phone.matches}
+          <Calculator bind:open={calculatorOpen} />
+          <Calendar bind:open={calendarOpen} />
+        {/if}
+        {#if phone.matches}
+          <ToolsMenu />
+        {/if}
         {#if session}<UserMenu
             displayName={session.user.display_name}
             onLogout={logout}

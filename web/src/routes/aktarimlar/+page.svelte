@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { onMount, tick } from 'svelte';
   import { APIRequestError } from '$lib/api';
   import {
@@ -181,7 +182,11 @@
       rowNumber: row.row_number,
       values: previewFields.map((field) => formatPreviewValue(field, row.values[field.id])),
       valid: row.status === 'VALID',
-      note: row.issues?.[0]?.message ?? (row.status === 'VALID' ? 'Hazır' : 'Kontrol gerekli')
+      note: row.issues?.length
+        ? errorMessage(row.issues[0], 'Satır bilgilerini kontrol edin.')
+        : row.status === 'VALID'
+          ? 'Hazır'
+          : 'Kontrol gerekli'
     }))
   );
 
@@ -396,7 +401,7 @@
       }
       return cause.message;
     }
-    if (cause instanceof Error && cause.message) return cause.message;
+    if (cause instanceof Error) return errorMessage(cause);
     return 'Aktarım tamamlanamadı.';
   }
 
@@ -975,7 +980,7 @@
                   {#each paginatedErrorRows as row}
                     <li>
                       <span>Satır {row.row_number} · {currentEntityLabel}</span>
-                      <strong>{row.issues?.[0]?.message ?? 'Satır kontrolü başarısız.'}</strong>
+                      <strong>{errorMessage(row.issues?.[0], 'Satır kontrolü başarısız.')}</strong>
                       <button
                         type="button"
                         class="transfer-error-link"
@@ -1670,6 +1675,7 @@
 
   :global(.transfer-empty-state) {
     min-height: 220px;
+    width: auto;
     margin: 16px;
   }
 

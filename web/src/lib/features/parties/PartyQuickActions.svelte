@@ -39,6 +39,15 @@
 
   const secondary = $derived<Action[]>([
     {
+      label: 'Vade ve Taksit Planı',
+      hint: 'Açık faturaları vadelendir ve taksitlendir',
+      icon: FileText,
+      href: `/cari/vade-planlari?${link()}`,
+      enabled: has('finance.collection.read') || has('finance.payment.read'),
+      disabledReason: 'Borç veya alacak görüntüleme yetkiniz yok.',
+      tone: 'neutral'
+    },
+    {
       label: 'Cariyi Borçlandır',
       hint: 'Yalnız cari bakiyesi · kasa/banka etkilenmez',
       icon: MinusCircle,

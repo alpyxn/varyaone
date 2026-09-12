@@ -38,7 +38,7 @@ describe('api response errors', () => {
       name: 'APIRequestError',
       code: 'REQUEST_FAILED',
       status: 422,
-      message: 'İşlem tamamlanamadı.'
+      message: 'İşlem tamamlanamadı. Lütfen tekrar deneyin.'
     });
 
     vi.unstubAllGlobals();
@@ -138,5 +138,64 @@ describe('api CSRF recovery', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
+  });
+});
+
+describe('API transport localization', () => {
+  it.each(['GET', 'POST'])('localizes fetch rejections for %s', async (method) => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    try {
+      await expect(api('/parties', { method })).rejects.toMatchObject({
+        code: 'NETWORK_ERROR',
+        message: 'Sunucuya ulaşılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.'
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('localizes invalid success JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{', { status: 200 })));
+    try {
+      await expect(api('/parties')).rejects.toMatchObject({
+        code: 'INVALID_RESPONSE',
+        message: 'Sunucudan gelen yanıt okunamadı. Lütfen tekrar deneyin.'
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('preserves caller cancellation for stale-request guards', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const abort = new DOMException('The operation was aborted.', 'AbortError');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abort));
+    try {
+      await expect(api('/parties', { signal: controller.signal })).rejects.toBe(abort);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('localizes timeouts while retaining the timeout code', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_input, init) =>
+          new Promise((_resolve, reject) =>
+            init.signal.addEventListener('abort', () => reject(init.signal.reason))
+          )
+      )
+    );
+    try {
+      const pending = expect(api('/parties')).rejects.toMatchObject({
+        code: 'REQUEST_TIMEOUT',
+        message: 'İstek zaman aşımına uğradı. Lütfen tekrar deneyin.'
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -97,6 +97,14 @@ func (s *Service) ListStockMovementOperations(ctx context.Context, filter Moveme
 		args = append(args, *filter.PostedAtTo)
 		query += fmt.Sprintf(" AND o.posted_at <= $%d", len(args))
 	}
+	if filter.MovementType != "" {
+		args = append(args, filter.MovementType)
+		query += fmt.Sprintf(" AND o.movement_type=$%d", len(args))
+	}
+	if filter.BeforeTime != nil {
+		args = append(args, *filter.BeforeTime, filter.BeforeID)
+		query += fmt.Sprintf(" AND (o.posted_at,o.id)<($%d,$%d::uuid)", len(args)-1, len(args))
+	}
 	args = append(args, filter.Limit)
 	query += fmt.Sprintf(" ORDER BY o.posted_at DESC,o.id DESC LIMIT $%d", len(args))
 

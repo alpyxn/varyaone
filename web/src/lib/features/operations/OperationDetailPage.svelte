@@ -46,6 +46,7 @@
   type Props = { kind: OperationDetailKind; endpoint?: string; listPath?: string; title?: string };
   let { kind, endpoint, listPath, title }: Props = $props();
   let record = $state<RecordValue>();
+  let reversalOriginalNumber = $state('');
   let loading = $state(true);
   let error = $state('');
   let actionBusy = $state(false);
@@ -663,6 +664,18 @@
         if (Object.keys(record).length) void loadWarehouseTransfers(id);
       }
       if (!Object.keys(record).length) error = 'Kayıt bulunamadı.';
+      reversalOriginalNumber = '';
+      if ((kind === 'collection' || kind === 'payment') && hasValue(firstValue(record, ['reversal_of_id']))) {
+        const originalID = String(firstValue(record, ['reversal_of_id']));
+        try {
+          const original = normalizePayload(
+            await api<unknown>(`${config.endpoint}/${encodeURIComponent(originalID)}`)
+          );
+          reversalOriginalNumber = headingNumber(original);
+        } catch {
+          // Orijinal kayıt okunamazsa bağlantı yine de kimliğiyle çalışır.
+        }
+      }
     } catch (cause) {
       error =
         typeof cause === 'object' && cause && 'message' in cause
@@ -1080,8 +1093,16 @@
       : textValue(value);
   }
 
-  onMount(() => {
+  $effect(() => {
+    // Navigating from one detail record to another (e.g. "Hareketi aç" on a
+    // reversal entry) reuses this same route component instead of
+    // remounting it, so onMount alone never re-fires. Track the route id
+    // explicitly so opening a linked record actually loads it.
+    page.params.id;
     void load();
+  });
+
+  onMount(() => {
     void api<Session>('/session')
       .then((session) => {
         permissions = session.permissions ?? [];
@@ -1182,8 +1203,9 @@
               size={14}
             />{/if}Sevk iptal et</Button
         >{/if}
-      {#if config.print}<Button variant="outline" onclick={printReceipt}
-          ><Printer size={14} />{printLabel()}</Button
+      {#if config.print && !firstValue(record, ['reversal_of_id'])}<Button
+          variant="outline"
+          onclick={printReceipt}><Printer size={14} />{printLabel()}</Button
         >{/if}
       {#if supportsReversal()}<Button
           variant="outline"
@@ -1207,6 +1229,15 @@
           {#if sourceNo}Bu stok hareketi <strong>{sourceNo}</strong> belgesinden oluşturuldu.{:else}Bu
             stok hareketi bir belgeden oluşturuldu.{/if} Hareketi geri almak için kaynak belgeyi iptal
           edin.
+        </p>
+      {/if}
+      {#if (kind === 'collection' || kind === 'payment') && firstValue(record, ['reversal_of_id'])}
+        {@const originalID = String(firstValue(record, ['reversal_of_id']))}
+        <p class="document-origin-note">
+          Bu bir ters kayıt işlemidir;
+          <a class="origin-link" href={`${config.listPath}/${originalID}`}
+            >{reversalOriginalNumber || 'orijinal işlemi aç'}</a
+          > ters kayıt açıldığı için otomatik oluşturulmuştur.
         </p>
       {/if}
     </div>
@@ -1375,7 +1406,13 @@
         </div>
         <span>{stockLines.length} satır</span>
       </div>
-      <div class="table-scroll">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
         <table>
           <thead>
             <tr>
@@ -1453,7 +1490,13 @@
           <h2>{table.title}</h2>
           <span>{rows.length} kayıt</span>
         </div>
-        <div class="table-scroll">
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="region"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
           <table>
             <thead
               ><tr
@@ -1760,6 +1803,11 @@
     color: var(--muted-foreground, #666);
     font-size: 12px;
     line-height: 1.4;
+  }
+  .origin-link {
+    color: var(--primary);
+    font-weight: 600;
+    text-decoration: underline;
   }
   .action-message.success {
     color: var(--success, var(--primary));

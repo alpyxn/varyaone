@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage as localizedErrorMessage } from '$lib/errors';
   import { formatDate, formatMoney } from '$lib/design/formatters';
   import {
     addSignedDecimalStrings,
@@ -78,7 +79,10 @@
     openItems.length > 0 && (openReceivableTotal === undefined || openPayableTotal === undefined)
   );
   const nearestDue = $derived(
-    [...openItems]
+    openItems
+      .flatMap<{ due_date?: string }>((item) =>
+        item.due_schedule?.length ? item.due_schedule : [item]
+      )
       .filter((item) => item.due_date)
       .sort((a, b) => (a.due_date ?? '').localeCompare(b.due_date ?? ''))[0]?.due_date
   );
@@ -119,7 +123,7 @@
       loadState = 'ready';
     } catch (cause) {
       if (request.signal.aborted || sequence !== requestSequence) return;
-      errorMessage = cause instanceof Error ? cause.message : 'Cari finans özeti alınamadı.';
+      errorMessage = localizedErrorMessage(cause, 'Cari finans özeti alınamadı.');
       loadState = 'error';
     }
   }

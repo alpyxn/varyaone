@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { AlertCircle, RefreshCw } from '@lucide/svelte';
   import { Button } from '$lib/components/ui/button';
   import * as Alert from '$lib/components/ui/alert';
@@ -34,7 +35,11 @@
 {:else if error}
   <Alert.Root variant="destructive" class="state-alert">
     <AlertCircle aria-hidden="true" />
-    <div><Alert.Title>{errorTitle}</Alert.Title><Alert.Description>{error}</Alert.Description></div>
+    <div>
+      <Alert.Title>{errorTitle}</Alert.Title><Alert.Description
+        >{errorMessage(error)}</Alert.Description
+      >
+    </div>
     {#if onRetry}<Button variant="outline" size="sm" onclick={onRetry}
         ><RefreshCw data-icon="inline-start" />Yeniden dene</Button
       >{/if}

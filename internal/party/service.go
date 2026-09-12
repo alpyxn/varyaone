@@ -935,15 +935,28 @@ func (s *Service) SaveAddressPreference(ctx context.Context, session identity.Se
 // customer picker cannot accidentally display supplier-only records (and
 // vice versa).
 func (s *Service) List(ctx context.Context, session identity.Session, query, cursor string, limit int, includeInactive bool, roles ...string) (ListResult, error) {
+	role := ""
+	if len(roles) > 0 {
+		role = roles[0]
+	}
+	return s.ListSorted(ctx, session, query, cursor, limit, includeInactive, role, "")
+}
+
+// ListSorted applies the grid order before pagination. List preserves the
+// historical default order and cursor contract for existing callers.
+func (s *Service) ListSorted(ctx context.Context, session identity.Session, query, cursor string, limit int, includeInactive bool, role, sort string, groupIDs ...string) (ListResult, error) {
 	if !authorized(session, "party.read") {
 		return ListResult{}, identity.ErrForbidden
 	}
 	if limit < 1 || limit > 100 {
 		limit = 25
 	}
-	afterName, afterID, err := decodeCursor(cursor)
+	afterName, afterID, err := decodeCursor("")
+	if strings.TrimSpace(sort) == "" {
+		afterName, afterID, err = decodeCursor(cursor)
+	}
 	if err != nil {
-		return ListResult{}, fmt.Errorf("%w: geçersiz cursor", identity.ErrValidation)
+		return ListResult{}, fmt.Errorf("%w: Sayfalama bilgisi geçersiz. Listeyi yenileyin.", identity.ErrValidation)
 	}
 	rawQuery := strings.TrimSpace(query)
 	query = normalizePartySearchQuery(query)
@@ -961,11 +974,18 @@ func (s *Service) List(ctx context.Context, session identity.Session, query, cur
 		listQuery += ` JOIN party_search_documents psd ON psd.company_id=p.company_id AND psd.party_id=p.id`
 	}
 	listQuery += ` WHERE p.company_id=$1`
+	if len(groupIDs) > 0 && groupIDs[0] != "" {
+		if uuid.Validate(groupIDs[0]) != nil {
+			return ListResult{}, fmt.Errorf("%w: cari grubu geçersiz", identity.ErrValidation)
+		}
+		args = append(args, groupIDs[0])
+		listQuery += fmt.Sprintf(` AND EXISTS(SELECT 1 FROM party_group_memberships gm WHERE gm.company_id=p.company_id AND gm.party_id=p.id AND gm.group_id=$%d)`, len(args))
+	}
 	if !includeInactive {
 		listQuery += ` AND p.is_active`
 	}
-	if len(roles) > 0 && strings.TrimSpace(roles[0]) != "" {
-		role := strings.ToLower(strings.TrimSpace(roles[0]))
+	if strings.TrimSpace(role) != "" {
+		role := strings.ToLower(strings.TrimSpace(role))
 		switch role {
 		case "customer":
 			listQuery += ` AND p.is_customer`
@@ -978,6 +998,9 @@ func (s *Service) List(ctx context.Context, session identity.Session, query, cur
 	if query != "" {
 		args = append(args, query)
 		listQuery += fmt.Sprintf(` AND psd.search_vector @@ to_tsquery('simple', $%d)`, len(args))
+	}
+	if strings.TrimSpace(sort) != "" {
+		return s.listSorted(ctx, listQuery, args, sort, cursor, limit)
 	}
 	nameParam := len(args) + 1
 	idParam := nameParam + 1

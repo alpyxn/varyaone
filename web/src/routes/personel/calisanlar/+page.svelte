@@ -105,7 +105,13 @@
     {:else if !rows.length}
       <p class="list-state">Kayıt bulunamadı.</p>
     {:else}
-      <div class="table-scroll">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
         <table class="data-table">
           <thead
             ><tr><th>Kod</th><th>Ad Soyad</th><th>Pozisyon</th><th>Durum</th><th>İşe giriş</th></tr

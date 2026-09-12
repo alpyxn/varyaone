@@ -1,13 +1,16 @@
 <script lang="ts">
+  import ListFilters from '$lib/components/varya/list-filters/ListFilters.svelte';
+  import type { ListFilter } from '$lib/components/varya/list-filters/types';
+  import { readListState, writeListState } from '$lib/components/varya/list-filters/state';
+  import { errorMessage } from '$lib/errors';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
   import type { Snippet } from 'svelte';
-  import { Download, Plus, RefreshCw, Search, SlidersHorizontal, X } from '@lucide/svelte';
+  import { Download, Plus, RefreshCw, Search, X } from '@lucide/svelte';
   import { api, type Session } from '$lib/api';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { DocumentToolbar } from '$lib/components/varya/document-toolbar';
-  import { DateInput } from '$lib/components/varya/date-input';
   import { formatDate, formatMoney, formatQuantity } from '$lib/design/formatters';
   import { localizedEnum } from '$lib/design/labels';
   import { warehouseType } from '$lib/features/warehouses/types';
@@ -26,7 +29,6 @@
     type EntityOption,
     type EntitySearchHandler
   } from '$lib/components/varya/entity-picker-dialog';
-  import { EntityCombobox } from '$lib/components/varya/entity-combobox';
 
   export type OperationColumn = {
     id: string;
@@ -37,22 +39,7 @@
     defaultVisible?: boolean;
   };
 
-  export type OperationFilter = {
-    field: string;
-    label: string;
-    kind: 'date' | 'select' | 'entity' | 'text';
-    inputMode?: 'text' | 'decimal';
-    visibleWhen?: { field: string; value: string };
-    options?: { value: string; label: string }[];
-    placeholder?: string;
-    entity?: {
-      title: string;
-      description: string;
-      triggerPlaceholder: string;
-      searchPlaceholder?: string;
-      search: EntitySearchHandler<EntityOption>;
-    };
-  };
+  export type OperationFilter = ListFilter;
 
   type OperationRow = Record<string, unknown> & { id?: string };
   type OperationList = { items?: OperationRow[]; next_cursor?: string };
@@ -124,7 +111,6 @@
   const SEARCH_DEBOUNCE_MS = 250;
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => () => clearTimeout(searchTimer));
-  const activeFilterCount = $derived(query.filters.length);
 
   function baseEndpoint() {
     return endpoint.split('?')[0];
@@ -410,12 +396,14 @@
       const result = await api<OperationList>(`${requestPath}${separator}${params}`, {
         signal: request.signal
       });
+      if (request.signal.aborted) return;
       const items = (Array.isArray(result.items) ? result.items : []).filter(trackingRowIsUsable);
       rows = append ? [...rows, ...items] : items;
       nextCursor = result.next_cursor;
+      if (preserveListState) rememberListState();
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') return;
-      error = 'Veriler alınamadı. API bağlantısını kontrol edip yeniden deneyin.';
+      error = errorMessage(cause, 'Veriler alınamadı.');
     } finally {
       if (!request.signal.aborted) {
         loading = false;
@@ -433,6 +421,7 @@
         !held.includes(requiredPermission) &&
         !(anyPermission ?? []).some((code) => held.includes(code));
       if (!denied) {
+        if (preserveListState) restoreListState();
         await load();
         if (
           openAction &&
@@ -477,11 +466,6 @@
     return Array.isArray(filter.value) ? filter.value.join(',') : filter.value;
   }
 
-  function isFilterVisible(filter: OperationFilter) {
-    if (!filter.visibleWhen) return true;
-    return filterValue(filter.visibleWhen.field) === filter.visibleWhen.value;
-  }
-
   function setFilter(field: string, value: string) {
     const nextFilters = query.filters.filter((item) => {
       if (item.field === field) return false;
@@ -508,16 +492,11 @@
     setFilter(filter.field, option.id);
   }
 
-  function clearFilter(filter: OperationFilter) {
-    entitySelections[filter.field] = undefined;
-    setFilter(filter.field, '');
-  }
-
   function loadMore() {
     if (!nextCursor || query.pagination.mode !== 'cursor') return;
     cursorHistory = [...cursorHistory, query.pagination.cursor ?? ''];
     query = { ...query, pagination: { ...query.pagination, cursor: nextCursor } };
-    void load(true);
+    void load();
   }
 
   function loadPrevious() {
@@ -594,29 +573,42 @@
     }
   }
 
-  function listStateKey() {
-    return `varya:list-state:${window.location.pathname}`;
-  }
-
   function rememberListState() {
-    try {
-      sessionStorage.setItem(listStateKey(), JSON.stringify({ search, query }));
-    } catch {
-      // A privacy-restricted browser may disable session storage. Navigation
-      // remains fully functional; state preservation is best effort.
-    }
+    if (!session) return;
+    writeListState(session, endpoint, {
+      search,
+      query,
+      cursorHistory,
+      entitySelections,
+      showInactive
+    });
   }
 
   function restoreListState() {
-    try {
-      const raw = sessionStorage.getItem(listStateKey());
-      if (!raw) return;
-      const saved = JSON.parse(raw) as { search?: unknown; query?: VaryaGridQuery };
-      if (typeof saved.search === 'string') search = saved.search;
-      if (saved.query && typeof saved.query === 'object') query = saved.query;
-    } catch {
-      // Ignore malformed/stale state from an older client build.
-    }
+    if (!session) return;
+    const saved = readListState<{
+      search: string;
+      query: VaryaGridQuery;
+      cursorHistory: string[];
+      entitySelections: Record<string, EntityOption>;
+      showInactive: boolean;
+    }>(session, endpoint);
+    if (
+      !saved ||
+      !saved.query ||
+      !Array.isArray(saved.query.filters) ||
+      !Array.isArray(saved.query.sorting) ||
+      saved.query.pagination?.mode !== 'cursor'
+    )
+      return;
+    search = typeof saved.search === 'string' ? saved.search : '';
+    query = {
+      ...saved.query,
+      filters: saved.query.filters.filter((f) => filters.some((d) => d.field === f.field))
+    };
+    cursorHistory = Array.isArray(saved.cursorHistory) ? saved.cursorHistory : [];
+    entitySelections = saved.entitySelections ?? {};
+    showInactive = saved.showInactive === true;
   }
 
   function requestEndpoint() {
@@ -638,14 +630,6 @@
   }
 
   onMount(() => {
-    if (preserveListState) restoreListState();
-    else {
-      try {
-        sessionStorage.removeItem(listStateKey());
-      } catch {
-        // Ignore storage restrictions; a clean in-memory query is still used.
-      }
-    }
     void initialize();
     return () => activeRequest?.abort();
   });
@@ -687,77 +671,20 @@
           onclick={clearSearch}><X size={14} /></button
         >{/if}
     </div>
-    {#if filters.length}<div class="filter-bar" aria-label="Liste filtreleri">
-        <span class="filter-title"><SlidersHorizontal size={14} />Filtreler</span>
-        {#each filters as filter}
-          {#if isFilterVisible(filter)}
-            {@const entity = filter.entity}
-            <label class="filter-field">
-              <span>{filter.label}</span>
-              {#if filter.kind === 'select'}
-                <select
-                  value={filterValue(filter.field)}
-                  aria-label={filter.label}
-                  onchange={(event) =>
-                    setFilter(filter.field, (event.currentTarget as HTMLSelectElement).value)}
-                >
-                  <option value="">Tümü</option>
-                  {#each filter.options ?? [] as option}
-                    <option value={option.value}>{option.label}</option>
-                  {/each}
-                </select>
-              {:else if filter.kind === 'date'}
-                <DateInput
-                  value={filterValue(filter.field)}
-                  ariaLabel={filter.label}
-                  onValueChange={(value) => setFilter(filter.field, value)}
-                />
-              {:else if filter.kind === 'text'}
-                <input
-                  value={filterValue(filter.field)}
-                  aria-label={filter.label}
-                  inputmode={filter.inputMode ?? 'text'}
-                  placeholder={filter.placeholder}
-                  onchange={(event) =>
-                    setFilter(filter.field, (event.currentTarget as HTMLInputElement).value)}
-                />
-              {:else if entity}
-                <EntityCombobox
-                  selected={entitySelections[filter.field]}
-                  onSearch={entity.search}
-                  title={entity.title}
-                  description={entity.description}
-                  triggerLabel={filter.label}
-                  triggerPlaceholder={entity.triggerPlaceholder}
-                  searchPlaceholder={entity.searchPlaceholder}
-                  onSelect={(option) => selectEntity(filter, option)}
-                />
-              {/if}
-            </label>
-            {#if filterValue(filter.field)}<Button
-                variant="ghost"
-                size="icon"
-                class="filter-clear"
-                title={`${filter.label} filtresini temizle`}
-                aria-label={`${filter.label} filtresini temizle`}
-                onclick={() => clearFilter(filter)}><X size={14} /></Button
-              >{/if}
-          {/if}
-        {/each}
-        {#if activeFilterCount > 1}<Button
-            variant="ghost"
-            size="sm"
-            onclick={() => {
-              entitySelections = {};
-              query = {
-                ...query,
-                filters: [],
-                pagination: { mode: 'cursor', pageSize: query.pagination.pageSize }
-              };
-              void load();
-            }}>Filtreleri temizle</Button
-          >{/if}
-      </div>{/if}
+    <ListFilters
+      {filters}
+      values={Object.fromEntries(
+        query.filters.map((f) => [f.field, Array.isArray(f.value) ? f.value.join(',') : f.value])
+      )}
+      entities={entitySelections}
+      onChange={setFilter}
+      onEntity={selectEntity}
+      onClear={() => {
+        entitySelections = {};
+        query = { ...query, filters: [] };
+        reloadFromFirstPage();
+      }}
+    />
     {#if includeInactiveFilter}<button
         class="inactive-filter-toggle"
         type="button"
@@ -896,68 +823,6 @@
     cursor: not-allowed;
     opacity: 0.6;
   }
-  .filter-bar {
-    display: flex;
-    flex: 1 0 100%;
-    order: 10;
-    flex-wrap: wrap;
-    align-items: end;
-    gap: 7px;
-    padding-top: 4px;
-    border-top: 1px solid var(--border);
-  }
-  .filter-title {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    align-self: center;
-    color: var(--text-muted);
-    font-size: 11px;
-    font-weight: 650;
-  }
-  .filter-field {
-    display: grid;
-    min-width: 175px;
-    gap: 3px;
-  }
-  .filter-field > span {
-    color: var(--text-subtle);
-    font-size: 10px;
-    font-weight: 650;
-  }
-  .filter-field select,
-  .filter-field :global(input) {
-    height: 32px;
-    min-width: 160px;
-    padding-top: 4px;
-    padding-bottom: 4px;
-    font-size: 11px;
-  }
-  :global(.filter-clear) {
-    align-self: end;
-    margin-bottom: 1px;
-  }
-  .permission-card {
-    display: grid;
-    gap: 5px;
-    padding: 24px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-panel);
-    background: var(--surface);
-    color: var(--text-muted);
-  }
-  .permission-card strong {
-    color: var(--text);
-  }
-  .permission-card a {
-    width: fit-content;
-    color: var(--primary);
-  }
-  .scope-hint {
-    margin: 8px 2px 0;
-    color: var(--text-muted);
-    font-size: 11px;
-  }
   @media (max-width: 640px) {
     .search-box {
       min-width: 230px;
@@ -966,12 +831,6 @@
     .inactive-filter-toggle {
       width: 100%;
       flex-basis: 100%;
-    }
-    .filter-bar {
-      width: 100%;
-    }
-    .filter-field {
-      flex: 1 1 140px;
     }
   }
 </style>

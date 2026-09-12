@@ -14,6 +14,27 @@ export const createTaxDefinition = (input: Partial<TaxDefinition>) =>
     body: JSON.stringify(input)
   });
 
+export const updateTaxDefinition = (id: string, version: number, input: Partial<TaxDefinition>) =>
+  api<TaxDefinition>(`/taxes/definitions/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'If-Match': `"${version}"` },
+    body: JSON.stringify(input)
+  });
+
+export const deactivateTaxDefinition = (id: string, version: number) =>
+  api<TaxDefinition>(`/taxes/definitions/${encodeURIComponent(id)}/deactivate`, {
+    method: 'POST',
+    headers: { 'If-Match': `"${version}"` },
+    body: '{}'
+  });
+
+export const activateTaxDefinition = (id: string, version: number) =>
+  api<TaxDefinition>(`/taxes/definitions/${encodeURIComponent(id)}/activate`, {
+    method: 'POST',
+    headers: { 'If-Match': `"${version}"` },
+    body: '{}'
+  });
+
 export const listTaxRates = (definitionID: string, on?: string) =>
   api<ListResponse<TaxRate>>(
     `/taxes/definitions/${encodeURIComponent(definitionID)}/rates${on ? `?on=${encodeURIComponent(on)}` : ''}`

@@ -1,4 +1,5 @@
 <script module lang="ts">
+  import { errorMessage } from '$lib/errors';
   import type { VariantDefinition, VariantOption } from '$lib/features/products/types';
 
   type ValidationSubject = 'definition' | 'option';
@@ -108,7 +109,7 @@
           : typeof detail?.message === 'string'
             ? detail.message
             : undefined;
-      if (message) result[field] = message;
+      if (message) result[field] = errorMessage(message, 'Alanı kontrol edin.');
     }
     return result;
   }
@@ -130,7 +131,7 @@
         ? 'Seçenek bilgileri sunucu tarafından kabul edilmedi. Kod ve ad alanlarını kontrol edin.'
         : 'Tanım bilgileri sunucu tarafından kabul edilmedi. Kod ve ad alanlarını kontrol edin.';
     }
-    return message || (cause instanceof Error ? cause.message : fallback);
+    return message || errorMessage(cause, fallback);
   }
 
   export function variantErrorTraceID(cause: unknown): string {
@@ -723,6 +724,7 @@
 <style>
   .page-shell {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 1rem;
   }
   .page-header {

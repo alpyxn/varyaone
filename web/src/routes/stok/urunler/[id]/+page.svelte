@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { ArrowLeft, Ban, Check, Plus, Save } from '@lucide/svelte';
   import { api, type Session } from '$lib/api';
   import { onMount } from 'svelte';
@@ -490,7 +491,7 @@
         return 'Bu varyantın kimliği ilk stok hareketinden sonra kilitlendi.';
       if ('message' in cause && cause.message) return String(cause.message);
     }
-    return cause instanceof Error ? cause.message : fallback;
+    return errorMessage(cause, fallback);
   }
 
   let confirmOpen = $state(false);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { LayoutGrid, TriangleAlert } from '@lucide/svelte';
@@ -33,7 +34,7 @@
         await goto('/giris');
         return;
       }
-      error = cause instanceof Error ? cause.message : 'Modüller yüklenemedi.';
+      error = errorMessage(cause, 'Modüller yüklenemedi.');
     } finally {
       loading = false;
     }

@@ -8,6 +8,8 @@
   import { formatDate } from '$lib/design/formatters';
   import * as hr from '$lib/features/hr/api';
   import { EmailComposer } from '$lib/components/varya/email-composer';
+  import { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
   import NegativeBalanceReason from '$lib/features/finance/NegativeBalanceReason.svelte';
   import { Dialog } from 'bits-ui';
   import { X } from '@lucide/svelte';
@@ -193,6 +195,17 @@
 
   let emailOpen = $state(false);
 
+  // Düzenlenebilir e-posta alanları EmailComposer içinde yaşıyor; model ve
+  // gönderim durumu oradan devralınır. Gönderim sürerken kapanma engellenir.
+  const emailUnsaved = new UnsavedChangesGuard({
+    snapshot: () => ({}),
+    onClose: () => {
+      emailOpen = false;
+    }
+  });
+
+  $effect(() => emailUnsaved.registerPageGuard('Ücret pusulası e-postası'));
+
   async function openEmailDialog() {
     previewLoading = true;
     previewError = '';
@@ -350,24 +363,32 @@
       {/if}
 
       {#if payments.some((p) => p.status === 'REVERSED')}
-        <table class="reversed">
-          <thead
-            ><tr
-              ><th>Geri alınan ödeme</th><th class="num">Tutar</th><th>Tarih</th><th>Gerekçe</th
-              ></tr
-            ></thead
-          >
-          <tbody>
-            {#each payments.filter((p) => p.status === 'REVERSED') as p}
-              <tr>
-                <td>{p.account_name} · {accountKind(p.account_type)}</td>
-                <td class="num">{money(p.amount)} ₺</td>
-                <td>{formatDate(p.payment_date)}</td>
-                <td>{p.reversal_reason ?? '—'}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="region"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
+          <table class="reversed">
+            <thead
+              ><tr
+                ><th>Geri alınan ödeme</th><th class="num">Tutar</th><th>Tarih</th><th>Gerekçe</th
+                ></tr
+              ></thead
+            >
+            <tbody>
+              {#each payments.filter((p) => p.status === 'REVERSED') as p}
+                <tr>
+                  <td>{p.account_name} · {accountKind(p.account_type)}</td>
+                  <td class="num">{money(p.amount)} ₺</td>
+                  <td>{formatDate(p.payment_date)}</td>
+                  <td>{p.reversal_reason ?? '—'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
   {/if}
@@ -375,23 +396,31 @@
   {#if run.generations?.length}
     <section class="card">
       <h2>Hesaplama sürümleri</h2>
-      <table>
-        <thead><tr><th>#</th><th>Durum</th><th>Başlangıç</th><th>Hatalar</th></tr></thead>
-        <tbody>
-          {#each run.generations as g}
-            <tr>
-              <td>{g.generation_no}</td>
-              <td><Badge tone={statusTone(g.status)}>{payrollStatusLabel(g.status)}</Badge></td>
-              <td>{formatDate(g.started_at, true)}</td>
-              <td
-                >{Array.isArray(g.error_summary) && g.error_summary.length
-                  ? `${g.error_summary.length} hata`
-                  : '—'}</td
-              >
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
+        <table>
+          <thead><tr><th>#</th><th>Durum</th><th>Başlangıç</th><th>Hatalar</th></tr></thead>
+          <tbody>
+            {#each run.generations as g}
+              <tr>
+                <td>{g.generation_no}</td>
+                <td><Badge tone={statusTone(g.status)}>{payrollStatusLabel(g.status)}</Badge></td>
+                <td>{formatDate(g.started_at, true)}</td>
+                <td
+                  >{Array.isArray(g.error_summary) && g.error_summary.length
+                    ? `${g.error_summary.length} hata`
+                    : '—'}</td
+                >
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     </section>
   {/if}
 
@@ -401,32 +430,42 @@
       <p class="state">Henüz hesaplanmadı.</p>
     {:else}
       <div class="scroll">
-        <table>
-          <thead
-            ><tr
-              ><th>Çalışan</th><th>Durum</th><th class="num">Brüt</th><th class="num">Net</th><th
-                class="num">İşveren maliyeti</th
-              ><th>Hata</th></tr
-            ></thead
-          >
-          <tbody>
-            {#each run.employee_payrolls as ep}
-              <tr>
-                <td>{ep.employee_name}</td>
-                <td><Badge tone={statusTone(ep.status)}>{payrollStatusLabel(ep.status)}</Badge></td>
-                <td class="num">{money(ep.gross)} ₺</td>
-                <td class="num">{money(ep.net)} ₺</td>
-                <td class="num">{money(ep.employer_cost)} ₺</td>
-                <td class="err">
-                  {#if ep.status === 'FAILED'}
-                    {payrollErrorInfo(payrollErrorDetails(ep.error_details)[0] ?? { code: '' })
-                      .title}
-                  {:else}—{/if}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="region"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
+          <table>
+            <thead
+              ><tr
+                ><th>Çalışan</th><th>Durum</th><th class="num">Brüt</th><th class="num">Net</th><th
+                  class="num">İşveren maliyeti</th
+                ><th>Hata</th></tr
+              ></thead
+            >
+            <tbody>
+              {#each run.employee_payrolls as ep}
+                <tr>
+                  <td>{ep.employee_name}</td>
+                  <td
+                    ><Badge tone={statusTone(ep.status)}>{payrollStatusLabel(ep.status)}</Badge></td
+                  >
+                  <td class="num">{money(ep.gross)} ₺</td>
+                  <td class="num">{money(ep.net)} ₺</td>
+                  <td class="num">{money(ep.employer_cost)} ₺</td>
+                  <td class="err">
+                    {#if ep.status === 'FAILED'}
+                      {payrollErrorInfo(payrollErrorDetails(ep.error_details)[0] ?? { code: '' })
+                        .title}
+                    {:else}—{/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </div>
     {/if}
 
@@ -470,19 +509,28 @@
         {/if}
       </div>
       {#if payslips.length}
-        <table>
-          <thead><tr><th>Çalışan</th><th class="num">Boyut</th><th>Tarih</th><th></th></tr></thead>
-          <tbody>
-            {#each payslips as ps}
-              <tr>
-                <td>{ps.employee_name}</td>
-                <td class="num">{(ps.size_bytes / 1024).toFixed(0)} KB</td>
-                <td>{formatDate(ps.created_at)}</td>
-                <td><a href={hr.payslipDownloadURL(ps.id)}>İndir</a></td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="region"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
+          <table>
+            <thead><tr><th>Çalışan</th><th class="num">Boyut</th><th>Tarih</th><th></th></tr></thead
+            >
+            <tbody>
+              {#each payslips as ps}
+                <tr>
+                  <td>{ps.employee_name}</td>
+                  <td class="num">{(ps.size_bytes / 1024).toFixed(0)} KB</td>
+                  <td>{formatDate(ps.created_at)}</td>
+                  <td><a href={hr.payslipDownloadURL(ps.id)}>İndir</a></td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {:else}
         <p class="state">Henüz pusula üretilmedi.</p>
       {/if}
@@ -501,7 +549,14 @@
       <Dialog.Root bind:open={emailOpen}>
         <Dialog.Portal>
           <Dialog.Overlay class="ec-overlay" />
-          <Dialog.Content class="ec-dialog">
+          <Dialog.Content
+            class="ec-dialog"
+            onInteractOutside={(event) => event.preventDefault()}
+            onEscapeKeydown={(event) => {
+              event.preventDefault();
+              emailUnsaved.requestClose();
+            }}
+          >
             <div class="ec-head">
               <div>
                 <Dialog.Title>Ücret pusulası e-postası</Dialog.Title>
@@ -509,7 +564,13 @@
                   >{periodText} · pusulalar seçili taslak/metinle gönderilir.</Dialog.Description
                 >
               </div>
-              <Dialog.Close class="ec-close" aria-label="Kapat"><X size={17} /></Dialog.Close>
+              <button
+                class="ec-close"
+                type="button"
+                aria-label="Kapat"
+                disabled={emailUnsaved.busy}
+                onclick={() => emailUnsaved.requestClose()}><X size={17} /></button
+              >
             </div>
 
             <div class="ec-body">
@@ -529,14 +590,21 @@
                   variables={preview.variables}
                   attachmentNote="Her çalışana kendi ücret hesap pusulası PDF'i eklenir."
                   lockRecipients
+                  guard={emailUnsaved}
                   onSend={sendPayslipEmail}
-                  onDone={() => (emailOpen = false)}
+                  onDone={() => emailUnsaved.requestClose()}
                 />
               {/if}
             </div>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+
+      <UnsavedChangesDialog
+        bind:open={emailUnsaved.confirmOpen}
+        onKeepEditing={() => emailUnsaved.keepEditing()}
+        onDiscard={() => emailUnsaved.discardAndClose()}
+      />
     {/if}
   {/if}
 {/if}

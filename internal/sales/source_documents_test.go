@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestSalesSourceDocumentReferenceUsesAuthoritativeMetadata(t *testing.T) {
+func TestSalesSourceTypesMapToKindAndLifecycle(t *testing.T) {
 	tests := []struct {
 		code, kind, status, lifecycle string
 	}{
@@ -36,34 +36,7 @@ func TestSalesSourceDocumentReferenceUsesAuthoritativeMetadata(t *testing.T) {
 			if got := commercialLifecycleStatus(spec.kind, test.status); got != test.lifecycle {
 				t.Fatalf("source lifecycle = %q, want %q", got, test.lifecycle)
 			}
-
-			reference := SourceDocumentReference{
-				ID:               "source-id",
-				DocumentNo:       "IRS-001",
-				DocumentTypeCode: test.code,
-				Kind:             test.kind,
-				RelationType:     "INVOICING",
-				Direction:        "SOURCE",
-				LifecycleStatus:  test.lifecycle,
-				Status:           test.status,
-			}
-			if reference.DocumentNo != "IRS-001" || reference.RelationType != "INVOICING" || reference.Direction != "SOURCE" {
-				t.Fatalf("source reference lost authoritative fields: %+v", reference)
-			}
 		})
-	}
-}
-
-func TestSalesSourceDocumentReferencesPreserveMultipleRelations(t *testing.T) {
-	sources := []SourceDocumentReference{
-		{ID: "dispatch-id", DocumentNo: "IRS-001", DocumentTypeCode: "SALES_DELIVERY", Kind: "DISPATCH", RelationType: "FULFILLMENT", Direction: "SOURCE", LifecycleStatus: "FINALIZED", Status: "POSTED"},
-		{ID: "order-id", DocumentNo: "SIP-001", DocumentTypeCode: "SALES_ORDER", Kind: "ORDER", RelationType: "CONVERSION", Direction: "SOURCE", LifecycleStatus: "OPEN", Status: "CONFIRMED"},
-	}
-	if len(sources) != 2 || sources[0].DocumentNo != "IRS-001" || sources[1].DocumentNo != "SIP-001" {
-		t.Fatalf("multiple source references were not retained: %+v", sources)
-	}
-	if sources[0].RelationType == sources[1].RelationType {
-		t.Fatal("distinct source relation types were collapsed")
 	}
 }
 

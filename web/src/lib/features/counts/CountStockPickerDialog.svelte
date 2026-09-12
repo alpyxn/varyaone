@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { dismissOnBackdrop } from '$lib/components/varya/dismiss-on-backdrop';
+  import { errorMessage } from '$lib/errors';
   import { ChevronDown, ChevronRight, LoaderCircle, Search, X } from '@lucide/svelte';
   import { onDestroy, untrack } from 'svelte';
   import {
@@ -113,7 +115,7 @@
   });
 
   function messageFrom(errorValue: unknown, fallback: string) {
-    return errorValue instanceof Error && errorValue.message ? errorValue.message : fallback;
+    return errorMessage(errorValue, fallback);
   }
 
   async function loadReferences() {
@@ -306,11 +308,7 @@
 <svelte:window onkeydown={handleWindowKeydown} />
 
 {#if open}
-  <div
-    class="picker-overlay"
-    role="presentation"
-    onclick={(event) => event.target === event.currentTarget && closeDialog()}
-  >
+  <div class="picker-overlay" role="presentation" use:dismissOnBackdrop={closeDialog}>
     <div
       bind:this={dialogElement}
       class="picker-dialog"

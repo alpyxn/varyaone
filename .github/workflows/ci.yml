@@ -7,9 +7,124 @@ on:
 permissions:
   contents: read
 
+# A new commit on a pull request makes the previous run's answer worthless, so
+# only pull_request runs are cancelled. Pushes key the group on the commit SHA
+# instead: each one gets a group of its own, so a push to main, a tag build or a
+# second pull request is never cancelled -- and never queued -- behind another.
+concurrency:
+  group: >-
+    ci-${{ github.workflow }}-${{
+      github.event_name == 'pull_request'
+        && format('pr-{0}', github.event.pull_request.number)
+        || github.sha
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # How many PostgreSQL servers the integration packages are spread across.
+  # The backend-db matrix below must list exactly these group numbers; the
+  # `backend` summary job proves after the fact that the groups that actually
+  # ran cover every database package, so a mismatch cannot silently skip one.
+  #
+  # Only CI knobs belong at workflow level. VARYAONE_* variables stay on the
+  # jobs that had them before the split: desktop's Supervisor.masterKey() falls
+  # back to $VARYAONE_MASTER_KEY, and a workflow-wide value would quietly send
+  # a future test of it down a branch it never takes locally.
+  DB_GROUP_COUNT: 2
+
 jobs:
-  backend:
+  # Pure Go packages: no PostgreSQL service, no PostgreSQL client, no apt.
+  # These used to wait behind the integration suite in one long backend job.
+  backend-unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Deliberately still set, and deliberately pointing at nothing. No unit
+      # package opens a pool (only internal/platform/database does, and that is
+      # a database package), but config parses these strings, so removing them
+      # would change what the config tests see.
+      VARYAONE_DATABASE_URL: postgres://varyaone:test-only-password@localhost:5432/varyaone_test?sslmode=disable
+      VARYAONE_TEST_DATABASE_URL: postgres://varyaone:test-only-password@localhost:5432/varyaone_test?sslmode=disable
+      # config.Load() always requires a key; migrate/status never decrypt with
+      # it. 32 zero bytes, base64 — matches the config package's own fixtures.
+      VARYAONE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: The database/unit split classifies packages correctly
+        # The split decides which packages get a PostgreSQL server. A misfiled
+        # integration package does not fail here — it joins the parallel batch
+        # and races the others through PostgreSQL's shared lock table, which
+        # surfaces as an unrelated flake somewhere else.
+        run: python3 .github/scripts/db_test_groups_test.py
+      - name: Database test groups are a complete, disjoint partition
+        run: python3 .github/scripts/db_test_groups.py verify --count "$DB_GROUP_COUNT"
+      - name: Unit tests
+        shell: bash
+        run: |
+          # The package split lives in one script so this job, the integration
+          # jobs and the coverage check can never disagree about which packages
+          # are database-backed.
+          # Written to a file first, on purpose. Process substitution discards
+          # the producer's exit status: a script that failed contributed an
+          # empty list and `go test` was then handed no packages at all, which
+          # succeeds — a whole test batch silently not running, reported green.
+          python3 .github/scripts/db_test_groups.py unit > "$RUNNER_TEMP/unit.txt"
+          mapfile -t unit_packages < "$RUNNER_TEMP/unit.txt"
+          # An empty or malformed list is refused rather than passed on: `go
+          # test` with no arguments, or with a blank one, does not fail.
+          [ ${#unit_packages[@]} -gt 0 ] || { echo "paket listesi boş" >&2; exit 1; }
+          for package in "${unit_packages[@]}"; do
+            case "$package" in
+              "" | -*) echo "geçersiz paket: '$package'" >&2; exit 1 ;;
+            esac
+          done
+          go test -race "${unit_packages[@]}"
+      - name: Tests left the working tree clean
+        # The pre-split job ran the tests and `git diff --exit-code` on one
+        # checkout, so the diff covered test fallout as well as generated code.
+        # Splitting the jobs would have quietly narrowed that to the generator.
+        run: git diff --exit-code
+
+  # Format, vet and staticcheck. None of them needs a database, so none of them
+  # should have been queued behind the integration suite.
+  backend-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: test -z "$(gofmt -l cmd internal)"
+      - run: go vet ./...
+      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.6.1 ./...
+
+  # Generated code. oapi-codegen and sqlc both read files, never a server, so
+  # this job needs no PostgreSQL either. The three steps stay in this order on
+  # one checkout: `git diff` is what turns a stale generator into a failure.
+  backend-generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go generate ./...
+      - run: docker run --rm -v "$PWD:/src" -w /src sqlc/sqlc:1.30.0 generate
+      - run: git diff --exit-code
+
+  # The migration chain wants a database nobody else has touched, which it now
+  # genuinely has: this job owns its PostgreSQL server outright.
+  backend-migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         # Pin the verified multi-architecture image. The 18.4-alpine tag is
@@ -28,9 +143,8 @@ jobs:
           --health-retries 20
     env:
       VARYAONE_DATABASE_URL: postgres://varyaone:test-only-password@localhost:5432/varyaone_test?sslmode=disable
-      VARYAONE_TEST_DATABASE_URL: postgres://varyaone:test-only-password@localhost:5432/varyaone_test?sslmode=disable
-      # config.Load() always requires a key; migrate/status never decrypt with it.
-      # 32 zero bytes, base64 — matches the config package's own test fixtures.
+      # config.Load() always requires a key; migrate/status never decrypt with
+      # it. 32 zero bytes, base64 — matches the config package's own fixtures.
       VARYAONE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     steps:
       - uses: actions/checkout@v4
@@ -38,8 +152,90 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: test -z "$(gofmt -l cmd internal)"
+      - name: Build the CLI up front
+        # Built once, on purpose. `go run` would compile inside the "expected to
+        # fail" step below, where a compile error looks exactly like a reported
+        # pending migration.
+        run: go build -o "$RUNNER_TEMP/varyaone" ./cmd/varyaone
+      - name: Pending migrations are reported on a fresh database
+        shell: bash
+        run: |
+          set +e
+          output="$("$RUNNER_TEMP/varyaone" migrate status 2>&1)"
+          code=$?
+          set -e
+          printf '%s\n' "$output"
+          # A non-zero exit is not enough. A refused connection, a missing key
+          # or a broken binary all exit non-zero too, and any of them would let
+          # a genuinely-applied-migrations database pass this check. Insist on
+          # the status line itself, and on it actually reporting work pending.
+          [ "$code" -ne 0 ] || {
+            echo "expected 'migrate status' to fail on a fresh database" >&2
+            exit 1
+          }
+          pending="$(printf '%s\n' "$output" |
+            sed -n 's/.*[[:space:]]pending=\([0-9]\{1,\}\).*/\1/p' | tail -n 1)"
+          [ -n "$pending" ] || {
+            echo "no 'pending=' status line: this failure was not a pending migration" >&2
+            exit 1
+          }
+          [ "$pending" -gt 0 ] || {
+            echo "status reported pending=0 but still failed" >&2
+            exit 1
+          }
+      - run: $RUNNER_TEMP/varyaone migrate up
+      - name: Nothing is pending afterwards
+        shell: bash
+        run: |
+          output="$("$RUNNER_TEMP/varyaone" migrate status)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -q '[[:space:]]pending=0'
+
+  # The integration packages run with -race -p 1: serial on purpose, because
+  # their catalog work races on PostgreSQL OIDs and shares one lock table. The
+  # only safe way to shorten them is more servers, not more parallelism inside
+  # one. Each matrix leg gets a PostgreSQL container of its own -- separate
+  # schemas on one shared server would not be the same isolation.
+  backend-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Must list exactly 1..DB_GROUP_COUNT. The `backend` job re-derives the
+        # union of what ran and fails if it is not the full inventory.
+        group: [1, 2]
+    services:
+      postgres:
+        image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_DB: varyaone_test
+          POSTGRES_USER: varyaone
+          POSTGRES_PASSWORD: test-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U varyaone -d varyaone_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      VARYAONE_DATABASE_URL: postgres://varyaone:test-only-password@localhost:5432/varyaone_test?sslmode=disable
+      VARYAONE_TEST_DATABASE_URL: postgres://varyaone:test-only-password@localhost:5432/varyaone_test?sslmode=disable
+      # config.Load() always requires a key; migrate/status never decrypt with
+      # it. 32 zero bytes, base64 — matches the config package's own fixtures.
+      VARYAONE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: PostgreSQL 18 client (backup engine tests shell out to pg_dump)
+        # Installed on both groups on purpose: internal/backup,
+        # internal/platform/migrations and internal/platform/httpapi all reach
+        # for these binaries, and rebalancing the groups must not be able to
+        # strand one of them on a runner without them.
         run: |
           sudo sh -c 'echo "deb [arch=amd64] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
@@ -55,71 +251,109 @@ jobs:
             --command 'CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public'
           test "$(psql "$VARYAONE_TEST_DATABASE_URL" --tuples-only --no-align \
             --command "SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='btree_gist'")" = public
-      - name: Tests (unit packages parallel, database packages serial)
+      - name: Resolve group ${{ matrix.group }}
         shell: bash
         run: |
-          # Only packages whose tests use the shared PostgreSQL service need
-          # -p 1; serialising every pure unit package made the whole suite wait.
-          # Use git grep: it is guaranteed on an actions/checkout runner, while
-          # ripgrep is not part of GitHub's runner contract. An empty result is
-          # a hard failure, otherwise DB tests would silently join the parallel
-          # unit batch and exhaust PostgreSQL's shared lock table.
-          db_test_files_text="$(
-            git grep -l 'VARYAONE_TEST_DATABASE_URL' -- cmd internal |
-              awk '/_test\.go$/'
-          )"
-          mapfile -t db_test_files <<< "$db_test_files_text"
-          ((${#db_test_files[@]} > 0)) || {
-            echo "database-backed test package detection returned no files" >&2
-            exit 1
-          }
-          db_packages_text="$(
-            printf '%s\n' "${db_test_files[@]}" |
-              xargs -r -n1 dirname | sort -u |
-              sed "s#^#$(go list -m)/#"
-          )"
-          mapfile -t db_packages <<< "$db_packages_text"
-          all_packages_text="$(go list ./... | sort -u)"
-          mapfile -t all_packages <<< "$all_packages_text"
-          unit_packages_text="$(
-            comm -23 \
-              <(printf '%s\n' "${all_packages[@]}") \
-              <(printf '%s\n' "${db_packages[@]}")
-          )"
-          mapfile -t unit_packages <<< "$unit_packages_text"
-          ((${#all_packages[@]} == ${#unit_packages[@]} + ${#db_packages[@]})) || {
-            echo "Go package partition is incomplete or overlapping" >&2
-            exit 1
-          }
-          # Never pass an empty/root filesystem path to `go test`; package
-          # import paths remain stable across local and GitHub runner layouts.
-          module_path="$(go list -m)"
-          for package in "${unit_packages[@]}" "${db_packages[@]}"; do
-            [[ "$package" == "$module_path" || "$package" == "$module_path/"* ]] || {
-              echo "refusing invalid Go package argument: '$package'" >&2
-              exit 1
-            }
+          python3 .github/scripts/db_test_groups.py \
+            group --index "${{ matrix.group }}" --count "$DB_GROUP_COUNT" \
+            > "$RUNNER_TEMP/group.txt"
+          cat "$RUNNER_TEMP/group.txt"
+      - name: Integration tests (group ${{ matrix.group }})
+        shell: bash
+        run: |
+          mapfile -t packages < "$RUNNER_TEMP/group.txt"
+          # An empty or malformed list is refused rather than passed on: `go
+          # test` with no arguments, or with a blank one, does not fail.
+          [ ${#packages[@]} -gt 0 ] || { echo "paket listesi boş" >&2; exit 1; }
+          for package in "${packages[@]}"; do
+            case "$package" in
+              "" | -*) echo "geçersiz paket: '$package'" >&2; exit 1 ;;
+            esac
           done
-          go test -race "${unit_packages[@]}"
-          # Integration packages each migrate an isolated schema, but their
-          # catalog work is intentionally serial to avoid PostgreSQL OID races.
-          go test -race -p 1 "${db_packages[@]}"
-      - run: go vet ./...
-      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.6.1 ./...
-      - name: Verify pending migration is reported
-        run: if go run ./cmd/varyaone migrate status; then exit 1; fi
-      - run: go run ./cmd/varyaone migrate up
-      - run: go run ./cmd/varyaone migrate status
-      - run: go generate ./...
-      - run: docker run --rm -v "$PWD:/src" -w /src sqlc/sqlc:1.30.0 generate
-      - run: git diff --exit-code
+          go test -race -p 1 "${packages[@]}"
+      - name: Tests left the working tree clean
+        run: git diff --exit-code
+      - name: Record which packages this group ran
+        # Uploaded so the `backend` job can prove the groups together covered
+        # every database package, rather than trusting the matrix to match
+        # DB_GROUP_COUNT.
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-group-${{ matrix.group }}
+          path: ${{ runner.temp }}/group.txt
+          retention-days: 1
+
+  # Keeps the pre-split required check name alive and, more importantly, is the
+  # single place that turns any backend failure into a failed CI run.
+  backend:
+    if: always()
+    needs:
+      - backend-unit
+      - backend-analysis
+      - backend-generate
+      - backend-migrations
+      - backend-db
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Every backend job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        shell: bash
+        run: |
+          printf '%s\n' "$RESULTS"
+          # `always()` means this job also runs when a dependency failed, was
+          # cancelled or was skipped. Only "success" is success; anything else,
+          # including an unexpected skip, fails CI.
+          count="$(printf '%s' "$RESULTS" | jq -r 'length')"
+          [ "$count" -gt 0 ] || { echo "no dependency results to check" >&2; exit 1; }
+          bad="$(printf '%s' "$RESULTS" |
+            jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"')"
+          if [ -n "$bad" ]; then
+            echo "backend jobs that did not succeed:" >&2
+            printf '%s\n' "$bad" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: db-group-*
+          path: ${{ runner.temp }}/groups
+          merge-multiple: false
+      - name: The groups that ran covered every database package
+        shell: bash
+        run: |
+          # The real coverage guard. If the matrix and DB_GROUP_COUNT ever drift
+          # apart, or a group is dropped, the union stops matching the inventory
+          # and CI fails instead of quietly testing less than it used to.
+          cat "$RUNNER_TEMP"/groups/db-group-*/group.txt | sort -u > "$RUNNER_TEMP/ran.txt"
+          python3 .github/scripts/db_test_groups.py all | sort -u > "$RUNNER_TEMP/expected.txt"
+          if ! diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/ran.txt"; then
+            echo "the database packages that ran are not the full inventory" >&2
+            exit 1
+          fi
+          # sort -u above would hide a package claimed by two groups, so count
+          # the raw lines too.
+          raw="$(cat "$RUNNER_TEMP"/groups/db-group-*/group.txt | wc -l)"
+          uniq="$(wc -l < "$RUNNER_TEMP/ran.txt")"
+          [ "$raw" -eq "$uniq" ] || {
+            echo "a database package was run by more than one group" >&2
+            exit 1
+          }
+          echo "$uniq database packages ran across $DB_GROUP_COUNT groups"
 
   # The Windows desktop runtime (service control, tray, WebView2 client, the
-  # spawn/diskfree shims) lives behind //go:build windows, so the Linux job above
-  # never compiles it. Without this, a Windows-only break is invisible until the
-  # release tag builds the bundle — the most expensive possible moment to find it.
+  # spawn/diskfree shims) lives behind //go:build windows, so the Linux jobs
+  # above never compile it. Without this, a Windows-only break is invisible until
+  # the release tag builds the bundle — the most expensive possible moment to
+  # find it.
   windows-desktop:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -138,6 +372,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
@@ -154,8 +389,169 @@ jobs:
       - run: npm run test
       - run: npm run build
 
+  # Browser tests against a stack this job builds, seeds and throws away. It
+  # deliberately shares nothing with the backend database jobs: those run the Go
+  # integration suite, this one drives the real UI through the real API, and a
+  # shared server would let one reseed the other mid-run.
+  frontend-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_DB: varyaone_e2e
+          POSTGRES_USER: varyaone
+          POSTGRES_PASSWORD: test-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U varyaone -d varyaone_e2e"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      VARYAONE_DATABASE_URL: postgres://varyaone:test-only-password@localhost:5432/varyaone_e2e?sslmode=disable
+      # config.Load() always requires a key; nothing here decrypts with it.
+      VARYAONE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      VARYAONE_ENV: development
+      VARYAONE_HTTP_ADDR: 127.0.0.1:18099
+      VARYAONE_WEB_ORIGIN: http://127.0.0.1:5199
+      VARYAONE_STORAGE_PROVIDER: local
+      # No install ping and no feedback endpoint from a CI run.
+      VARYAONE_PULSE_ENDPOINT: ''
+      VARYAONE_PULSE_INGEST_KEY: ''
+      # What the frontend proxies to, and what the browser talks to.
+      VARYAONE_API_INTERNAL_URL: http://127.0.0.1:18099
+      VARYAONE_E2E_BASE_URL: http://127.0.0.1:5199
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: PostgreSQL 18 client
+        # Not optional here. The server only mounts the backup and operation
+        # routes when pg_dump/pg_restore exist, so without these the settings
+        # backup screen is a different page than the one that ships and the
+        # suite would be testing a deployment nobody runs.
+        run: |
+          sudo sh -c 'echo "deb [arch=amd64] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
+          echo "/usr/lib/postgresql/18/bin" >> "$GITHUB_PATH"
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci --prefer-offline --no-audit
+      - name: Resolve the Playwright version
+        # The browser cache key has to name the exact version: a browser build
+        # from an older Playwright is not interchangeable with this one.
+        id: playwright
+        working-directory: web
+        run: |
+          version="$(node -p "require('@playwright/test/package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Cache the browser
+        id: browser-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Chromium
+        # Only Chromium. Downloading Firefox and WebKit for a suite that never
+        # opens them is minutes of runner time per run, every run.
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+        if: steps.browser-cache.outputs.cache-hit != 'true'
+      - name: System libraries for the cached browser
+        # A cache hit restores the browser but not the shared libraries it links
+        # against, which live outside the cached path.
+        working-directory: web
+        run: npx playwright install-deps chromium
+        if: steps.browser-cache.outputs.cache-hit == 'true'
+      - name: Bring up the stack
+        run: .github/scripts/e2e_stack.sh up
+      - name: Quick checks
+        # Sign-in, the shell, the busiest forms and the critical flows. Reported
+        # separately so the first answer arrives before the full sweep finishes.
+        # `continue-on-error` does not weaken the gate: the verdict step below
+        # reads this step's outcome and fails the job on it. What it buys is the
+        # full sweep still running after a quick failure, so one push produces
+        # the whole diagnosis instead of one layer at a time.
+        id: quick
+        continue-on-error: true
+        working-directory: web
+        env:
+          VARYAONE_E2E_LAYER: quick
+        run: npx playwright test
+      - name: Full checks
+        # Everything else: the whole route inventory at three widths, every
+        # record page, and the write flows. Runs even when the quick layer
+        # failed; skipped only when the stack never came up, because then there
+        # is nothing to test against.
+        id: full
+        continue-on-error: true
+        working-directory: web
+        env:
+          VARYAONE_E2E_LAYER: full
+        run: npx playwright test
+      - name: Collect the server logs
+        if: always()
+        # A missing log directory means the stack never started. Copying it
+        # blind turned that into "cp: cannot stat", which replaced the real
+        # error in the step summary with a message about a missing directory.
+        run: |
+          mkdir -p web/playwright-report
+          if [ -d "$RUNNER_TEMP/e2e-logs" ]; then
+            cp -r "$RUNNER_TEMP/e2e-logs" web/playwright-report/server-logs
+          else
+            echo "Stack logs were never written: $RUNNER_TEMP/e2e-logs does not exist." \
+              | tee web/playwright-report/server-logs-missing.txt
+            echo "The stack did not start; see the 'Bring up the stack' step." \
+              | tee -a web/playwright-report/server-logs-missing.txt
+          fi
+      - name: Publish the report
+        # `always()`, so a failing run still uploads the traces that explain it.
+        # Uploading must never be what decides the job: the test steps above
+        # already did.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report
+          retention-days: 3
+      - name: Tear down
+        if: always()
+        run: .github/scripts/e2e_stack.sh down
+      - name: Verdict
+        # The single place that turns either layer's failure into a failed job.
+        # Neither layer decides on its own, and a cancelled or skipped layer is
+        # not a pass.
+        if: always()
+        run: |
+          quick='${{ steps.quick.outcome }}'
+          full='${{ steps.full.outcome }}'
+          echo "quick=$quick full=$full"
+          failed=0
+          for layer in "quick:$quick" "full:$full"; do
+            name=${layer%%:*}
+            outcome=${layer#*:}
+            case "$outcome" in
+              success) ;;
+              *) echo "E2E $name katmanı: $outcome" >&2; failed=1 ;;
+            esac
+          done
+          [ "$failed" = 0 ] || exit 1
+
   containers:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

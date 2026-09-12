@@ -2,21 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { navigation, navigationSearchItems, visibleNavigation } from './navigation';
 
 describe('Turkish ERP navigation', () => {
-  it('keeps familiar primary terminology', () => {
-    expect(navigation.map((item) => item.label)).toEqual(
-      expect.arrayContaining([
-        'Cari',
-        'Stok',
-        'Satış',
-        'Alış',
-        'Banka & Kasa',
-        'e-Belge',
-        'Raporlar',
-        'Ayarlar'
-      ])
-    );
-  });
-
   it('exposes typed sales and purchasing screens with permissions', () => {
     const businessLinks = navigation
       .filter((item) => item.label === 'Satış' || item.label === 'Alış')

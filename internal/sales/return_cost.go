@@ -23,10 +23,21 @@ func resolveSalesReturnLineCostTx(ctx context.Context, tx pgx.Tx, companyID stri
 		return "", "", nil
 	}
 	rows, err := tx.Query(ctx, `
+		WITH source_lines AS (
+			SELECT $2::uuid AS id
+			UNION
+			-- A dispatch-backed invoice owns no stock movement. Its immutable
+			-- source line identifies the dispatch which actually consumed FIFO.
+			SELECT l.source_line_id
+			FROM sales_invoice_lines l
+			JOIN commercial_line_registry r
+			  ON r.company_id=l.company_id AND r.line_id=l.source_line_id
+			WHERE l.company_id=$1 AND l.id=$2 AND r.aggregate_type='SALES_DISPATCH'
+		)
 		SELECT c.quantity::text, c.unit_cost::text, c.currency
 		  FROM stock_cost_consumptions c
 		  JOIN stock_movements m ON m.company_id = c.company_id AND m.id = c.movement_id
-		 WHERE c.company_id = $1 AND m.source_line_id = $2 AND m.direction = 'OUT'`,
+		 WHERE c.company_id = $1 AND m.source_line_id IN (SELECT id FROM source_lines) AND m.direction = 'OUT'`,
 		companyID, *sourceLineID)
 	if err != nil {
 		return "", "", err

@@ -194,54 +194,5 @@ type OverdueRow struct {
 }
 
 func (s *Service) OverdueReceivables(ctx context.Context, session identity.Session, asOf time.Time) ([]OverdueRow, error) {
-	if !canRead(session) {
-		return nil, identity.ErrForbidden
-	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT oi.document_id, h.document_no, pt.display_name, oi.due_date::text, oi.currency
-		  FROM finance_invoice_open_items oi
-		  JOIN sales_invoices h ON h.company_id=oi.company_id AND h.id=oi.document_id
-		  JOIN parties pt ON pt.company_id=oi.company_id AND pt.id=oi.party_id
-		 WHERE oi.company_id=$1 AND oi.side='RECEIVABLE' AND oi.due_date IS NOT NULL AND oi.due_date < $2
-		 ORDER BY oi.due_date`, session.CurrentCompanyID, asOf)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	type candidate struct {
-		documentID, documentNo, partyName, dueDate, currency string
-	}
-	candidates := []candidate{}
-	for rows.Next() {
-		var c candidate
-		if err = rows.Scan(&c.documentID, &c.documentNo, &c.partyName, &c.dueDate, &c.currency); err != nil {
-			return nil, err
-		}
-		candidates = append(candidates, c)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-
-	items := make([]OverdueRow, 0, len(candidates))
-	for _, c := range candidates {
-		settlement, settleErr := s.finance.ReadDocumentSettlement(ctx, session.CurrentCompanyID, c.documentID)
-		if settleErr != nil {
-			return nil, settleErr
-		}
-		outstanding := settlement.OutstandingAmount()
-		if outstanding == "" || outstanding == "0" || outstanding == "0.0000" {
-			continue
-		}
-		due, parseErr := time.Parse("2006-01-02", c.dueDate)
-		daysOverdue := 0
-		if parseErr == nil {
-			daysOverdue = int(asOf.Sub(due).Hours() / 24)
-		}
-		items = append(items, OverdueRow{
-			DocumentID: c.documentID, DocumentNo: c.documentNo, PartyName: c.partyName,
-			DueDate: c.dueDate, DaysOverdue: daysOverdue, AmountDue: outstanding, Currency: c.currency,
-		})
-	}
-	return items, nil
+	return s.scheduledOverdue(ctx, session, asOf, "RECEIVABLE")
 }

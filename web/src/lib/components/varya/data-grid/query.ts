@@ -37,3 +37,15 @@ export function gridQueryToSearchParams(query: VaryaGridQuery) {
   }
   return params;
 }
+
+/** A cursor belongs to one ordering; sorting always starts from the first page. */
+export function withGridSorting(query: VaryaGridQuery, sorting: VaryaSort[]): VaryaGridQuery {
+  return {
+    ...query,
+    sorting,
+    pagination:
+      query.pagination.mode === 'cursor'
+        ? { mode: 'cursor', pageSize: query.pagination.pageSize }
+        : { ...query.pagination, page: 1 }
+  };
+}

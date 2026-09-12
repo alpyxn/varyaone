@@ -1,4 +1,8 @@
 <script lang="ts">
+  import ListFilters from '$lib/components/varya/list-filters/ListFilters.svelte';
+  import type { ListFilter } from '$lib/components/varya/list-filters/types';
+  import { readListState, writeListState } from '$lib/components/varya/list-filters/state';
+
   import { goto } from '$app/navigation';
   import { Download, Filter, Plus, Search, X } from '@lucide/svelte';
   import { onMount } from 'svelte';
@@ -18,7 +22,11 @@
   } from '$lib/components/varya/data-grid';
   import { DocumentStatusCell } from '$lib/components/varya/data-grid/cells';
   import { getTablePreference, saveTablePreference } from '$lib/features/preferences/api';
-  import { listProducts } from '$lib/features/products/api';
+  import {
+    listProducts,
+    listProductCategories,
+    listProductBrands
+  } from '$lib/features/products/api';
   import type { Product } from '$lib/features/products/types';
   import { densityPreference } from '$lib/design/density.svelte';
   import { formatQuantity, formatUnitPrice } from '$lib/design/formatters';
@@ -168,6 +176,77 @@
     }
   ];
 
+  let listSession = $state<Session>();
+  let extraFilters = $state<ListFilter[]>([]);
+  function changeListFilter(field: string, value: string) {
+    clearTimeout(debounce);
+    query = {
+      ...query,
+      filters: [
+        ...query.filters.filter((f) => f.field !== field),
+        ...(value ? [{ field, operator: 'eq' as const, value }] : [])
+      ],
+      pagination: { mode: 'cursor', pageSize: 50 }
+    };
+    void load();
+  }
+  function rememberFilters() {
+    if (listSession)
+      writeListState(listSession, 'product-cards', {
+        search,
+        includeInactive,
+        query: { ...query, pagination: { mode: 'cursor', pageSize: 50 } },
+        warehouseID
+      });
+  }
+  async function initializeFilters() {
+    try {
+      listSession = await api<Session>('/session');
+      const saved = readListState<{
+        search: string;
+        includeInactive: boolean;
+        query: VaryaGridQuery;
+        warehouseID?: string;
+      }>(listSession, 'product-cards');
+      if (saved && Array.isArray(saved.query?.filters)) {
+        search = saved.search ?? '';
+        includeInactive = saved.includeInactive === true;
+        query = saved.query;
+        warehouseID = saved.warehouseID ?? '';
+      }
+      const [categories, brands] = await Promise.all([
+        listProductCategories(),
+        listProductBrands()
+      ]);
+      extraFilters = [
+        {
+          field: 'category_id',
+          label: 'Kategori',
+          kind: 'select',
+          options: categories.map((g) => ({ value: g.id, label: g.name }))
+        },
+        {
+          field: 'brand_id',
+          label: 'Marka',
+          kind: 'select',
+          options: brands.map((g) => ({ value: g.id, label: g.name }))
+        },
+        {
+          field: 'kind',
+          label: 'Kart türü',
+          kind: 'select',
+          options: [
+            { value: 'PHYSICAL', label: 'Stok' },
+            { value: 'SERVICE', label: 'Hizmet' }
+          ]
+        }
+      ];
+    } catch {
+      /* The list remains available if optional references cannot load. */
+    }
+    await load();
+  }
+
   async function load(append = false) {
     activeRequest?.abort();
     const request = new AbortController();
@@ -184,6 +263,7 @@
       if (sequence !== requestSequence) return;
       rows = append ? [...rows, ...result.items] : result.items;
       nextCursor = result.next_cursor;
+      rememberFilters();
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError') return;
       if (sequence !== requestSequence) return;
@@ -304,7 +384,7 @@
         // The product API remains authoritative; TRY is only the display fallback.
       }
     })();
-    void load();
+    void initializeFilters();
     visibilityRequest = new AbortController();
     warehouseRequest = new AbortController();
     void loadColumnVisibility(visibilityRequest.signal);
@@ -373,6 +453,19 @@
       ><Download size={14} />Dışa Aktar</Button
     >{/snippet}
 </DocumentToolbar>
+<div style="padding: 8px 16px;">
+  <ListFilters
+    filters={extraFilters}
+    values={Object.fromEntries(
+      query.filters.map((f) => [f.field, Array.isArray(f.value) ? f.value.join(',') : f.value])
+    )}
+    onChange={changeListFilter}
+    onClear={() => {
+      query = { ...query, filters: [], pagination: { mode: 'cursor', pageSize: 50 } };
+      void load();
+    }}
+  />
+</div>
 {#if visibilitySaveError}<p class="preference-error" role="status">{visibilitySaveError}</p>{/if}
 <VaryaDataGrid
   {columns}

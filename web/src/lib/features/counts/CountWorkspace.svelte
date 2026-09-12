@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { tick, onMount } from 'svelte';
+  import { errorMessage } from '$lib/errors';
+  import { tick, onMount, untrack } from 'svelte';
   import { ArrowLeft, LoaderCircle, RefreshCw, ScanLine, Send } from '@lucide/svelte';
   import { api, type Session } from '$lib/api';
   import { formatDate, formatQuantity } from '$lib/design/formatters';
@@ -13,6 +14,8 @@
     uploadImport
   } from '$lib/features/dataexchange/api';
   import { ConfirmDialog } from '$lib/components/varya/confirm-dialog';
+  import { DraftRecovery } from '$lib/forms/draft-recovery.svelte';
+  import { DraftNotice } from '$lib/components/varya/draft-notice';
   import CountStockPickerDialog, {
     type CountStockPickerSelection
   } from './CountStockPickerDialog.svelte';
@@ -35,6 +38,7 @@
   type Stage = 'count' | 'review';
 
   let { id }: { id: string } = $props();
+  let session = $state<Session | null>(null);
   let count = $state<CountView | null>(null);
   let activeSessionID = $state('');
   let stage = $state<Stage>('count');
@@ -195,7 +199,7 @@
       const source = asRecord(result);
       activeSessionID = String(source.session_id ?? source.id ?? '');
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Sayım oturumu başlatılamadı.';
+      error = errorMessage(cause, 'Sayım oturumu başlatılamadı.');
     }
   }
 
@@ -217,21 +221,76 @@
       const result = await getCount(id);
       applyPayload(result);
       try {
-        const session = await api<Session>('/session');
+        session = await api<Session>('/session');
         canEditCount = session.permissions.includes('inventory.count.post');
       } catch {
+        session = null;
         canEditCount = false;
       }
       if (count && canEditCount) await openSession(count);
       syncState = 'synced';
+      drafts.start();
     } catch (cause) {
       syncState = 'offline';
-      error = cause instanceof Error ? cause.message : 'Sayım çalışma alanı alınamadı.';
+      error = errorMessage(cause, 'Sayım çalışma alanı alınamadı.');
     } finally {
       loading = false;
       await tick();
       scanElement?.focus();
     }
+  }
+
+  /**
+   * Henüz kaydedilmemiş miktar girişleri. Barkod okutmaları zaten kendi
+   * kuyruğunda saklanıyor; burada yalnızca o kuyruğun kapsamadığı, kullanıcının
+   * yazıp da kaydetmediği miktarlar tutulur. İkinci bir kayıt mekanizması
+   * oluşturulmaz.
+   */
+  function unsavedQuantities(): Record<string, string> {
+    const pending: Record<string, string> = {};
+    for (const line of count?.lines ?? []) {
+      const typed = lineQuantities[line.id] ?? '';
+      const saved = lineResponded(line) ? formatQuantity(String(line.counted_quantity ?? '0')) : '';
+      if (typed !== saved) pending[line.id] = typed;
+    }
+    return pending;
+  }
+
+  const drafts = new DraftRecovery<Record<string, string>>({
+    scope: () => {
+      const userID = session?.user?.id;
+      const companyID = session?.current_company_id;
+      if (!userID || !companyID || !count?.id) return null;
+      return { userID, companyID, formType: 'stock-count-lines', recordID: count.id };
+    },
+    recordVersion: () => String(count?.version ?? ''),
+    data: unsavedQuantities,
+    enabled: () => canEditCount && stage === 'count' && !busy
+  });
+
+  $effect(() => {
+    lineQuantities;
+    count;
+    if (!canEditCount || stage !== 'count') return;
+    untrack(() => {
+      // Kaydedilmemiş miktar kalmadıysa taslak da durmaz.
+      if (Object.keys(unsavedQuantities()).length === 0) drafts.clear();
+      else drafts.note();
+    });
+  });
+
+  $effect(() => () => drafts.destroy());
+
+  function restoreDraft() {
+    const pending = drafts.restore();
+    if (!pending) return;
+    const known = new Set((count?.lines ?? []).map((line) => line.id));
+    const next = { ...lineQuantities };
+    for (const [lineID, value] of Object.entries(pending)) {
+      if (known.has(lineID)) next[lineID] = value;
+    }
+    lineQuantities = next;
+    feedback = 'Kaydedilmemiş miktarlar geri yüklendi. Kaydetmeyi unutmayın.';
   }
 
   function quantityText(value: string) {
@@ -240,12 +299,7 @@
   }
 
   function messageFrom(cause: unknown, fallback: string) {
-    if (cause instanceof Error && cause.message) return cause.message;
-    if (cause && typeof cause === 'object' && 'message' in cause) {
-      const message = (cause as { message?: unknown }).message;
-      if (typeof message === 'string' && message.trim()) return message;
-    }
-    return fallback;
+    return errorMessage(cause, fallback);
   }
 
   async function focusErrorNotice() {
@@ -394,6 +448,7 @@
       await load();
       recountKey = '';
       stage = 'review';
+      drafts.clear();
       feedback = 'Sayım incelemeye gönderildi.';
     } catch (cause) {
       error = messageFrom(cause, 'Sayım incelemeye gönderilemedi.');
@@ -474,6 +529,7 @@
     busy = true;
     try {
       applyPayload(await cancelCount(id, count.version));
+      drafts.clear();
       feedback = 'Sayım iptal edildi.';
     } catch (cause) {
       error = messageFrom(cause, 'Sayım iptal edilemedi.');
@@ -619,6 +675,15 @@
     </div>
   </header>
 
+  {#if drafts.found && canEditCount && stage === 'count'}
+    <DraftNotice
+      savedAt={drafts.savedAt}
+      staleVersion={drafts.staleVersion}
+      onRestore={restoreDraft}
+      onDiscard={() => drafts.discard()}
+    />
+  {/if}
+  {#if drafts.error}<div class="notice error" role="status">{drafts.error}</div>{/if}
   {#if error}<div bind:this={errorElement} class="notice error" role="alert" tabindex="-1">
       {error}
     </div>{/if}
@@ -735,7 +800,8 @@
         {reviewSubmissionMessage}
       </p>
     {/if}
-    <div class="table-scroll">
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+    <div class="table-scroll" tabindex="0" role="region" aria-label="Tablo — yatay kaydırılabilir">
       <table>
         <thead
           ><tr
@@ -848,6 +914,9 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    /* Bu satırlar duruma göre üç-dört butona kadar çıkıyor; sarmalanmazsa
+       tablet ve telefon genişliğinde sayfayı yana kaydırıyorlar. */
+    flex-wrap: wrap;
   }
   .workspace-header,
   .section-heading,
@@ -1129,6 +1198,7 @@
     }
     .header-actions {
       justify-content: flex-start;
+      flex-wrap: wrap;
     }
     .count-summary {
       grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { financePartyFilter } from '$lib/features/finance/list-filters';
   import { goto } from '$app/navigation';
   import { Plus } from '@lucide/svelte';
   import { Button } from '$lib/components/ui/button';
@@ -60,6 +61,7 @@
     { id: 'currency_code', label: 'PB', align: 'center' as const }
   ]);
   const filters = $derived<OperationFilter[]>([
+    { ...financePartyFilter(), field: direction === 'purchases' ? 'supplier_id' : 'party_id' },
     { field: 'lifecycle_status', label: 'Belge durumu', kind: 'select', options: lifecycleOptions },
     ...(fulfillmentOptions.length
       ? [
@@ -91,8 +93,9 @@
           }
         ]
       : []),
-    { field: 'from', label: 'Başlangıç', kind: 'date' },
-    { field: 'to', label: 'Bitiş', kind: 'date' }
+    { field: 'from', label: 'Belge tarihi başlangıç', kind: 'date' },
+    { field: 'to', label: 'Belge tarihi bitiş', kind: 'date' },
+    { field: 'currency_code', label: 'Para birimi', kind: 'currency' }
   ]);
 </script>
 

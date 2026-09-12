@@ -462,7 +462,12 @@ func (s *Service) CreatePurchaseOrder(ctx context.Context, session identity.Sess
 	if !validCurrency(input.Currency) || !validPolicy(input.OverDeliveryPolicy) {
 		return PurchaseOrder{}, validation("sipariş tarihi, para birimi ve politika gereklidir")
 	}
-	if err := s.ensureScope(ctx, session, input.BranchID, input.WarehouseID); err != nil {
+	// One memo for the whole save: the same product and the same
+	// branch/warehouse pair recur across lines, and each repeat re-ran the same
+	// two reads. The memo lives for this call only and carries company and user
+	// in every key, so no answer can cross a request.
+	checks := newPurchaseLineChecks()
+	if err := checks.scope(ctx, s, session, input.BranchID, input.WarehouseID); err != nil {
 		return PurchaseOrder{}, err
 	}
 	if err := s.ensureSupplier(ctx, session.CurrentCompanyID, input.SupplierID); err != nil {
@@ -493,7 +498,7 @@ func (s *Service) CreatePurchaseOrder(ctx context.Context, session identity.Sess
 			return PurchaseOrder{}, err
 		}
 		line.WarehouseID = strings.TrimSpace(line.WarehouseID)
-		if err = ensurePurchaseProduct(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, line.LineType); err != nil {
+		if err = checks.product(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, line.LineType); err != nil {
 			return PurchaseOrder{}, err
 		}
 		if line.LineType == "SERVICE" {
@@ -504,7 +509,7 @@ func (s *Service) CreatePurchaseOrder(ctx context.Context, session identity.Sess
 			if line.WarehouseID == "" {
 				line.WarehouseID = input.WarehouseID
 			}
-			if err = s.ensureScope(ctx, session, input.BranchID, line.WarehouseID); err != nil {
+			if err = checks.scope(ctx, s, session, input.BranchID, line.WarehouseID); err != nil {
 				return PurchaseOrder{}, err
 			}
 		}
@@ -872,7 +877,13 @@ func (s *Service) CreateGoodsReceipt(ctx context.Context, session identity.Sessi
 	if err := validateGoodsReceiptSourceShape(input.PurchaseOrderID, input.Lines); err != nil {
 		return GoodsReceipt{}, err
 	}
-	if err := s.ensureScope(ctx, session, input.BranchID, input.WarehouseID); err != nil {
+	// One memo for the whole save. The document's own branch/warehouse is
+	// normally the pair most lines use, so checking it here also answers for
+	// them; the same holds for a document that repeats one product across many
+	// lines. Update has worked this way since it was written — Create was still
+	// re-running both reads per line.
+	checks := newPurchaseLineChecks()
+	if err := checks.scope(ctx, s, session, input.BranchID, input.WarehouseID); err != nil {
 		return GoodsReceipt{}, err
 	}
 	if err := s.ensureSupplier(ctx, session.CurrentCompanyID, input.SupplierID); err != nil {
@@ -973,7 +984,7 @@ func (s *Service) CreateGoodsReceipt(ctx context.Context, session identity.Sessi
 	}
 	for index := range input.Lines {
 		line := &input.Lines[index]
-		if err = ensurePurchaseProduct(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, "PRODUCT"); err != nil {
+		if err = checks.product(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, "PRODUCT"); err != nil {
 			return GoodsReceipt{}, err
 		}
 		// Only the accepted quantity enters the system: it is what advances the
@@ -990,7 +1001,7 @@ func (s *Service) CreateGoodsReceipt(ctx context.Context, session identity.Sessi
 		if line.WarehouseID == "" {
 			line.WarehouseID = input.WarehouseID
 		}
-		if err = s.ensureScope(ctx, session, input.BranchID, line.WarehouseID); err != nil {
+		if err = checks.scope(ctx, s, session, input.BranchID, line.WarehouseID); err != nil {
 			return GoodsReceipt{}, err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO goods_receipt_lines(id,company_id,receipt_id,purchase_order_line_id,line_no,product_id,variant_id,warehouse_id,accepted_quantity,damaged_quantity,rejected_quantity,unit_code,base_quantity,conversion_factor,unit_cost,currency,lot_snapshot,serial_snapshot,tax_snapshot) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,'')::uuid,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`, line.ID, session.CurrentCompanyID, receiptID, line.PurchaseOrderLineID, line.LineNo, line.ProductID, line.VariantID, line.WarehouseID, zero(line.AcceptedQuantity), zero(line.DamagedQuantity), zero(line.RejectedQuantity), line.UnitCode, line.BaseQuantity, line.ConversionFactor, line.UnitCost, strings.ToUpper(line.Currency), jsonArray(line.LotSnapshot), jsonArray(line.SerialSnapshot), jsonObject(line.TaxSnapshot)); err != nil {
@@ -1048,9 +1059,12 @@ func (s *Service) CreatePurchaseInvoice(ctx context.Context, session identity.Se
 	if err := s.ensureSupplier(ctx, session.CurrentCompanyID, input.SupplierID); err != nil {
 		return PurchaseInvoice{}, err
 	}
-	if err := s.deriveSupplierDueDate(ctx, session.CurrentCompanyID, input.SupplierID, input.InvoiceDate, &input.DueDate); err != nil {
-		return PurchaseInvoice{}, err
-	}
+	// One memo for the whole save: an invoice repeats the same product and the
+	// same warehouse across lines, and each repeat re-ran the same two reads.
+	// The memo lives for this call only and carries company and user in every
+	// key, so no answer can cross a request. The header has no warehouse of its
+	// own here — the lines decide it — so nothing is pre-seeded.
+	checks := newPurchaseLineChecks()
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return PurchaseInvoice{}, err
@@ -1105,7 +1119,7 @@ func (s *Service) CreatePurchaseInvoice(ctx context.Context, session identity.Se
 		if err = s.resolvePurchaseInvoiceLineDefaults(ctx, tx, session, input, line, index+1); err != nil {
 			return PurchaseInvoice{}, err
 		}
-		if err = ensurePurchaseProduct(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, line.LineType); err != nil {
+		if err = checks.product(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, line.LineType); err != nil {
 			return PurchaseInvoice{}, err
 		}
 		line.BaseQuantity, line.ConversionFactor, err = resolvePurchaseConversionTx(ctx, tx, session.CurrentCompanyID, line.ProductID, line.UnitCode, line.Quantity, line.BaseQuantity, line.ConversionFactor)
@@ -1129,7 +1143,7 @@ func (s *Service) CreatePurchaseInvoice(ctx context.Context, session identity.Se
 			if line.WarehouseID == "" {
 				return PurchaseInvoice{}, validation("alış faturası ürün satırı için depo gereklidir")
 			}
-			if err = s.ensureScope(ctx, session, input.BranchID, line.WarehouseID); err != nil {
+			if err = checks.scope(ctx, s, session, input.BranchID, line.WarehouseID); err != nil {
 				return PurchaseInvoice{}, err
 			}
 			if headerWarehouse == "" {
@@ -1200,7 +1214,12 @@ func (s *Service) CreatePurchaseReturn(ctx context.Context, session identity.Ses
 	if err := validatePurchaseReturnSourceShape(input.SourceReceiptID, input.Lines); err != nil {
 		return PurchaseReturn{}, err
 	}
-	if err := s.ensureScope(ctx, session, input.BranchID, input.WarehouseID); err != nil {
+	// One memo for the whole save: the same product and the same
+	// branch/warehouse pair recur across lines, and each repeat re-ran the same
+	// two reads. The memo lives for this call only and carries company and user
+	// in every key, so no answer can cross a request.
+	checks := newPurchaseLineChecks()
+	if err := checks.scope(ctx, s, session, input.BranchID, input.WarehouseID); err != nil {
 		return PurchaseReturn{}, err
 	}
 	if err := s.ensureSupplier(ctx, session.CurrentCompanyID, input.SupplierID); err != nil {
@@ -1232,14 +1251,14 @@ func (s *Service) CreatePurchaseReturn(ctx context.Context, session identity.Ses
 	total := "0"
 	for index := range input.Lines {
 		line := &input.Lines[index]
-		if err = ensurePurchaseProduct(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, "PRODUCT"); err != nil {
+		if err = checks.product(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, "PRODUCT"); err != nil {
 			return PurchaseReturn{}, err
 		}
 		line.WarehouseID = strings.TrimSpace(line.WarehouseID)
 		if line.WarehouseID == "" {
 			line.WarehouseID = input.WarehouseID
 		}
-		if err = s.ensureScope(ctx, session, input.BranchID, line.WarehouseID); err != nil {
+		if err = checks.scope(ctx, s, session, input.BranchID, line.WarehouseID); err != nil {
 			return PurchaseReturn{}, err
 		}
 		line.BaseQuantity, line.ConversionFactor, err = resolvePurchaseConversionTx(ctx, tx, session.CurrentCompanyID, line.ProductID, line.UnitCode, line.Quantity, line.BaseQuantity, line.ConversionFactor)
@@ -2561,32 +2580,6 @@ func (s *Service) authorizeRead(session identity.Session) error {
 	return identity.ErrForbidden
 }
 
-// deriveSupplierDueDate fills a blank invoice due date from the supplier's
-// own payment term, counted from the document date. An explicit due date is
-// never overridden by the term.
-func (s *Service) deriveSupplierDueDate(ctx context.Context, companyID, supplierID string, documentDate time.Time, dueDate **time.Time) error {
-	if *dueDate != nil {
-		return nil
-	}
-	var paymentTermID *string
-	if err := s.pool.QueryRow(ctx, `SELECT payment_term_id::text FROM parties WHERE company_id=$1 AND id=$2`, companyID, supplierID).Scan(&paymentTermID); err != nil {
-		return err
-	}
-	if paymentTermID == nil {
-		return nil
-	}
-	var dueDays int
-	if err := s.pool.QueryRow(ctx, `SELECT due_days FROM payment_terms WHERE company_id=$1 AND id=$2 AND is_active`, companyID, *paymentTermID).Scan(&dueDays); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		return err
-	}
-	derived := documentDate.AddDate(0, 0, dueDays)
-	*dueDate = &derived
-	return nil
-}
-
 func (s *Service) ensureSupplier(ctx context.Context, companyID, supplierID string) error {
 	var supplier, active bool
 	err := s.pool.QueryRow(ctx, `SELECT is_supplier,is_active FROM parties WHERE company_id=$1 AND id=$2`, companyID, supplierID).Scan(&supplier, &active)
@@ -2617,6 +2610,50 @@ func ensurePurchaseBranch(ctx context.Context, q interface {
 }
 func (s *Service) ensureScope(ctx context.Context, session identity.Session, branchID, warehouseID string) error {
 	return ensurePurchaseScope(ctx, s.pool, session, branchID, warehouseID)
+}
+
+// purchaseLineChecks remembers, for the span of one document save, which
+// products and which branch/warehouse pairs have already been validated.
+// Documents repeat the same product or the same warehouse across lines, and
+// each repeat used to re-run the same reads.
+//
+// It is created per call and thrown away with it - nothing is shared between
+// requests - and the company (and, for scopes, the user) is part of every key,
+// so one company's answer can never be handed to another. Only successful
+// checks are remembered; a failure ends the save at the line that produced it.
+type purchaseLineChecks struct {
+	products map[string]struct{}
+	scopes   map[string]struct{}
+}
+
+func newPurchaseLineChecks() *purchaseLineChecks {
+	return &purchaseLineChecks{products: map[string]struct{}{}, scopes: map[string]struct{}{}}
+}
+
+func (c *purchaseLineChecks) product(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, companyID, productID, variantID, lineType string) error {
+	key := strings.Join([]string{companyID, productID, strings.TrimSpace(variantID), lineType}, "\x00")
+	if _, done := c.products[key]; done {
+		return nil
+	}
+	if err := ensurePurchaseProduct(ctx, q, companyID, productID, variantID, lineType); err != nil {
+		return err
+	}
+	c.products[key] = struct{}{}
+	return nil
+}
+
+func (c *purchaseLineChecks) scope(ctx context.Context, s *Service, session identity.Session, branchID, warehouseID string) error {
+	key := strings.Join([]string{session.CurrentCompanyID, session.User.ID, branchID, warehouseID}, "\x00")
+	if _, done := c.scopes[key]; done {
+		return nil
+	}
+	if err := s.ensureScope(ctx, session, branchID, warehouseID); err != nil {
+		return err
+	}
+	c.scopes[key] = struct{}{}
+	return nil
 }
 
 func ensurePurchaseScope(ctx context.Context, q interface {
@@ -2874,7 +2911,7 @@ func validateInvoiceLine(line *PurchaseInvoiceLine) error {
 	if strings.TrimSpace(line.UnitCode) == "" {
 		line.UnitCode = "ADET"
 	}
-	if !validPurchaseDecimal(line.GrossAmount, true) || !validPurchaseDecimal(line.DiscountAmount, true) || !validPurchaseDecimal(line.TaxBase, true) || !validPurchaseDecimal(line.TaxAmount, true) || !validPurchaseDecimal(line.WithholdingAmount, true) || !validPurchaseDecimal(line.PayableAmount, true) {
+	if !validPurchaseDecimal(line.GrossAmount, true) || !validPurchaseDecimal(line.DiscountAmount, true) || !validPurchaseDecimal(line.TaxBase, true) || (strings.TrimSpace(line.TaxAmount) != "" && !validPurchaseDecimal(line.TaxAmount, true)) || !validPurchaseDecimal(line.WithholdingAmount, true) || !validPurchaseDecimal(line.PayableAmount, true) {
 		return validation("alış faturası satır tutarları geçersiz")
 	}
 	if compare(line.DiscountAmount, line.GrossAmount) > 0 {

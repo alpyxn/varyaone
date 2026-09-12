@@ -261,7 +261,7 @@ func (h partyHandler) createCustomField(w http.ResponseWriter, r *http.Request) 
 
 func (h partyHandler) list(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	result, err := h.service.List(r.Context(), sessionFromRequest(r), r.URL.Query().Get("q"), r.URL.Query().Get("cursor"), limit, r.URL.Query().Get("include_inactive") == "true", r.URL.Query().Get("role"))
+	result, err := h.service.ListSorted(r.Context(), sessionFromRequest(r), r.URL.Query().Get("q"), r.URL.Query().Get("cursor"), limit, r.URL.Query().Get("include_inactive") == "true", r.URL.Query().Get("role"), r.URL.Query().Get("sort"), r.URL.Query().Get("group_id"))
 	if err != nil {
 		writePartyError(w, r, err, "Cari listesi okunamadı.")
 		return

@@ -129,7 +129,18 @@
 <Dialog.Root bind:open={totpOpen} onOpenChange={(next) => !next && !busy && (totpCode = '')}>
   <Dialog.Portal>
     <Dialog.Overlay class="dialog-overlay" />
-    <Dialog.Content class="totp-dialog" aria-describedby="totp-dialog-description">
+    <!-- Doğrulama kodu kalıcı taslak yapılmaz; yalnızca doğrulama sürerken
+         kapanma engellenir. -->
+    <Dialog.Content
+      class="totp-dialog"
+      aria-describedby="totp-dialog-description"
+      onInteractOutside={(event) => {
+        if (busy) event.preventDefault();
+      }}
+      onEscapeKeydown={(event) => {
+        if (busy) event.preventDefault();
+      }}
+    >
       <div class="dialog-heading">
         <div>
           <Dialog.Title>İki adımlı doğrulama</Dialog.Title>

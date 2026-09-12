@@ -20,6 +20,7 @@ func mountTaxRoutes(router chi.Router, identityService *identity.Service, servic
 		r.With(auth.requireCSRF).Post("/definitions", h.createDefinition)
 		r.With(auth.requireCSRF).Put("/definitions/{definitionID}", h.updateDefinition)
 		r.With(auth.requireCSRF).Post("/definitions/{definitionID}/deactivate", h.deactivateDefinition)
+		r.With(auth.requireCSRF).Post("/definitions/{definitionID}/activate", h.activateDefinition)
 		r.Get("/definitions/{definitionID}/rates", h.listRates)
 		r.With(auth.requireCSRF).Post("/definitions/{definitionID}/rates", h.createRate)
 		r.Get("/exemptions", h.listExemptions)
@@ -77,6 +78,20 @@ func (h taxHandler) deactivateDefinition(w http.ResponseWriter, r *http.Request)
 	item, err := h.service.DeactivateDefinition(r.Context(), sessionFromRequest(r), chi.URLParam(r, "definitionID"), version, requestMeta(r))
 	if err != nil {
 		writeModuleError(w, r, err, "Vergi tanımı pasifleştirilemedi.")
+		return
+	}
+	w.Header().Set("ETag", `"`+strconv.FormatInt(item.Version, 10)+`"`)
+	writeJSON(w, http.StatusOK, item)
+}
+func (h taxHandler) activateDefinition(w http.ResponseWriter, r *http.Request) {
+	version, err := parseIfMatch(r.Header.Get("If-Match"))
+	if err != nil {
+		writeError(w, r, http.StatusPreconditionRequired, "IF_MATCH_REQUIRED", "Vergi tanımı aktifleştirmesi için geçerli If-Match başlığı gereklidir.")
+		return
+	}
+	item, err := h.service.ActivateDefinition(r.Context(), sessionFromRequest(r), chi.URLParam(r, "definitionID"), version, requestMeta(r))
+	if err != nil {
+		writeModuleError(w, r, err, "Vergi tanımı aktifleştirilemedi.")
 		return
 	}
 	w.Header().Set("ETag", `"`+strconv.FormatInt(item.Version, 10)+`"`)

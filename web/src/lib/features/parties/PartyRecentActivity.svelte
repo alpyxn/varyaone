@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage as localizedErrorMessage } from '$lib/errors';
   import { goto } from '$app/navigation';
   import { Button } from '$lib/components/ui/button';
   import { formatDate, formatMoney } from '$lib/design/formatters';
@@ -57,7 +58,7 @@
     } catch (cause) {
       if (request.signal.aborted || sequence !== requestSequence) return;
       rows = [];
-      errorMessage = cause instanceof Error ? cause.message : 'Son işlemler alınamadı.';
+      errorMessage = localizedErrorMessage(cause, 'Son işlemler alınamadı.');
       loadState = 'error';
     }
   }
@@ -84,48 +85,59 @@
     {:else if rows.length === 0}
       <p class="muted">Kayıtlı hareket yok.</p>
     {:else}
-      <table class="grid-table">
-        <caption class="sr-only">Son cari işlemleri</caption>
-        <thead>
-          <tr
-            ><th scope="col">Tarih</th><th scope="col">Tür</th><th scope="col">Belge</th><th
-              scope="col">Açıklama</th
-            ><th scope="col">Para</th><th scope="col" class="right">Borç</th><th
-              scope="col"
-              class="right">Alacak</th
-            ><th scope="col" class="right">Bakiye{reportCurrency ? ` (${reportCurrency})` : ''}</th
-            ></tr
-          >
-        </thead>
-        <tbody>
-          {#each rows as entry (entry.id)}
-            <tr>
-              <td>{formatDate(entry.document_date)}</td>
-              <td>{label(entry)}</td>
-              <td>
-                {#if sourceLink(entry)}
-                  <a href={sourceLink(entry)}>{entry.document_no ?? '—'}</a>
-                {:else}
-                  {entry.document_no ?? '—'}
-                {/if}
-              </td>
-              <td>{entry.description}</td>
-              <td>{entry.currency || '—'}</td>
-              <td class="right"
-                >{isZeroDecimal(entry.debit) ? '—' : formatMoney(entry.debit, entry.currency)}</td
-              >
-              <td class="right"
-                >{isZeroDecimal(entry.credit) ? '—' : formatMoney(entry.credit, entry.currency)}</td
-              >
-              <td class="right"
-                >{entry.running_balance && reportCurrency
-                  ? describeBalance(entry.running_balance, reportCurrency).headline
-                  : '—'}</td
-              >
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
+        <table class="grid-table">
+          <caption class="sr-only">Son cari işlemleri</caption>
+          <thead>
+            <tr
+              ><th scope="col">Tarih</th><th scope="col">Tür</th><th scope="col">Belge</th><th
+                scope="col">Açıklama</th
+              ><th scope="col">Para</th><th scope="col" class="right">Borç</th><th
+                scope="col"
+                class="right">Alacak</th
+              ><th scope="col" class="right"
+                >Bakiye{reportCurrency ? ` (${reportCurrency})` : ''}</th
+              ></tr
+            >
+          </thead>
+          <tbody>
+            {#each rows as entry (entry.id)}
+              <tr>
+                <td>{formatDate(entry.document_date)}</td>
+                <td>{label(entry)}</td>
+                <td>
+                  {#if sourceLink(entry)}
+                    <a href={sourceLink(entry)}>{entry.document_no ?? '—'}</a>
+                  {:else}
+                    {entry.document_no ?? '—'}
+                  {/if}
+                </td>
+                <td>{entry.description}</td>
+                <td>{entry.currency || '—'}</td>
+                <td class="right"
+                  >{isZeroDecimal(entry.debit) ? '—' : formatMoney(entry.debit, entry.currency)}</td
+                >
+                <td class="right"
+                  >{isZeroDecimal(entry.credit)
+                    ? '—'
+                    : formatMoney(entry.credit, entry.currency)}</td
+                >
+                <td class="right"
+                  >{entry.running_balance && reportCurrency
+                    ? describeBalance(entry.running_balance, reportCurrency).headline
+                    : '—'}</td
+                >
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
   </section>
 {/if}

@@ -29,6 +29,7 @@ var (
 	ErrBaseCurrencyLocked = errors.New("company base currency is locked")
 	ErrValidation         = errors.New("validation failed")
 	ErrLastCompany        = errors.New("cannot delete the last remaining company")
+	ErrNotFound           = errors.New("not found")
 )
 
 // LoginRateLimitedError carries how long the caller must still wait before
@@ -278,6 +279,17 @@ func (s *Service) Setup(ctx context.Context, input SetupInput, meta RequestMeta)
 		if !modules.Valid(code) {
 			return Session{}, fmt.Errorf("%w: bilinmeyen modül %q", ErrValidation, code)
 		}
+	}
+	// Cheap check before the expensive Argon2 hash below: an already-completed
+	// installation should reject a well-formed setup request without paying
+	// for it. This does not replace the advisory-locked check inside the
+	// transaction, which is what actually prevents two concurrent first-setup
+	// requests from both succeeding — it only avoids the hash cost for the
+	// case that will always end in ErrAlreadySetup.
+	if complete, err := s.SetupStatus(ctx); err != nil {
+		return Session{}, err
+	} else if complete {
+		return Session{}, ErrAlreadySetup
 	}
 	passwordHash, err := HashPassword(input.Password)
 	if err != nil {
@@ -545,7 +557,15 @@ func (s *Service) Login(ctx context.Context, email, password, totpCode string, m
 	}
 	if valid && len(totpCiphertext) > 0 {
 		secret, openErr := s.secretBox.Open(user.ID, "totp", totpCiphertext)
-		valid = openErr == nil && VerifyTOTP(string(secret), totpCode, s.now())
+		valid = false
+		if openErr == nil {
+			if step, ok := VerifyTOTPStep(string(secret), totpCode, s.now()); ok {
+				valid, err = s.consumeTOTPStep(ctx, user.ID, step)
+				if err != nil {
+					return Session{}, err
+				}
+			}
+		}
 		if openErr == nil && !valid {
 			valid, err = s.consumeRecoveryCode(ctx, user.ID, totpCode, meta)
 			if err != nil {
@@ -577,6 +597,29 @@ func (s *Service) Login(ctx context.Context, email, password, totpCode string, m
 		return Session{}, err
 	}
 	return session, nil
+}
+
+// consumeTOTPStep atomically records a TOTP time step as spent, so no code
+// already used can be accepted again inside VerifyTOTPStep's acceptance
+// window (the previous, current and next 30-second step). Rejecting only an
+// exact repeat of the single last-recorded step let A -> B -> A replay A a
+// second time (A != B, so the equality check passed); requiring the step to
+// strictly advance past the highest one ever recorded closes that, since a
+// step earlier than or equal to one already spent can never advance past it
+// again — steps only move forward with real time. The UPDATE's WHERE clause
+// is re-evaluated against the committed row once any concurrent racer
+// releases its row lock, so at most one caller ever observes consumed=true
+// for a given step.
+func (s *Service) consumeTOTPStep(ctx context.Context, userID string, step int64) (bool, error) {
+	var consumed bool
+	err := s.pool.QueryRow(ctx, `UPDATE users SET totp_last_step=$2 WHERE id=$1 AND (totp_last_step IS NULL OR totp_last_step<$2) RETURNING true`, userID, step).Scan(&consumed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return consumed, nil
 }
 
 func (s *Service) consumeRecoveryCode(ctx context.Context, userID, code string, meta RequestMeta) (bool, error) {
@@ -614,37 +657,68 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Session, erro
 	// be filtered by a request's currently selected company.
 	ctx = database.WithoutConn(ctx)
 	var result Session
+	// Every request goes through here, so the whole session is hydrated in one
+	// round trip: the session row, the user's companies, and - when a company is
+	// selected - its permissions and enabled modules. The sub-selects are the
+	// same queries `companies`, `permissions` and `activeModules` run on their
+	// own, so what comes back is unchanged; only the number of round trips is.
+	var companiesJSON []byte
+	var permissions, modules []string
 	err := s.pool.QueryRow(ctx, `
-		SELECT s.id,s.user_id,u.email,u.display_name,u.totp_enabled_at IS NOT NULL,COALESCE(s.current_company_id::text,''),s.expires_at
-		FROM sessions s
-		JOIN users u ON u.id=s.user_id
-		LEFT JOIN company_memberships m ON m.company_id=s.current_company_id AND m.user_id=s.user_id AND m.is_active
-		WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.is_active
-		  AND (s.current_company_id IS NULL OR m.user_id IS NOT NULL)`, tokenHash(token)).
-		Scan(&result.ID, &result.User.ID, &result.User.Email, &result.User.DisplayName, &result.User.TOTPEnabled, &result.CurrentCompanyID, &result.ExpiresAt)
+		WITH sess AS (
+			SELECT s.id AS session_id,s.user_id,u.email,u.display_name,
+			       u.totp_enabled_at IS NOT NULL AS totp_enabled,
+			       COALESCE(s.current_company_id::text,'') AS current_company_id,
+			       s.expires_at
+			FROM sessions s
+			JOIN users u ON u.id=s.user_id
+			LEFT JOIN company_memberships m ON m.company_id=s.current_company_id AND m.user_id=s.user_id AND m.is_active
+			WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.is_active
+			  AND (s.current_company_id IS NULL OR m.user_id IS NOT NULL)
+		)
+		SELECT sess.session_id,sess.user_id,sess.email,sess.display_name,sess.totp_enabled,
+		       sess.current_company_id,sess.expires_at,
+		       COALESCE((
+		         SELECT json_agg(json_build_object(
+		                  'id',c.id,'legal_name',c.legal_name,'trade_name',c.trade_name,
+		                  'entity_type',c.entity_type,'base_currency',c.base_currency,
+		                  'timezone',c.timezone,'version',c.version) ORDER BY c.trade_name)
+		         FROM companies c
+		         JOIN company_memberships m ON m.company_id=c.id
+		         WHERE m.user_id=sess.user_id AND m.is_active AND c.is_active), '[]'::json),
+		       COALESCE((
+		         SELECT array_agg(DISTINCT rp.permission_code ORDER BY rp.permission_code)
+		         FROM company_memberships m
+		         JOIN membership_roles mr USING(company_id,user_id)
+		         JOIN role_permissions rp USING(company_id,role_id)
+		         WHERE m.company_id=NULLIF(sess.current_company_id,'')::uuid
+		           AND m.user_id=sess.user_id AND m.is_active), '{}'::text[]),
+		       COALESCE((
+		         SELECT array_agg(cm.module_code ORDER BY cm.module_code)
+		         FROM company_modules cm
+		         WHERE cm.company_id=NULLIF(sess.current_company_id,'')::uuid AND cm.enabled), '{}'::text[]),
+		       EXISTS (SELECT 1 FROM instance_setup WHERE completed_by=sess.user_id)
+		FROM sess`, tokenHash(token)).
+		Scan(&result.ID, &result.User.ID, &result.User.Email, &result.User.DisplayName, &result.User.TOTPEnabled,
+			&result.CurrentCompanyID, &result.ExpiresAt, &companiesJSON, &permissions, &modules,
+			&result.IsInstanceOwner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrUnauthenticated
 	}
 	if err != nil {
 		return Session{}, err
 	}
-	result.Companies, err = s.companies(ctx, result.User.ID)
-	if err != nil {
+	result.Companies = []Company{}
+	if err = json.Unmarshal(companiesJSON, &result.Companies); err != nil {
 		return Session{}, err
 	}
+	// A session with no company selected carries no permission or module list at
+	// all, rather than empty ones - the API renders that difference.
 	if result.CurrentCompanyID != "" {
-		if result.Permissions, err = s.permissions(ctx, result.User.ID, result.CurrentCompanyID); err != nil {
-			return Session{}, err
-		}
-		if result.Modules, err = s.activeModules(ctx, result.CurrentCompanyID); err != nil {
-			return Session{}, err
-		}
-	}
-	if err = s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM instance_setup WHERE completed_by=$1)`, result.User.ID).Scan(&result.IsInstanceOwner); err != nil {
-		return Session{}, err
+		result.Permissions, result.Modules = permissions, modules
 	}
 	_, _ = s.pool.Exec(ctx, `UPDATE sessions SET last_seen_at=now() WHERE id=$1 AND last_seen_at < now()-interval '5 minutes'`, result.ID)
-	return result, err
+	return result, nil
 }
 
 func (s *Service) ValidateCSRF(ctx context.Context, sessionID, csrfToken string) bool {
@@ -707,7 +781,29 @@ func (s *Service) Logout(ctx context.Context, session Session, meta RequestMeta)
 	return nil
 }
 
-func (s *Service) BeginTOTP(ctx context.Context, session Session, meta RequestMeta) (string, string, error) {
+// BeginTOTP starts a new TOTP setup, replacing any earlier pending secret.
+// When the account already has an active second factor, replacing it is a
+// credential change and requires the caller to re-prove the password — a
+// hijacked or left-open session token alone must not be enough to hand
+// control of two-factor auth to whoever holds it. ConfirmTOTP additionally
+// requires the still-active factor's own code, so both checks the report
+// asked for (recently-verified password, and the existing second factor) are
+// in place by the time the swap actually takes effect.
+func (s *Service) BeginTOTP(ctx context.Context, session Session, password string, meta RequestMeta) (string, string, error) {
+	var passwordHash string
+	var currentlyEnabled bool
+	if err := s.pool.QueryRow(ctx, `SELECT password_hash,totp_enabled_at IS NOT NULL FROM users WHERE id=$1 AND is_active`, session.User.ID).Scan(&passwordHash, &currentlyEnabled); err != nil {
+		return "", "", err
+	}
+	if currentlyEnabled {
+		valid, err := VerifyPassword(passwordHash, password)
+		if err != nil {
+			return "", "", err
+		}
+		if !valid {
+			return "", "", ErrInvalidCredentials
+		}
+	}
 	secret, err := NewTOTPSecret()
 	if err != nil {
 		return "", "", err
@@ -723,17 +819,27 @@ func (s *Service) BeginTOTP(ctx context.Context, session Session, meta RequestMe
 	return secret, TOTPURI(secret, session.User.Email), nil
 }
 
-func (s *Service) ConfirmTOTP(ctx context.Context, session Session, code string, meta RequestMeta) ([]string, error) {
+// ConfirmTOTP activates a pending TOTP secret. currentCode is only meaningful
+// (and only checked) when the account already has an active factor being
+// replaced: it must be a valid code for that still-active secret, proving the
+// caller controls the device being swapped out before the new one takes over.
+func (s *Service) ConfirmTOTP(ctx context.Context, session Session, code, currentCode string, meta RequestMeta) ([]string, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	var ciphertext []byte
-	if err = tx.QueryRow(ctx, `SELECT totp_pending_ciphertext FROM users WHERE id=$1 FOR UPDATE`, session.User.ID).Scan(&ciphertext); err != nil || len(ciphertext) == 0 {
+	var pendingCiphertext, activeCiphertext []byte
+	if err = tx.QueryRow(ctx, `SELECT totp_pending_ciphertext,totp_secret_ciphertext FROM users WHERE id=$1 FOR UPDATE`, session.User.ID).Scan(&pendingCiphertext, &activeCiphertext); err != nil || len(pendingCiphertext) == 0 {
 		return nil, fmt.Errorf("%w: bekleyen TOTP kurulumu yok", ErrValidation)
 	}
-	secret, err := s.secretBox.Open(session.User.ID, "totp", ciphertext)
+	if len(activeCiphertext) > 0 {
+		activeSecret, openErr := s.secretBox.Open(session.User.ID, "totp", activeCiphertext)
+		if openErr != nil || !VerifyTOTP(string(activeSecret), currentCode, s.now()) {
+			return nil, ErrInvalidCredentials
+		}
+	}
+	secret, err := s.secretBox.Open(session.User.ID, "totp", pendingCiphertext)
 	if err != nil || !VerifyTOTP(string(secret), code, s.now()) {
 		return nil, ErrInvalidCredentials
 	}
@@ -789,6 +895,36 @@ func (s *Service) DisableTOTP(ctx context.Context, session Session, password str
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// ChangeOwnPassword lets the signed-in user replace their own password after
+// re-proving the current one. There is no self-service "forgot password"
+// flow in this product, so this is the only way an account recovers from a
+// weak or half-remembered password once it is set.
+func (s *Service) ChangeOwnPassword(ctx context.Context, session Session, currentPassword, newPassword string, meta RequestMeta) error {
+	if session.IsAPIToken {
+		return ErrForbidden
+	}
+	var passwordHash string
+	if err := s.pool.QueryRow(ctx, `SELECT password_hash FROM users WHERE id=$1 AND is_active`, session.User.ID).Scan(&passwordHash); err != nil {
+		return err
+	}
+	valid, err := VerifyPassword(passwordHash, currentPassword)
+	if err != nil {
+		return err
+	}
+	if !valid {
+		return ErrInvalidCredentials
+	}
+	newHash, err := HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrValidation, err)
+	}
+	if _, err = s.pool.Exec(ctx, `UPDATE users SET password_hash=$1,updated_at=now(),version=version+1 WHERE id=$2`, newHash, session.User.ID); err != nil {
+		return err
+	}
+	_ = s.audit(ctx, session.CurrentCompanyID, session.User.ID, "PASSWORD_CHANGED", "user", session.User.ID, nil, meta)
+	return nil
 }
 
 var allowedTokenScopes = map[string]struct{}{

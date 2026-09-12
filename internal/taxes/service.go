@@ -173,9 +173,25 @@ func (s *Service) UpdateDefinition(ctx context.Context, session identity.Session
 	if _, err := uuid.Parse(id); err != nil || expectedVersion < 1 || strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Source) == "" {
 		return TaxDefinition{}, fmt.Errorf("%w: vergi tanımı güncellemesi geçersiz", identity.ErrValidation)
 	}
+	input.CalculationType = normalizeCalculationType(input.CalculationType)
+	if strings.TrimSpace(input.Rate) != "" {
+		var err error
+		input.Rate, err = normalizeTaxValue(input.Rate, input.CalculationType)
+		if err != nil {
+			return TaxDefinition{}, err
+		}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return TaxDefinition{}, err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, session.CurrentCompanyID+":"+id); err != nil {
+		return TaxDefinition{}, err
+	}
 	var item TaxDefinition
 	metadata := jsonBytes(input.Metadata)
-	err := s.pool.QueryRow(ctx, `UPDATE tax_definitions SET name=$1,description=$2,source=$3,source_reference=$4,source_version=$5,metadata=$6,updated_at=now(),version=version+1 WHERE company_id=$7 AND id=$8 AND version=$9 RETURNING id,company_id,code,name,description,source,source_reference,source_version,metadata,is_active,version`, strings.TrimSpace(input.Name), strings.TrimSpace(input.Description), strings.TrimSpace(input.Source), strings.TrimSpace(input.SourceReference), strings.TrimSpace(input.SourceVersion), metadata, session.CurrentCompanyID, id, expectedVersion).Scan(&item.ID, &item.CompanyID, &item.Code, &item.Name, &item.Description, &item.Source, &item.SourceReference, &item.SourceVersion, &metadata, &item.IsActive, &item.Version)
+	err = tx.QueryRow(ctx, `UPDATE tax_definitions SET name=$1,description=$2,source=$3,source_reference=$4,source_version=$5,metadata=$6,updated_at=now(),version=version+1 WHERE company_id=$7 AND id=$8 AND version=$9 RETURNING id,company_id,code,name,description,source,source_reference,source_version,metadata,is_active,version`, strings.TrimSpace(input.Name), strings.TrimSpace(input.Description), strings.TrimSpace(input.Source), strings.TrimSpace(input.SourceReference), strings.TrimSpace(input.SourceVersion), metadata, session.CurrentCompanyID, id, expectedVersion).Scan(&item.ID, &item.CompanyID, &item.Code, &item.Name, &item.Description, &item.Source, &item.SourceReference, &item.SourceVersion, &metadata, &item.IsActive, &item.Version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return TaxDefinition{}, identity.ErrConflict
 	}
@@ -183,7 +199,52 @@ func (s *Service) UpdateDefinition(ctx context.Context, session identity.Session
 		return TaxDefinition{}, err
 	}
 	_ = json.Unmarshal(metadata, &item.Metadata)
-	return item, s.writeEvent(ctx, session, "TAX_DEFINITION_UPDATED", "tax.definition.updated", id, meta, map[string]any{"version": item.Version})
+	if strings.TrimSpace(input.Rate) != "" {
+		if err = updateDefinitionRateTx(ctx, tx, item, input); err != nil {
+			return TaxDefinition{}, err
+		}
+	}
+	err = tx.QueryRow(ctx, `SELECT rate::text,calculation_type FROM tax_rates WHERE company_id=$1 AND tax_definition_id=$2 AND valid_from<=CURRENT_DATE AND (valid_to IS NULL OR valid_to>=CURRENT_DATE) ORDER BY valid_from DESC,id LIMIT 1`, item.CompanyID, id).Scan(&item.Rate, &item.CalculationType)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return TaxDefinition{}, err
+	}
+	if item.Rate != "" {
+		item.Rate = normalizeDecimal(item.Rate)
+	}
+	if err = s.writeEventTx(ctx, tx, session, "TAX_DEFINITION_UPDATED", "tax.definition.updated", id, meta, map[string]any{"version": item.Version, "rate": item.Rate, "calculation_type": item.CalculationType}); err != nil {
+		return TaxDefinition{}, err
+	}
+	return item, tx.Commit(ctx)
+}
+
+// Keep earlier business dates on their old rate; same-day edits replace today's
+// catalog value. Posted document tax snapshots are never rewritten.
+func updateDefinitionRateTx(ctx context.Context, tx pgx.Tx, definition, input TaxDefinition) error {
+	var rateID, rate, calculationType string
+	var startsToday bool
+	var validTo *string
+	err := tx.QueryRow(ctx, `SELECT id,rate::text,calculation_type,valid_from=CURRENT_DATE,valid_to::text FROM tax_rates WHERE company_id=$1 AND tax_definition_id=$2 AND valid_from<=CURRENT_DATE AND (valid_to IS NULL OR valid_to>=CURRENT_DATE) ORDER BY valid_from DESC,id LIMIT 1 FOR UPDATE`, definition.CompanyID, definition.ID).Scan(&rateID, &rate, &calculationType, &startsToday, &validTo)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if err == nil && normalizeDecimal(rate) == input.Rate && calculationType == input.CalculationType {
+		return nil
+	}
+	if startsToday {
+		_, err = tx.Exec(ctx, `UPDATE tax_rates SET rate=$1,calculation_type=$2,version=version+1 WHERE company_id=$3 AND id=$4`, input.Rate, input.CalculationType, definition.CompanyID, rateID)
+		return err
+	}
+	if rateID != "" {
+		if _, err = tx.Exec(ctx, `UPDATE tax_rates SET valid_to=CURRENT_DATE-1,version=version+1 WHERE company_id=$1 AND id=$2`, definition.CompanyID, rateID); err != nil {
+			return err
+		}
+	} else {
+		if err = tx.QueryRow(ctx, `SELECT (min(valid_from)-1)::text FROM tax_rates WHERE company_id=$1 AND tax_definition_id=$2 AND valid_from>CURRENT_DATE`, definition.CompanyID, definition.ID).Scan(&validTo); err != nil {
+			return err
+		}
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO tax_rates(id,company_id,tax_definition_id,rate,calculation_type,valid_from,valid_to,source,source_reference,source_version,metadata) VALUES($1,$2,$3,$4,$5,CURRENT_DATE,$6,$7,$8,$9,$10)`, uuid.NewString(), definition.CompanyID, definition.ID, input.Rate, input.CalculationType, validTo, definition.Source, definition.SourceReference, definition.SourceVersion, jsonBytes(definition.Metadata))
+	return err
 }
 
 func (s *Service) DeactivateDefinition(ctx context.Context, session identity.Session, id string, expectedVersion int64, meta identity.RequestMeta) (TaxDefinition, error) {
@@ -201,6 +262,23 @@ func (s *Service) DeactivateDefinition(ctx context.Context, session identity.Ses
 	}
 	_ = json.Unmarshal(metadata, &item.Metadata)
 	return item, s.writeEvent(ctx, session, "TAX_DEFINITION_DEACTIVATED", "tax.definition.deactivated", id, meta, nil)
+}
+
+func (s *Service) ActivateDefinition(ctx context.Context, session identity.Session, id string, expectedVersion int64, meta identity.RequestMeta) (TaxDefinition, error) {
+	if !canManage(session) {
+		return TaxDefinition{}, identity.ErrForbidden
+	}
+	var item TaxDefinition
+	var metadata []byte
+	err := s.pool.QueryRow(ctx, `UPDATE tax_definitions SET is_active=true,updated_at=now(),version=version+1 WHERE company_id=$1 AND id=$2 AND version=$3 AND NOT is_active RETURNING id,company_id,code,name,description,source,source_reference,source_version,metadata,is_active,version`, session.CurrentCompanyID, id, expectedVersion).Scan(&item.ID, &item.CompanyID, &item.Code, &item.Name, &item.Description, &item.Source, &item.SourceReference, &item.SourceVersion, &metadata, &item.IsActive, &item.Version)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TaxDefinition{}, identity.ErrConflict
+	}
+	if err != nil {
+		return TaxDefinition{}, err
+	}
+	_ = json.Unmarshal(metadata, &item.Metadata)
+	return item, s.writeEvent(ctx, session, "TAX_DEFINITION_ACTIVATED", "tax.definition.activated", id, meta, nil)
 }
 
 func (s *Service) ListRates(ctx context.Context, session identity.Session, definitionID, on string) ([]TaxRate, error) {

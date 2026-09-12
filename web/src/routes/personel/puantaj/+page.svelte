@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { onMount } from 'svelte';
   import { RefreshCw, ChevronLeft, ChevronRight, Check } from '@lucide/svelte';
   import { api, APIRequestError, type Session } from '$lib/api';
@@ -443,7 +444,7 @@
         {#each payrollGaps as gap}
           <li>
             <a href={`/personel/calisanlar/${gap.employee_id}`}>{gap.name}</a>
-            — {gap.issues[0].message}
+            — {errorMessage(gap.issues[0], 'Çalışanın puantaj bilgilerini kontrol edin.')}
           </li>
         {/each}
       </ul>
@@ -680,7 +681,9 @@
         {#if !summary.length}
           <p class="state">Henüz kayıt yok.</p>
         {:else}
-          <div class="scroll">
+          <!-- Yatay kayan tablo klavyeyle de kaydırılabilmeli; aksi halde
+               dokunmatik olmayan kullanıcı sağdaki sütunlara erişemez. -->
+          <div class="scroll" tabindex="0" role="group" aria-label="Puantaj özeti tablosu">
             <table>
               <thead>
                 <tr>
@@ -756,6 +759,7 @@
 
   .period-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
   }
@@ -1060,6 +1064,10 @@
   }
   .scroll {
     overflow-x: auto;
+  }
+  .scroll:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
   }
   table {
     width: 100%;

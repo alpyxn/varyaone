@@ -1,3 +1,5 @@
+import { errorMessage } from './errors';
+
 export type Company = {
   id: string;
   legal_name: string;
@@ -62,7 +64,7 @@ export class APIRequestError extends Error {
   readonly status: number;
 
   constructor(error: APIError, status: number) {
-    super(error.message || 'İşlem tamamlanamadı.');
+    super(errorMessage({ ...error, status }));
     this.name = 'APIRequestError';
     this.code = error.code || 'REQUEST_FAILED';
     this.details = error.details ?? {};
@@ -93,7 +95,7 @@ function writeCSRFCookie(token: string): void {
 function fallbackError(response: Response): APIError {
   return {
     code: 'REQUEST_FAILED',
-    message: 'İşlem tamamlanamadı.',
+    message: errorMessage({ status: response.status }),
     details: {},
     trace_id: response.headers.get('x-request-id') || ''
   };
@@ -203,19 +205,32 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
         throw error;
       }
     }
+    if (!response.ok) {
+      const error = await responseError(response);
+      throw error;
+    }
+    return (response.status === 204 ? undefined : await response.json()) as T;
+  } catch (cause) {
+    if (cause instanceof APIRequestError) {
+      if (cause.code === 'DEMO_RESETTING') notifyDemoResetting();
+      throw cause;
+    }
+    // Callers use AbortError to ignore superseded requests; keep that contract.
+    if (init.signal?.aborted) throw cause;
+    const reason = timeoutController.signal.aborted ? timeoutController.signal.reason : cause;
+    const code = timeoutController.signal.aborted
+      ? 'REQUEST_TIMEOUT'
+      : cause instanceof SyntaxError
+        ? 'INVALID_RESPONSE'
+        : 'NETWORK_ERROR';
+    throw new APIRequestError(
+      { code, message: errorMessage(reason, ''), details: {}, trace_id: '' },
+      0
+    );
   } finally {
     clearTimeout(timeout);
     init.signal?.removeEventListener('abort', abortFromCaller);
   }
-  if (!response.ok) {
-    const error = await responseError(response);
-    // The public demo rebuilds itself on a timer; while that runs every API
-    // call is refused. One hook here lets the demo banner take over the screen
-    // instead of each page inventing its own error state.
-    if (error.code === 'DEMO_RESETTING') notifyDemoResetting();
-    throw error;
-  }
-  return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
 let demoResettingHandler: (() => void) | null = null;

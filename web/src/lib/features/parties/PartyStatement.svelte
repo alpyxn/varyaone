@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage as localizedErrorMessage } from '$lib/errors';
   import { ArrowLeft, Download, Printer } from '@lucide/svelte';
   import { untrack } from 'svelte';
   import { api, type Company } from '$lib/api';
@@ -94,7 +95,7 @@
       loadState = 'ready';
     } catch (cause) {
       if (request.signal.aborted || sequence !== requestSequence) return;
-      const message = cause instanceof Error ? cause.message : 'Ekstre alınamadı.';
+      const message = localizedErrorMessage(cause, 'Ekstre alınamadı.');
       if (append) paginationError = message;
       else {
         errorMessage = message;
@@ -111,7 +112,21 @@
   });
 
   const overdue = $derived(
-    [...openItems].sort((a, b) => (a.due_date ?? '9999').localeCompare(b.due_date ?? '9999'))
+    openItems
+      .flatMap((item) =>
+        item.due_schedule?.length
+          ? item.due_schedule.map((due, index) => ({
+              ...item,
+              id: `${item.id}:${index}`,
+              due_date: due.due_date,
+              open_amount: due.open_amount,
+              document_no: due.installment_no
+                ? `${item.document_no ?? 'Fatura'} · ${due.installment_no}. taksit`
+                : item.document_no
+            }))
+          : [item]
+      )
+      .sort((a, b) => (a.due_date ?? '9999').localeCompare(b.due_date ?? '9999'))
   );
   const openBaseCurrency = $derived(
     openItems.find((i) => i.base_currency)?.base_currency ||
@@ -348,50 +363,58 @@
 
   {#if tab === 'movements'}
     <div id="panel-movements" role="tabpanel" aria-labelledby="tab-movements" tabindex="0">
-      <table class="grid-table">
-        <caption class="sr-only">Cari hareketleri</caption>
-        <thead>
-          <tr
-            ><th scope="col">Tarih</th><th scope="col">Vade</th><th scope="col">Belge</th><th
-              scope="col">Açıklama</th
-            ><th scope="col">Para</th><th scope="col" class="right">Borç</th><th
-              scope="col"
-              class="right">Alacak</th
-            ><th scope="col" class="right">Bakiye ({reportCurrency})</th></tr
-          >
-        </thead>
-        <tbody>
-          {#each report.items as e (e.id)}
-            {@const link = sourceLink(e)}
-            {@const rb = describeBalance(e.running_balance ?? '0', reportCurrency)}
-            <tr>
-              <td>{formatDate(e.document_date)}</td>
-              <td>{e.due_date ? formatDate(e.due_date) : '—'}</td>
-              <td>{e.document_no ?? '—'}</td>
-              <td>
-                {#if link}
-                  <a href={link}>{e.description}</a>
-                {:else}
-                  {e.description}
-                {/if}
-              </td>
-              <td>{e.currency}</td>
-              <td class="right"
-                >{isZeroDecimal(e.debit) ? '—' : formatMoney(e.debit, e.currency)}</td
-              >
-              <td class="right"
-                >{isZeroDecimal(e.credit) ? '—' : formatMoney(e.credit, e.currency)}</td
-              >
-              <td class="right" class:negative={rb.tone === 'credit'}
-                >{e.running_balance ? `${rb.amount}${rb.label ? ' ' + rb.label : ''}` : '—'}</td
-              >
-            </tr>
-          {/each}
-          {#if report.items.length === 0}
-            <tr><td colspan="8" class="muted">Bu aralıkta hareket yok.</td></tr>
-          {/if}
-        </tbody>
-      </table>
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
+        <table class="grid-table">
+          <caption class="sr-only">Cari hareketleri</caption>
+          <thead>
+            <tr
+              ><th scope="col">Tarih</th><th scope="col">Vade</th><th scope="col">Belge</th><th
+                scope="col">Açıklama</th
+              ><th scope="col">Para</th><th scope="col" class="right">Borç</th><th
+                scope="col"
+                class="right">Alacak</th
+              ><th scope="col" class="right">Bakiye ({reportCurrency})</th></tr
+            >
+          </thead>
+          <tbody>
+            {#each report.items as e (e.id)}
+              {@const link = sourceLink(e)}
+              {@const rb = describeBalance(e.running_balance ?? '0', reportCurrency)}
+              <tr>
+                <td>{formatDate(e.document_date)}</td>
+                <td>{e.due_date ? formatDate(e.due_date) : '—'}</td>
+                <td>{e.document_no ?? '—'}</td>
+                <td>
+                  {#if link}
+                    <a href={link}>{e.description}</a>
+                  {:else}
+                    {e.description}
+                  {/if}
+                </td>
+                <td>{e.currency}</td>
+                <td class="right"
+                  >{isZeroDecimal(e.debit) ? '—' : formatMoney(e.debit, e.currency)}</td
+                >
+                <td class="right"
+                  >{isZeroDecimal(e.credit) ? '—' : formatMoney(e.credit, e.currency)}</td
+                >
+                <td class="right" class:negative={rb.tone === 'credit'}
+                  >{e.running_balance ? `${rb.amount}${rb.label ? ' ' + rb.label : ''}` : '—'}</td
+                >
+              </tr>
+            {/each}
+            {#if report.items.length === 0}
+              <tr><td colspan="8" class="muted">Bu aralıkta hareket yok.</td></tr>
+            {/if}
+          </tbody>
+        </table>
+      </div>
       {#if nextCursor || loadingMore || paginationError}
         <div class="pagination" aria-live="polite">
           {#if paginationError}
@@ -436,107 +459,128 @@
       {#if openTotalsIncomplete}<p class="muted" role="status">
           Bazı açık kalemler ana para birimine çevrilemedi.
         </p>{/if}
-      <table class="grid-table">
-        <caption class="sr-only">Açık cari kalemleri</caption>
-        <thead>
-          <tr
-            ><th scope="col">Belge</th><th scope="col">Yön</th><th scope="col">Tarih</th><th
-              scope="col">Vade</th
-            ><th scope="col">Para</th><th scope="col" class="right">Orijinal</th><th
-              scope="col"
-              class="right">Açık</th
-            ><th scope="col" class="right">Açık ({openBaseCurrency})</th></tr
-          >
-        </thead>
-        <tbody>
-          {#each openItems as item (item.id)}
-            <tr>
-              <td>
-                {#if item.document_id}
-                  <a
-                    href={`/${item.side === 'PAYABLE' ? 'alis' : 'satis'}/faturalar/${item.document_id}`}
-                    >{item.document_no ?? 'Fatura'}</a
-                  >
-                {:else}
-                  {item.document_no ?? '—'}
-                {/if}
-              </td>
-              <td
-                >{item.side === 'RECEIVABLE'
-                  ? 'Alacak'
-                  : item.side === 'PAYABLE'
-                    ? 'Borç'
-                    : '—'}</td
-              >
-              <td>{formatDate(item.document_date)}</td>
-              <td>{item.due_date ? formatDate(item.due_date) : '—'}</td>
-              <td>{item.currency}</td>
-              <td class="right">{formatMoney(item.original_amount, item.currency)}</td>
-              <td class="right">{formatMoney(item.open_amount, item.currency)}</td>
-              <td class="right"
-                >{openAmountInBase(item) === undefined
-                  ? '—'
-                  : formatMoney(openAmountInBase(item)!, openBaseCurrency)}</td
-              >
-            </tr>
-          {/each}
-          {#if openItemsError}
-            <tr><td colspan="8" class="muted">Açık kalemler görüntülenemedi.</td></tr>
-          {:else if openItems.length === 0}
-            <tr><td colspan="8" class="muted">Açık kalem yok.</td></tr>
-          {/if}
-        </tbody>
-        {#if openItems.length}
-          <tfoot>
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
+        <table class="grid-table">
+          <caption class="sr-only">Açık cari kalemleri</caption>
+          <thead>
             <tr
-              ><td colspan="7" class="right"><strong>Net açık ({openBaseCurrency})</strong></td><td
-                class="right"
-                ><strong
-                  >{openNetTotal === undefined
-                    ? '—'
-                    : describeBalance(openNetTotal, openBaseCurrency).headline}</strong
-                ></td
-              ></tr
+              ><th scope="col">Belge</th><th scope="col">Yön</th><th scope="col">Tarih</th><th
+                scope="col">Asıl vade</th
+              ><th scope="col">Para</th><th scope="col" class="right">Orijinal</th><th
+                scope="col"
+                class="right">Açık</th
+              ><th scope="col" class="right">Açık ({openBaseCurrency})</th></tr
             >
-          </tfoot>
-        {/if}
-      </table>
+          </thead>
+          <tbody>
+            {#each openItems as item (item.id)}
+              <tr>
+                <td>
+                  {#if item.document_id}
+                    <a
+                      href={`/${item.side === 'PAYABLE' ? 'alis' : 'satis'}/faturalar/${item.document_id}`}
+                      >{item.document_no ?? 'Fatura'}</a
+                    >
+                  {:else}
+                    {item.document_no ?? '—'}
+                  {/if}
+                </td>
+                <td
+                  >{item.side === 'RECEIVABLE'
+                    ? 'Alacak'
+                    : item.side === 'PAYABLE'
+                      ? 'Borç'
+                      : '—'}</td
+                >
+                <td>{formatDate(item.document_date)}</td>
+                <td
+                  >{#if item.due_schedule?.length}<a
+                      href={`/cari/vade-planlari?${new URLSearchParams({ party_id: partyID, side: item.side })}`}
+                      >Taksit planı</a
+                    ><br />{/if}{item.due_date ? formatDate(item.due_date) : '—'}</td
+                >
+                <td>{item.currency}</td>
+                <td class="right">{formatMoney(item.original_amount, item.currency)}</td>
+                <td class="right">{formatMoney(item.open_amount, item.currency)}</td>
+                <td class="right"
+                  >{openAmountInBase(item) === undefined
+                    ? '—'
+                    : formatMoney(openAmountInBase(item)!, openBaseCurrency)}</td
+                >
+              </tr>
+            {/each}
+            {#if openItemsError}
+              <tr><td colspan="8" class="muted">Açık kalemler görüntülenemedi.</td></tr>
+            {:else if openItems.length === 0}
+              <tr><td colspan="8" class="muted">Açık kalem yok.</td></tr>
+            {/if}
+          </tbody>
+          {#if openItems.length}
+            <tfoot>
+              <tr
+                ><td colspan="7" class="right"><strong>Net açık ({openBaseCurrency})</strong></td
+                ><td class="right"
+                  ><strong
+                    >{openNetTotal === undefined
+                      ? '—'
+                      : describeBalance(openNetTotal, openBaseCurrency).headline}</strong
+                  ></td
+                ></tr
+              >
+            </tfoot>
+          {/if}
+        </table>
+      </div>
     </div>
   {:else}
     <div id="panel-due" role="tabpanel" aria-labelledby="tab-due" tabindex="0">
-      <table class="grid-table">
-        <caption class="sr-only">Vadesi gelen cari kalemleri</caption>
-        <thead>
-          <tr
-            ><th scope="col">Vade</th><th scope="col">Belge</th><th scope="col">Yön</th><th
-              scope="col">Para</th
-            ><th scope="col" class="right">Açık</th><th scope="col">Gecikme</th></tr
-          >
-        </thead>
-        <tbody>
-          {#each overdue as item (item.id)}
-            <tr>
-              <td>{item.due_date ? formatDate(item.due_date) : 'Vadesiz'}</td>
-              <td>{item.document_no ?? '—'}</td>
-              <td
-                >{item.side === 'RECEIVABLE'
-                  ? 'Alacak'
-                  : item.side === 'PAYABLE'
-                    ? 'Borç'
-                    : '—'}</td
-              >
-              <td>{item.currency || '—'}</td>
-              <td class="right">{formatMoney(item.open_amount, item.currency)}</td>
-              <td>{daysLate(item.due_date) || '—'}</td>
-            </tr>
-          {/each}
-          {#if openItemsError}
-            <tr><td colspan="6" class="muted">Açık kalemler görüntülenemedi.</td></tr>
-          {:else if overdue.length === 0}
-            <tr><td colspan="6" class="muted">Açık kalem yok.</td></tr>
-          {/if}
-        </tbody>
-      </table>
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
+        <table class="grid-table">
+          <caption class="sr-only">Vadesi gelen cari kalemleri</caption>
+          <thead>
+            <tr
+              ><th scope="col">Vade</th><th scope="col">Belge</th><th scope="col">Yön</th><th
+                scope="col">Para</th
+              ><th scope="col" class="right">Açık</th><th scope="col">Gecikme</th></tr
+            >
+          </thead>
+          <tbody>
+            {#each overdue as item (item.id)}
+              <tr>
+                <td>{item.due_date ? formatDate(item.due_date) : 'Vadesiz'}</td>
+                <td>{item.document_no ?? '—'}</td>
+                <td
+                  >{item.side === 'RECEIVABLE'
+                    ? 'Alacak'
+                    : item.side === 'PAYABLE'
+                      ? 'Borç'
+                      : '—'}</td
+                >
+                <td>{item.currency || '—'}</td>
+                <td class="right">{formatMoney(item.open_amount, item.currency)}</td>
+                <td>{daysLate(item.due_date) || '—'}</td>
+              </tr>
+            {/each}
+            {#if openItemsError}
+              <tr><td colspan="6" class="muted">Açık kalemler görüntülenemedi.</td></tr>
+            {:else if overdue.length === 0}
+              <tr><td colspan="6" class="muted">Açık kalem yok.</td></tr>
+            {/if}
+          </tbody>
+        </table>
+      </div>
     </div>
   {/if}
 {/if}

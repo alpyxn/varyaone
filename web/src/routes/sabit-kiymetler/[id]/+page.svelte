@@ -4,6 +4,7 @@
   import { goto } from '$app/navigation';
   import { ArrowLeft, LoaderCircle, Pencil, RefreshCw } from '@lucide/svelte';
   import { VaryaSheet } from '$lib/components/varya/sheet';
+  import { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
   import { api, APIRequestError, type Session } from '$lib/api';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -62,6 +63,38 @@
   let returnDate = $state(new Date().toISOString().slice(0, 10));
   let returnNote = $state('');
   let returnOpen = $state(false);
+
+  // Zimmet ve iade formları ortak Sheet korumasına bağlanır; doğrudan
+  // open=false atamaları yerine requestClose() kullanılır.
+  const assignUnsaved = new UnsavedChangesGuard({
+    snapshot: () => ({ selectedEmployee, employeeQuery, assignDate, assignNote }),
+    isBusy: () => busy,
+    onClose: () => {
+      assignOpen = false;
+    }
+  });
+  const returnUnsaved = new UnsavedChangesGuard({
+    snapshot: () => ({ returnDate, returnNote }),
+    isBusy: () => busy,
+    onClose: () => {
+      returnOpen = false;
+    }
+  });
+
+  $effect(() => assignUnsaved.registerPageGuard('Zimmetle'));
+  $effect(() => returnUnsaved.registerPageGuard('İade Al'));
+
+  function openAssign() {
+    actionError = '';
+    assignOpen = true;
+    assignUnsaved.reset();
+  }
+
+  function openReturn() {
+    actionError = '';
+    returnOpen = true;
+    returnUnsaved.reset();
+  }
 
   const canEdit = $derived(permissions.includes('fixed_asset.edit'));
   const canAssign = $derived(permissions.includes('fixed_asset.assign'));
@@ -174,7 +207,7 @@
         assigned_at: assignDate,
         note: assignNote.trim()
       });
-      assignOpen = false;
+      assignUnsaved.closeAfterSave();
       selectedEmployee = undefined;
       employeeQuery = '';
       assignNote = '';
@@ -198,7 +231,7 @@
         returned_at: returnDate,
         note: returnNote.trim()
       });
-      returnOpen = false;
+      returnUnsaved.closeAfterSave();
       returnNote = '';
       actionMessage = 'Sabit kıymet iade alındı.';
       await load(true);
@@ -271,9 +304,9 @@
     {#if canAssign}
       <div class="zimmet-actions">
         {#if asset.assigned_to}
-          <Button onclick={() => (returnOpen = true)} disabled={busy}>İade Al</Button>
+          <Button onclick={openReturn} disabled={busy}>İade Al</Button>
         {:else if asset.status === 'AVAILABLE'}
-          <Button onclick={() => (assignOpen = true)} disabled={busy}>Zimmetle</Button>
+          <Button onclick={openAssign} disabled={busy}>Zimmetle</Button>
         {/if}
       </div>
     {/if}
@@ -384,6 +417,7 @@
 
   <VaryaSheet
     bind:open={assignOpen}
+    guard={assignUnsaved}
     title="Zimmetle"
     description="Bu sabit kıymeti bir çalışana teslim edin."
   >
@@ -428,7 +462,12 @@
       </Field.Field>
       {#if actionError}<p class="notice error">{actionError}</p>{/if}
       <div class="sheet-actions">
-        <Button type="button" variant="ghost" onclick={() => (assignOpen = false)}>Vazgeç</Button>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={busy}
+          onclick={() => assignUnsaved.requestClose()}>Vazgeç</Button
+        >
         <Button type="submit" disabled={busy}>Zimmetle</Button>
       </div>
     </form>
@@ -436,6 +475,7 @@
 
   <VaryaSheet
     bind:open={returnOpen}
+    guard={returnUnsaved}
     title="İade Al"
     description={asset.assigned_to
       ? `${asset.assigned_to.employee_name} zimmetinden geri alınır.`
@@ -452,7 +492,12 @@
       </Field.Field>
       {#if actionError}<p class="notice error">{actionError}</p>{/if}
       <div class="sheet-actions">
-        <Button type="button" variant="ghost" onclick={() => (returnOpen = false)}>Vazgeç</Button>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={busy}
+          onclick={() => returnUnsaved.requestClose()}>Vazgeç</Button
+        >
         <Button type="submit" disabled={busy}>İade Al</Button>
       </div>
     </form>
@@ -466,7 +511,13 @@
     {#if !assignments.length}
       <p class="state">Zimmet kaydı yok.</p>
     {:else}
-      <div class="table-scroll">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
         <table>
           <thead>
             <tr

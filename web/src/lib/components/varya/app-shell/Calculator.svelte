@@ -2,11 +2,18 @@
   import { onMount } from 'svelte';
   import { Calculator as CalculatorIcon, X, GripHorizontal } from '@lucide/svelte';
   import { Button } from '$lib/components/ui/button';
+  import { focusTrap } from '$lib/a11y/overlay';
 
   const PANEL_W = 264;
   const PANEL_H = 372;
 
-  let open = $state(false);
+  let {
+    /** Bound by the shell so the narrow-screen tools menu can open it. */
+    open = $bindable(false),
+    /** The topbar hides the inline trigger once the tools menu owns it. */
+    showTrigger = true
+  }: { open?: boolean; showTrigger?: boolean } = $props();
+  /** Free-floating draggable panel above this width; a bottom sheet below it. */
   let isDesktop = $state(true);
   let expr = $state('');
   let result = $state('');
@@ -152,7 +159,7 @@
   }
 
   function onKeydown(event: KeyboardEvent) {
-    if (!open || !isDesktop) return;
+    if (!open) return;
     if (event.key === 'Escape') {
       open = false;
       return;
@@ -210,16 +217,27 @@
 
   function toggle() {
     open = !open;
-    if (open) {
+    if (open && isDesktop) {
       pos = clamp((window.innerWidth - PANEL_W) / 2, (window.innerHeight - PANEL_H) / 2 - 40);
     }
   }
+
+  $effect(() => {
+    // Opened from the tools menu, or the viewport crossed the breakpoint:
+    // make sure the floating panel always has a position to render at.
+    if (open && isDesktop && !pos) {
+      pos = clamp((window.innerWidth - PANEL_W) / 2, (window.innerHeight - PANEL_H) / 2 - 40);
+    }
+  });
 
   onMount(() => {
     const mq = window.matchMedia('(min-width: 981px)');
     const update = () => {
       isDesktop = mq.matches;
-      if (!isDesktop) open = false;
+      // The sheet has no coordinates; drop them so a switch back to the
+      // desktop recomputes a position inside the new viewport.
+      if (!isDesktop) pos = null;
+      else if (open) pos = clamp(pos?.x ?? 0, pos?.y ?? 0);
     };
     update();
     mq.addEventListener('change', update);
@@ -237,7 +255,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-{#if isDesktop}
+{#if showTrigger}
   <Button
     variant="ghost"
     size="icon"
@@ -249,23 +267,37 @@
   >
 {/if}
 
-{#if open && pos && isDesktop}
+{#if open && !isDesktop}
+  <button
+    type="button"
+    class="calc-scrim"
+    tabindex="-1"
+    aria-label="Hesap makinesini kapat"
+    onclick={() => (open = false)}
+  ></button>
+{/if}
+
+{#if open && (isDesktop ? pos : true)}
   <div
     class="calc-panel"
-    style="left:{pos.x}px; top:{pos.y}px;"
+    class:calc-sheet={!isDesktop}
+    style={isDesktop && pos ? `left:${pos.x}px; top:${pos.y}px;` : undefined}
     role="dialog"
+    aria-modal={!isDesktop}
     aria-label="Hesap makinesi"
+    tabindex="-1"
+    use:focusTrap={{ active: !isDesktop, onclose: () => (open = false) }}
   >
     <div
       class="calc-head"
       role="toolbar"
       tabindex="-1"
-      aria-label="Pencereyi taşı"
-      onpointerdown={startDrag}
-      onpointermove={onDrag}
-      onpointerup={endDrag}
+      aria-label={isDesktop ? 'Pencereyi taşı' : 'Hesap makinesi'}
+      onpointerdown={isDesktop ? startDrag : undefined}
+      onpointermove={isDesktop ? onDrag : undefined}
+      onpointerup={isDesktop ? endDrag : undefined}
     >
-      <GripHorizontal size={15} aria-hidden="true" />
+      {#if isDesktop}<GripHorizontal size={15} aria-hidden="true" />{/if}
       <span>Hesap makinesi</span>
       <button type="button" class="calc-close" aria-label="Kapat" onclick={() => (open = false)}>
         <X size={14} />
@@ -294,6 +326,14 @@
 {/if}
 
 <style>
+  .calc-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 2147482999;
+    border: 0;
+    padding: 0;
+    background: rgb(2 6 23 / 52%);
+  }
   .calc-panel {
     position: fixed;
     z-index: 2147483000;
@@ -394,5 +434,34 @@
   }
   .calc-key.is-wide {
     grid-column: span 2;
+  }
+
+  /* Narrow screens: a bottom sheet pinned to the safe area instead of a
+     draggable window, so it never lands off-screen or under the keyboard. */
+  .calc-panel.calc-sheet {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: auto;
+    max-height: 92dvh;
+    overflow-y: auto;
+    border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .calc-sheet .calc-head {
+    cursor: default;
+    font-size: 13px;
+  }
+  .calc-sheet .calc-close {
+    width: 36px;
+    height: 36px;
+  }
+  .calc-sheet .calc-expr {
+    font-size: 26px;
+  }
+  .calc-sheet .calc-key {
+    height: 52px;
+    font-size: 18px;
   }
 </style>

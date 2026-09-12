@@ -1,8 +1,12 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { errorMessage } from '$lib/errors';
   import { Dialog } from 'bits-ui';
   import { LoaderCircle, X } from '@lucide/svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
 
   type Props = {
     open?: boolean;
@@ -30,9 +34,26 @@
   let busy = $state(false);
   let error = $state('');
 
-  $effect(() => {
-    if (!open) reason = initialValue;
+  // Gerekçe yazıldıysa X, Esc ve Vazgeç çıkış onayından geçer.
+  const unsaved = new UnsavedChangesGuard({
+    snapshot: () => ({ reason }),
+    isBusy: () => busy,
+    onClose: () => {
+      open = false;
+      reset();
+    }
   });
+
+  $effect(() => {
+    if (open) {
+      untrack(() => unsaved.reset());
+    } else {
+      reason = initialValue;
+      untrack(() => unsaved.release());
+    }
+  });
+
+  $effect(() => unsaved.registerPageGuard(title));
 
   function reset() {
     reason = initialValue;
@@ -49,31 +70,45 @@
     error = '';
     try {
       await onConfirm(value);
-      open = false;
-      reset();
+      unsaved.closeAfterSave();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'İşlem tamamlanamadı.';
+      error = errorMessage(cause, 'İşlem tamamlanamadı.');
     } finally {
       busy = false;
     }
   }
 </script>
 
-<Dialog.Root bind:open onOpenChange={(next) => !next && !busy && reset()}>
+<Dialog.Root bind:open>
   <Dialog.Portal>
     <Dialog.Overlay class="dialog-overlay" />
-    <Dialog.Content class="reason-dialog" aria-describedby="reason-dialog-description">
+    <Dialog.Content
+      class="reason-dialog"
+      aria-describedby="reason-dialog-description"
+      onInteractOutside={(event) => event.preventDefault()}
+      onEscapeKeydown={(event) => {
+        event.preventDefault();
+        unsaved.requestClose();
+      }}
+    >
       <div class="dialog-heading">
         <div>
           <Dialog.Title>{title}</Dialog.Title>
           <Dialog.Description id="reason-dialog-description">{description}</Dialog.Description>
         </div>
-        <Dialog.Close class="close-button" aria-label="Kapat" disabled={busy}>
+        <button
+          class="close-button"
+          type="button"
+          aria-label="Kapat"
+          disabled={busy}
+          onclick={() => unsaved.requestClose()}
+        >
           <X size={17} />
-        </Dialog.Close>
+        </button>
       </div>
 
       <form
+        oninput={() => unsaved.noteUserInput()}
         onsubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -91,7 +126,12 @@
         />
         {#if error}<p class="reason-error" role="alert">{error}</p>{/if}
         <div class="dialog-actions">
-          <Dialog.Close type="button" class="cancel-button" disabled={busy}>Vazgeç</Dialog.Close>
+          <button
+            type="button"
+            class="cancel-button"
+            disabled={busy}
+            onclick={() => unsaved.requestClose()}>Vazgeç</button
+          >
           <Button type="submit" disabled={busy || !reason.trim()}>
             {#if busy}<LoaderCircle class="spin" size={14} />{/if}{confirmLabel}
           </Button>
@@ -101,6 +141,12 @@
   </Dialog.Portal>
 </Dialog.Root>
 
+<UnsavedChangesDialog
+  bind:open={unsaved.confirmOpen}
+  onKeepEditing={() => unsaved.keepEditing()}
+  onDiscard={() => unsaved.discardAndClose()}
+/>
+
 <style>
   :global(.reason-dialog) {
     position: fixed;
@@ -108,6 +154,8 @@
     top: 50%;
     left: 50%;
     width: min(440px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
     transform: translate(-50%, -50%);
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-panel);
@@ -118,6 +166,7 @@
   .dialog-heading,
   .dialog-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 12px;

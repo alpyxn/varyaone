@@ -14,6 +14,8 @@
   import { money, type EmployeeAdvance } from '$lib/features/hr/types';
   import { advanceStatusLabel, normalizeTRYAmount, validTRYAmount } from '$lib/features/hr/advance';
   import { createEmployeeAdvance, listEmployeeAdvances, listEmployees } from '$lib/features/hr/api';
+  import { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
 
   type Account = {
     id: string;
@@ -84,6 +86,27 @@
       loading = false;
     }
   }
+  // X, Esc ve Vazgeç aynı kontrollü kapatma akışını kullanır; dış alana
+  // tıklamak pencereyi kapatmaz.
+  const unsaved = new UnsavedChangesGuard({
+    snapshot: () => ({ ...form, employee: selectedEmployee?.id ?? '', negativeBalanceReason }),
+    isBusy: () => saving,
+    onClose: () => {
+      showCreate = false;
+      negativeBalanceOpen = false;
+    }
+  });
+
+  $effect(() => unsaved.registerPageGuard('Personel avansı'));
+
+  function handleCreateKeydown(event: KeyboardEvent) {
+    if (!showCreate || event.key !== 'Escape' || event.defaultPrevented) return;
+    if (unsaved.confirmOpen || negativeBalanceOpen) return;
+    if (typeof document !== 'undefined' && document.querySelector('.entity-picker-dialog')) return;
+    event.preventDefault();
+    unsaved.requestClose();
+  }
+
   async function openCreate() {
     form = {
       employee_id: '',
@@ -98,12 +121,15 @@
     negativeBalanceReason = '';
     commandKey = '';
     showCreate = true;
+    unsaved.reset();
     try {
       const accountPage = await api<{ items: Account[] }>('/finance/accounts?limit=200');
       accounts = (accountPage.items ?? []).filter((a) => a.currency === 'TRY' && a.is_active);
     } catch {
       error = 'Erişilebilir TRY hesapları yüklenemedi.';
     }
+    // Geç gelen hesap listesi, kullanıcı bu arada yazdıysa temiz durumu ezmez.
+    unsaved.captureInitial();
   }
   async function searchEmployees(query: string): Promise<EmployeeOption[]> {
     const page = await listEmployees({ q: query.trim() || undefined, status: 'ACTIVE' });
@@ -130,8 +156,12 @@
       if (!form.expected_repayment_date) delete body.expected_repayment_date;
       if (overrideReason.trim()) body.override_reason = overrideReason.trim();
       const created = await createEmployeeAdvance(body);
-      showCreate = false;
-      negativeBalanceOpen = false;
+      unsaved.closeAfterSave();
+      // Busy guard'ı burada bırak: aşağıdaki goto() henüz "finally" çalışmadan
+      // tetiklenir, "saving" hâlâ true ise navigasyon kendi meşguliyet
+      // uyarısına takılıp "Kayıt sürüyor" diyalogunu başarılı bir kayıttan
+      // sonra göstermiş olurdu.
+      saving = false;
       await goto(`/personel/avanslar/${created.id}`);
     } catch (cause) {
       if (
@@ -242,17 +272,25 @@
   </section>
 {/if}
 
+<svelte:window onkeydown={handleCreateKeydown} />
+
+<!-- Veri giriş penceresinde dış alana tıklamak pencereyi kapatmaz. -->
 {#if showCreate}<div class="overlay" role="presentation">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="new-title">
       <header>
         <div>
           <h2 id="new-title">Personel avansı ver</h2>
         </div>
-        <button class="icon" aria-label="Kapat" onclick={() => (showCreate = false)}
-          ><X size={18} /></button
+        <button
+          class="icon"
+          aria-label="Kapat"
+          disabled={saving}
+          onclick={() => unsaved.requestClose()}><X size={18} /></button
         >
       </header>
       <form
+        oninput={() => unsaved.noteUserInput()}
+        onchange={() => unsaved.noteUserInput()}
         onsubmit={(e) => {
           e.preventDefault();
           void save();
@@ -301,8 +339,11 @@
           /></label
         >
         <footer>
-          <Button type="button" variant="outline" onclick={() => (showCreate = false)}
-            >Vazgeç</Button
+          <Button
+            type="button"
+            variant="outline"
+            disabled={saving}
+            onclick={() => unsaved.requestClose()}>Vazgeç</Button
           ><Button
             type="submit"
             disabled={saving ||
@@ -315,7 +356,12 @@
         </footer>
       </form>
     </div>
-  </div>{/if}
+  </div>
+  <UnsavedChangesDialog
+    bind:open={unsaved.confirmOpen}
+    onKeepEditing={() => unsaved.keepEditing()}
+    onDiscard={() => unsaved.discardAndClose()}
+  />{/if}
 
 <ConfirmDialog
   bind:open={negativeBalanceOpen}

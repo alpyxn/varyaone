@@ -15,6 +15,15 @@ x-backend-environment: &backend-environment
   VARYAONE_MASTER_KEY: ${VARYAONE_MASTER_KEY:?VARYAONE_MASTER_KEY is required}
   VARYAONE_STORAGE_PROVIDER: ${VARYAONE_STORAGE_PROVIDER:-local}
   VARYAONE_STORAGE_ROOT: ${VARYAONE_STORAGE_ROOT:-/var/lib/varyaone/storage}
+  # Islem kilidi, journal'i ve durumu. Geri yuklemenin degistirdigi iki seyin
+  # (veritabani ve storage) disinda ayri bir volume'de durur.
+  VARYAONE_CONTROL_DIR: ${VARYAONE_CONTROL_DIR:-/var/lib/varyaone/control}
+  # Oturum cerezinin Secure bayragi. Uretimde varsayilan acik (HTTPS).
+  # Domainsiz kurulumda site duz HTTP uzerinden LAN IP'siyle acilir; Secure
+  # cerez o durumda tarayici tarafindan hic gonderilmez ve giris calismaz.
+  # deploy.sh bu degeri kurulum moduna gore yazar; burada aktarilmadigi surece
+  # .env'deki deger backend'e hic ulasmiyordu.
+  VARYAONE_SECURE_COOKIES: ${VARYAONE_SECURE_COOKIES:-}
   # Nabiz: anonim kurulum sayaci varsayilan olarak ACIK gelir (opt-out).
   # Gonderilen tek sey: rastgele kurulum UUID'si + surum. Kapatmak icin:
   #   VARYAONE_PULSE_INSTALL_PING=false
@@ -59,6 +68,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - control-data:/var/lib/varyaone/control
     restart: "no"
 
   api:
@@ -79,6 +90,11 @@ services:
         condition: service_completed_successfully
     volumes:
       - storage-data:/var/lib/varyaone/storage
+      # Operasyon kilidi, journal'ı ve durumu. Geri yüklemenin değiştirdiği iki
+      # şeyin (veritabanı ve storage) dışında ayrı bir volume'de durur: yarıda
+      # kalan bir geri yüklemenin kaydı, geri yüklemenin sildiği yerde tutulursa
+      # tam da kanıt olacağı anda kaybolur.
+      - control-data:/var/lib/varyaone/control
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health/ready"]
       interval: 10s
@@ -97,6 +113,11 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    volumes:
+      # Worker'ın da kontrol volume'üne erişmesi gerekir: yarıda kalmış bir geri
+      # yüklemeden sonra arka plan işlerinin başlamaması API kadar önemlidir.
+      - storage-data:/var/lib/varyaone/storage
+      - control-data:/var/lib/varyaone/control
     restart: unless-stopped
 
   frontend:
@@ -111,7 +132,10 @@ services:
       # adapter-node caps request bodies at 512K by default. The `.varya`
       # backup restore proxies a full-system archive through this service, so
       # lift the ceiling to the API's own restore cap (8 GiB).
-      BODY_SIZE_LIMIT: ${VARYAONE_BODY_SIZE_LIMIT:-8589934592}
+      # Dosya sınırı (8 GiB) ile HTTP gövde sınırı ayrı büyüklüklerdir: multipart
+      # bir gövde, dosyanın kendisi artı sınır/başlık yüküdür. İkisini eşitlemek,
+      # tam 8 GiB'lik bir yedeğin belgelenen sınırda reddedilmesi demekti.
+      BODY_SIZE_LIMIT: ${VARYAONE_BODY_SIZE_LIMIT:-8590983168}
     ports:
       - "${VARYAONE_WEB_BIND:-0.0.0.0}:${VARYAONE_WEB_PORT:-3000}:3000"
     depends_on:
@@ -137,3 +161,4 @@ services:
 volumes:
   postgres-data:
   storage-data:
+  control-data:

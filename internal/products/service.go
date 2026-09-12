@@ -306,7 +306,16 @@ type rowQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-func productSelect(session identity.Session, scope Scope) (string, []any, error) {
+// productSelectScoped builds the shared product projection.
+//
+// The stock and tax summaries are aggregates over whole company-wide tables,
+// while the caller only ever keeps a handful of products: one page of a list,
+// or a single card. `pageCTE` is the body of a CTE named `product_page`
+// yielding the wanted product ids; both summaries are restricted to those ids
+// and the projection is joined to them. Pass an empty string for the whole
+// company. The returned rows are the same either way; only the work behind
+// them changes.
+func productSelectScoped(session identity.Session, scope Scope, pageCTE string) (string, []any, error) {
 	branchID, err := scopeUUIDValue("branch_id", scope.BranchID)
 	if err != nil {
 		return "", nil, err
@@ -315,8 +324,22 @@ func productSelect(session identity.Session, scope Scope) (string, []any, error)
 	if err != nil {
 		return "", nil, err
 	}
-	return `
-WITH stock_summary AS (
+	replacer := strings.NewReplacer(
+		"/*PAGE_CTE*/", "",
+		"/*PAGE_STOCK*/", "",
+		"/*PAGE_TAX*/", "",
+		"/*PAGE_JOIN*/", "",
+	)
+	if pageCTE != "" {
+		replacer = strings.NewReplacer(
+			"/*PAGE_CTE*/", "product_page AS ("+pageCTE+"),",
+			"/*PAGE_STOCK*/", "AND sp.product_id IN (SELECT id FROM product_page)",
+			"/*PAGE_TAX*/", "AND ptp.product_id IN (SELECT id FROM product_page)",
+			"/*PAGE_JOIN*/", "JOIN product_page pp ON pp.id=p.id",
+		)
+	}
+	return replacer.Replace(`
+WITH /*PAGE_CTE*/ stock_summary AS (
     SELECT sp.product_id,
            SUM(sp.physical_quantity)::text AS physical_quantity,
            SUM(sp.reserved_quantity)::text AS reserved_quantity,
@@ -324,6 +347,7 @@ WITH stock_summary AS (
 	    FROM stock_positions sp
 	    JOIN warehouses sw ON sw.company_id=sp.company_id AND sw.id=sp.warehouse_id
 	    WHERE sp.company_id=$1
+	      /*PAGE_STOCK*/
 	      AND sw.is_active
 	      AND sw.warehouse_type='STANDARD'
       AND ($3::uuid IS NULL OR sw.branch_id=$3::uuid)
@@ -373,6 +397,7 @@ sales_tax_summary AS (
      AND ctd.id = c.tax_definition_id
     LEFT JOIN LATERAL (SELECT ` + productComponentRateSQL + `) component_rate ON true
     WHERE ptp.company_id = $1
+      /*PAGE_TAX*/
       AND ptp.direction = 'SALES'
       AND (c.tax_definition_id IS NULL OR UPPER(ctd.code) NOT LIKE 'KDV%')
     GROUP BY ptp.product_id, ptp.treatment, ptp.rate, ptp.tax_included
@@ -404,10 +429,11 @@ SELECT p.id,p.code,p.name,p.kind::text,p.description,p.purchase_price::text,p.sa
        ` + productComponentsSQL("PURCHASE") + `,
        ` + productComponentsSQL("SALES") + `
 FROM products p
+/*PAGE_JOIN*/
 LEFT JOIN product_categories pc ON pc.company_id=p.company_id AND pc.id=p.category_id
 LEFT JOIN product_brands pb ON pb.company_id=p.company_id AND pb.id=p.brand_id
 LEFT JOIN sales_tax_summary st ON st.product_id=p.id
-LEFT JOIN stock_summary ss ON ss.product_id=p.id`,
+LEFT JOIN stock_summary ss ON ss.product_id=p.id`),
 		[]any{session.CurrentCompanyID, session.User.ID, branchID, warehouseID}, nil
 }
 
@@ -431,17 +457,20 @@ func (s *Service) List(ctx context.Context, session identity.Session, options Li
 		return ListResult{Items: []Product{}}, nil
 	}
 
-	statement, args, err := productSelect(session, options.Scope)
-	if err != nil {
-		return ListResult{}, err
-	}
-	statement += ` WHERE p.company_id=$1`
+	// The page is picked first, from `products` alone, so the stock and tax
+	// summaries are computed for the rows that are actually returned instead of
+	// for the whole catalogue. $1..$4 are the projection's own arguments; the
+	// filters below continue from $5.
+	// $1..$4 belong to the projection and are filled in from it below.
+	const projectionArgs = 4
+	args := make([]any, projectionArgs)
+	page := ` SELECT p.id FROM products p WHERE p.company_id=$1`
 	if !options.IncludeInactive {
-		statement += ` AND p.is_active`
+		page += ` AND p.is_active`
 	}
 	if query != "" {
 		args = append(args, query)
-		statement += fmt.Sprintf(` AND p.search_vector @@ to_tsquery('simple',$%d)`, len(args))
+		page += fmt.Sprintf(` AND p.search_vector @@ to_tsquery('simple',$%d)`, len(args))
 	}
 	if strings.TrimSpace(options.CategoryID) != "" {
 		categoryID, categoryErr := uuid.Parse(strings.TrimSpace(options.CategoryID))
@@ -449,7 +478,7 @@ func (s *Service) List(ctx context.Context, session identity.Session, options Li
 			return ListResult{}, fmt.Errorf("%w: geçersiz kategori filtresi", identity.ErrValidation)
 		}
 		args = append(args, categoryID.String())
-		statement += fmt.Sprintf(` AND p.category_id=$%d::uuid`, len(args))
+		page += fmt.Sprintf(` AND p.category_id=$%d::uuid`, len(args))
 	}
 	if strings.TrimSpace(options.BrandID) != "" {
 		brandID, brandErr := uuid.Parse(strings.TrimSpace(options.BrandID))
@@ -457,24 +486,34 @@ func (s *Service) List(ctx context.Context, session identity.Session, options Li
 			return ListResult{}, fmt.Errorf("%w: geçersiz marka filtresi", identity.ErrValidation)
 		}
 		args = append(args, brandID.String())
-		statement += fmt.Sprintf(` AND p.brand_id=$%d::uuid`, len(args))
+		page += fmt.Sprintf(` AND p.brand_id=$%d::uuid`, len(args))
 	}
 	if kind := strings.ToUpper(strings.TrimSpace(options.Kind)); kind != "" {
 		if kind != "PHYSICAL" && kind != "SERVICE" {
 			return ListResult{}, fmt.Errorf("%w: geçersiz ürün türü filtresi", identity.ErrValidation)
 		}
 		args = append(args, kind)
-		statement += fmt.Sprintf(` AND p.kind=$%d::product_kind`, len(args))
+		page += fmt.Sprintf(` AND p.kind=$%d::product_kind`, len(args))
 	}
 	if options.Cursor != "" {
 		nameParam := len(args) + 1
 		idParam := nameParam + 1
 		args = append(args, afterName, afterID)
-		statement += fmt.Sprintf(` AND (lower(p.name),p.id) > ($%d,$%d::uuid)`, nameParam, idParam)
+		page += fmt.Sprintf(` AND (lower(p.name),p.id) > ($%d,$%d::uuid)`, nameParam, idParam)
 	}
 	limitParam := len(args) + 1
-	statement += fmt.Sprintf(` ORDER BY lower(p.name),p.id LIMIT $%d`, limitParam)
+	page += fmt.Sprintf(` ORDER BY lower(p.name),p.id LIMIT $%d`, limitParam)
 	args = append(args, options.Limit+1)
+
+	statement, baseArgs, err := productSelectScoped(session, options.Scope, page)
+	if err != nil {
+		return ListResult{}, err
+	}
+	if len(baseArgs) != projectionArgs {
+		return ListResult{}, fmt.Errorf("product projection returned %d arguments, want %d", len(baseArgs), projectionArgs)
+	}
+	copy(args, baseArgs)
+	statement += ` WHERE p.company_id=$1 ORDER BY lower(p.name),p.id`
 	rows, err := s.pool.Query(ctx, statement, args...)
 	if err != nil {
 		return ListResult{}, err
@@ -1147,7 +1186,9 @@ func refreshSearch(ctx context.Context, tx pgx.Tx, companyID, productID string) 
 }
 
 func loadProduct(ctx context.Context, q rowQuerier, session identity.Session, id string, scope Scope) (Product, error) {
-	selection, args, err := productSelect(session, scope)
+	// One card needs one product's stock and tax summary, not the company's.
+	selection, args, err := productSelectScoped(session, scope,
+		` SELECT p.id FROM products p WHERE p.company_id=$1 AND p.id=$5`)
 	if err != nil {
 		return Product{}, err
 	}

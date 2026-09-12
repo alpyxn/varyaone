@@ -160,6 +160,14 @@
     if (!actionBusy) confirmAction = '';
   }
 
+  // X, Esc ve Vazgeç aynı kapatma yolunu kullanır; işlem sürerken hiçbiri
+  // çalışmaz. Bu pencere salt onay olduğu için çıkış onayı gösterilmez.
+  function handleConfirmKeydown(event: KeyboardEvent) {
+    if (!confirmAction || event.key !== 'Escape' || event.defaultPrevented) return;
+    event.preventDefault();
+    closeConfirm();
+  }
+
   function actionDescription() {
     return confirmAction === 'receive'
       ? 'Transfer teslim alınacaktır. Devam etmek istiyor musunuz?'
@@ -245,6 +253,8 @@
 <svelte:head
   ><title>{text(record, ['transfer_no', 'id'], 'Transfer')} · Varya One</title></svelte:head
 >
+
+<svelte:window onkeydown={handleConfirmKeydown} />
 
 {#if loading}
   <section class="state-card" role="status">
@@ -364,8 +374,12 @@
       <dialog open class="dialog" aria-labelledby="confirm-title">
         <header>
           <h2 id="confirm-title">Transfer işlemi</h2>
-          <button class="close" type="button" aria-label="Kapat" onclick={closeConfirm}
-            ><X size={18} /></button
+          <button
+            class="close"
+            type="button"
+            aria-label="Kapat"
+            disabled={actionBusy}
+            onclick={closeConfirm}><X size={18} /></button
           >
         </header>
         <p>{actionDescription()}</p>

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { dismissOnBackdrop } from '../dismiss-on-backdrop';
+  import { errorMessage } from '$lib/errors';
   import { Check, ChevronDown, LoaderCircle, MapPin, Search, X } from '@lucide/svelte';
   import { Badge } from '$lib/components/ui/badge';
   import { listDistricts, listTaxOfficeReferences } from '$lib/features/parties/api';
@@ -124,8 +126,7 @@
         items.find((item) => item.name.trim().toLocaleLowerCase('tr-TR') === preferred)?.name ?? '';
     } catch (cause) {
       if (controller.signal.aborted || requestID !== districtRequestSequence) return;
-      districtError =
-        cause instanceof Error && cause.message ? cause.message : 'İlçeler alınamadı.';
+      districtError = errorMessage(cause, 'İlçeler alınamadı.');
     } finally {
       if (requestID === districtRequestSequence) {
         districtsLoading = false;
@@ -178,8 +179,7 @@
       activeIndex = 0;
     } catch (cause) {
       if (controller.signal.aborted || requestID !== requestSequence) return;
-      searchError =
-        cause instanceof Error && cause.message ? cause.message : 'Vergi daireleri alınamadı.';
+      searchError = errorMessage(cause, 'Vergi daireleri alınamadı.');
     } finally {
       if (requestID === requestSequence) loading = false;
     }
@@ -193,7 +193,6 @@
     if (!reference.is_active) return;
     onSelect?.(reference);
     open = false;
-    setTimeout(() => (open = false), 0);
   }
 
   function clearSelection(event?: MouseEvent) {
@@ -230,6 +229,7 @@
   }
 
   function handleDialogKeydown(event: KeyboardEvent) {
+    if (event.defaultPrevented) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
       event.stopPropagation();
@@ -302,13 +302,7 @@
 </div>
 
 {#if open}
-  <div
-    class="picker-overlay"
-    role="presentation"
-    onclick={(event) => {
-      if (event.target === event.currentTarget) open = false;
-    }}
-  >
+  <div class="picker-overlay" role="presentation" use:dismissOnBackdrop={() => (open = false)}>
     <div
       bind:this={dialogElement}
       class="picker-dialog"
@@ -599,7 +593,7 @@
     z-index: 201;
     display: flex;
     width: min(760px, calc(100vw - 28px));
-    max-height: min(820px, 84vh);
+    max-height: min(820px, 84dvh);
     transform: translateX(-50%);
     flex-direction: column;
     overflow: hidden;
@@ -732,7 +726,7 @@
     overflow: hidden;
   }
   .result-list {
-    max-height: min(520px, 52vh);
+    max-height: min(520px, 52dvh);
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 7px 10px;
@@ -870,7 +864,7 @@
     .picker-dialog {
       top: 3vh;
       width: calc(100vw - 20px);
-      max-height: 94vh;
+      max-height: 94dvh;
     }
     .dialog-heading,
     .selected-summary,
@@ -895,7 +889,7 @@
       min-height: 160px;
     }
     .result-list {
-      max-height: 54vh;
+      max-height: 54dvh;
       padding: 5px 6px;
     }
     .result-list button {

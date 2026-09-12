@@ -101,3 +101,21 @@ func (r *Runner) seedManualMovements(ctx context.Context, session identity.Sessi
 	})
 	return err
 }
+
+// seedStockCount leaves one open count on the main warehouse.
+//
+// Without it the `/stok/sayim` list is empty, which is how the count workspace
+// came to be the one screen no test opened: the browser suite found no row,
+// skipped itself and reported green. A count in progress is also the honest
+// state to ship — it is what a warehouse looks like mid-count, and it is the
+// only state whose workspace shows the scan, correction and exception panels.
+func (r *Runner) seedStockCount(ctx context.Context, session identity.Session, svc *services, built *catalogue) error {
+	_, err := svc.inventory.StartStockCountEngine(ctx, inventory.StockCountEngineStartInput{
+		CompanyID:      CompanyID,
+		WarehouseID:    built.scope.warehouseID,
+		Description:    "Dönem sonu sayımı",
+		ActorUserID:    session.User.ID,
+		IdempotencyKey: "demo-seed:stock-count",
+	})
+	return err
+}

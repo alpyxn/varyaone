@@ -37,6 +37,7 @@ import (
 	"github.com/alpyxn/varyaone/internal/platform/database"
 	"github.com/alpyxn/varyaone/internal/platform/httpapi"
 	"github.com/alpyxn/varyaone/internal/platform/migrations"
+	"github.com/alpyxn/varyaone/internal/platform/opctl"
 	"github.com/alpyxn/varyaone/internal/platform/posting"
 	"github.com/alpyxn/varyaone/internal/preferences"
 	"github.com/alpyxn/varyaone/internal/pricing"
@@ -51,6 +52,19 @@ import (
 )
 
 func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawPool *pgxpool.Pool, runner *migrations.Runner, extraRouterOptions ...httpapi.RouterOption) error {
+	// Before anything else: is this installation in a state where serving
+	// traffic is the right thing to do? An API that starts on top of an
+	// interrupted restore begins writing into a database that matches no
+	// backup, and every write it accepts makes the recovery harder.
+	controller, err := opctl.New(cfg.ControlDir)
+	if err != nil {
+		return fmt.Errorf("initialize operation controller: %w", err)
+	}
+	if err := controller.GateStartup(); err != nil {
+		return err
+	}
+	httpapi.SetTrustedProxyNets(cfg.TrustedProxyNets)
+	warnIfServingRoleBypassesRLS(ctx, rawPool, logger)
 	// Services talk to the database through a request-scoped wrapper: when a
 	// request has pinned a connection (see requireSession), every query runs on
 	// that connection with varyaone.company_id already set, so the row-level
@@ -126,11 +140,13 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawP
 	}
 	backupOptions := []httpapi.RouterOption{}
 	backupEngine, err := backup.NewEngine(backup.Options{
-		DatabaseURL:    cfg.DatabaseURL,
-		StorageRoot:    cfg.StorageRoot,
-		Release:        cfg.Release,
-		MasterKey:      cfg.MasterKey,
-		PostgresBinDir: cfg.PostgresBinDir,
+		DatabaseURL:     cfg.DatabaseURL,
+		AppDatabaseURL:  cfg.AppDatabaseURL,
+		StorageRoot:     cfg.StorageRoot,
+		StorageProvider: cfg.StorageProvider,
+		Release:         cfg.Release,
+		MasterKey:       cfg.MasterKey,
+		PostgresBinDir:  cfg.PostgresBinDir,
 	})
 	switch {
 	case errors.Is(err, backup.ErrToolMissing):
@@ -138,7 +154,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawP
 	case err != nil:
 		return fmt.Errorf("initialize backup engine: %w", err)
 	default:
-		backupOptions = append(backupOptions, httpapi.WithSystemBackup(backupEngine))
+		backupOptions = append(backupOptions, httpapi.WithSystemBackup(backupEngine, controller, cfg.ControlDir))
 	}
 	// Pulse and system-update read cross-company/system state; they use the raw
 	// pool so a request's company scope never narrows them. The two are
@@ -158,7 +174,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawP
 		}))
 	}
 	routerOptions = append(routerOptions, extraRouterOptions...)
-	server := &http.Server{Addr: cfg.HTTPAddr, Handler: httpapi.NewRouter(logger, cfg.Release, readiness{pool: rawPool, migrations: runner}, routerOptions...), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second}
+	server := &http.Server{Addr: cfg.HTTPAddr, Handler: httpapi.NewRouter(logger, cfg.Release, readiness{pool: rawPool, migrations: runner, controller: controller, storageRoot: cfg.StorageRoot}, routerOptions...), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second}
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("api server starting", "address", cfg.HTTPAddr)
@@ -175,5 +191,26 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger, rawP
 		defer cancel()
 		logger.Info("api server stopping")
 		return server.Shutdown(shutdownCtx)
+	}
+}
+
+// warnIfServingRoleBypassesRLS is a read-only, best-effort check of the role
+// the server/worker actually serve traffic as. Row-level-security company
+// isolation only holds when that role is neither a superuser nor has
+// BYPASSRLS — set VARYAONE_APP_DATABASE_URL to the non-superuser varyaone_app
+// role (see deploy.sh ensure_app_role) to get that guarantee at the database
+// layer. This never blocks startup and never touches data: an installation
+// that has deliberately chosen VARYAONE_ALLOW_SUPERUSER_FALLBACK, or has not
+// migrated to the app role yet, keeps working exactly as before — it only
+// gets a log line naming the gap instead of an unannounced one.
+func warnIfServingRoleBypassesRLS(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) {
+	var bypasses bool
+	err := pool.QueryRow(ctx, `SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user`).Scan(&bypasses)
+	if err != nil {
+		logger.Warn("could not check whether the serving database role bypasses row-level security", "error", err)
+		return
+	}
+	if bypasses {
+		logger.Warn("the serving database role is a superuser or has BYPASSRLS: company isolation between tenants is enforced only by the application, not by the database. Set VARYAONE_APP_DATABASE_URL to a non-superuser role without BYPASSRLS (see deploy.sh ensure_app_role / internal/platform/migrations/app_role.sql) to close this gap.")
 	}
 }

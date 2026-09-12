@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage as localizedErrorMessage } from '$lib/errors';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
   import { api, type Session } from '$lib/api';
@@ -23,9 +24,7 @@
   const canManage = $derived(Boolean(session?.permissions.includes('pricing.manage')));
 
   function errorMessage(cause: unknown, fallback: string) {
-    return typeof cause === 'object' && cause && 'message' in cause
-      ? String(cause.message)
-      : fallback;
+    return localizedErrorMessage(cause, fallback);
   }
 
   function applyDashboard(next: ExchangeRateDashboard) {
@@ -148,7 +147,12 @@
         </div>
         {#if dashboard.settings.last_error}<div class="error-row">
             <dt>Son hata</dt>
-            <dd>{dashboard.settings.last_error}</dd>
+            <dd>
+              {errorMessage(
+                dashboard.settings.last_error,
+                'Döviz kurları güncellenemedi. Kur kaynağını ve bağlantınızı kontrol edin.'
+              )}
+            </dd>
           </div>{/if}
       </dl>
     </section>

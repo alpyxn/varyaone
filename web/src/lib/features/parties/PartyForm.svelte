@@ -22,13 +22,6 @@
     savePartyLocationDefault
   } from './api';
 
-  type PaymentTerm = {
-    id: string;
-    code: string;
-    name: string;
-    due_days: number;
-    is_active: boolean;
-  };
   type PartyGroup = { id: string; code: string; name: string; is_active: boolean };
   type Member = {
     user: { id: string; display_name: string };
@@ -49,7 +42,6 @@
     errors?: Record<string, string>;
   } = $props();
 
-  let paymentTerms = $state<PaymentTerm[]>([]);
   let groups = $state<PartyGroup[]>([]);
   let members = $state<Member[]>([]);
   let session = $state<Session>();
@@ -415,14 +407,10 @@
       await hydrateAddressSelections();
       if (newRecord && session) await applyLocationDefaults(session);
 
-      const [termsResult, groupsResult, membersResult] = await Promise.allSettled([
-        api<{ items: PaymentTerm[] }>('/party-settings/payment-terms'),
+      const [groupsResult, membersResult] = await Promise.allSettled([
         api<{ items: PartyGroup[] }>('/party-settings/groups'),
         api<{ items: Member[] }>('/users')
       ]);
-      if (termsResult.status === 'fulfilled') {
-        paymentTerms = termsResult.value.items.filter((item) => item.is_active);
-      }
       if (groupsResult.status === 'fulfilled') {
         groups = groupsResult.value.items.filter((item) => item.is_active);
       }
@@ -860,13 +848,6 @@
             {disabled}
             ariaLabel="Varsayılan para birimi"
           /></label
-        >
-        <label class="field"
-          ><span>Ödeme koşulu</span><select bind:value={value.payment_term_id} {disabled}
-            ><option value="">Peşin (vade yok)</option>{#each paymentTerms as term}<option
-                value={term.id}>{term.name} · {term.due_days} gün</option
-              >{/each}</select
-          ></label
         >
         <label class="field"
           ><span>Satış temsilcisi</span><select bind:value={value.sales_rep_user_id} {disabled}

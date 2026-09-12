@@ -16,6 +16,7 @@
     hareketler: 'Hareketler',
     tahsilatlar: 'Tahsilatlar',
     odemeler: 'Ödemeler',
+    'vade-planlari': 'Vade ve Taksit Planları',
     stok: 'Stok',
     urunler: 'Stok Kartları',
     depolar: 'Depolar',
@@ -63,12 +64,18 @@
 <style>
   .breadcrumbs {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 5px;
+    gap: 2px 5px;
     min-height: 30px;
-    padding: 6px var(--page-gutter) 0;
+    padding: 6px max(var(--page-gutter), env(safe-area-inset-right, 0px)) 0
+      max(var(--page-gutter), env(safe-area-inset-left, 0px));
     color: var(--text-muted);
     font-size: 11px;
+  }
+  .breadcrumbs span {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .breadcrumbs a {
     display: inline-grid;
@@ -87,13 +94,16 @@
     font-weight: 650;
   }
   @media (max-width: 640px) {
+    /* Wrap rather than clip: the last crumb is the current page and is the
+       one a phone user most needs to read. */
     .breadcrumbs {
-      overflow: hidden;
-      white-space: nowrap;
+      row-gap: 0;
     }
-    .breadcrumbs span {
+    .breadcrumbs :not([aria-current='page']) {
+      max-width: 12ch;
       overflow: hidden;
       text-overflow: ellipsis;
+      white-space: nowrap;
     }
   }
 </style>

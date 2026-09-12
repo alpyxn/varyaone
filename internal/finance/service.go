@@ -264,19 +264,20 @@ type Allocation struct {
 }
 
 type OpenItem struct {
-	ID              string     `json:"id"`
-	DocumentID      string     `json:"document_id"`
-	DocumentNo      string     `json:"document_no,omitempty"`
-	PartyID         string     `json:"party_id"`
-	Side            string     `json:"side"`
-	Currency        string     `json:"currency"`
-	OriginalAmount  string     `json:"original_amount"`
-	AllocatedAmount string     `json:"allocated_amount"`
-	OpenAmount      string     `json:"open_amount"`
-	ExchangeRate    string     `json:"exchange_rate,omitempty"`
-	BaseCurrency    string     `json:"base_currency,omitempty"`
-	DocumentDate    time.Time  `json:"document_date"`
-	DueDate         *time.Time `json:"due_date,omitempty"`
+	DueSchedule     []OpenItemDue `json:"due_schedule,omitempty"`
+	ID              string        `json:"id"`
+	DocumentID      string        `json:"document_id"`
+	DocumentNo      string        `json:"document_no,omitempty"`
+	PartyID         string        `json:"party_id"`
+	Side            string        `json:"side"`
+	Currency        string        `json:"currency"`
+	OriginalAmount  string        `json:"original_amount"`
+	AllocatedAmount string        `json:"allocated_amount"`
+	OpenAmount      string        `json:"open_amount"`
+	ExchangeRate    string        `json:"exchange_rate,omitempty"`
+	BaseCurrency    string        `json:"base_currency,omitempty"`
+	DocumentDate    time.Time     `json:"document_date"`
+	DueDate         *time.Time    `json:"due_date,omitempty"`
 }
 
 type OpenItemListResult struct {
@@ -285,6 +286,8 @@ type OpenItemListResult struct {
 }
 
 type PaymentInput struct {
+	PaymentPlanID   string            `json:"payment_plan_id,omitempty"`
+	InstallmentNo   int               `json:"installment_no,omitempty"`
 	ID              string            `json:"id,omitempty"`
 	PartyID         string            `json:"party_id"`
 	AccountID       string            `json:"account_id,omitempty"`
@@ -678,6 +681,11 @@ func (s *Service) postPayment(ctx context.Context, session identity.Session, inp
 		}
 		return existing, nil
 	}
+	if input.PaymentPlanID != "" {
+		if err = s.validateInstallmentPaymentTx(ctx, tx, session, input, amount); err != nil {
+			return Payment{}, err
+		}
+	}
 	if err = ensurePeriodOpen(ctx, tx, session.CurrentCompanyID, input.TransactionDate); err != nil {
 		return Payment{}, err
 	}
@@ -804,12 +812,12 @@ func (s *Service) postPayment(ctx context.Context, session identity.Session, inp
 	}
 	allocations := input.Allocations
 	if input.AutoAllocate && len(allocations) == 0 {
-		allocations, err = fifoOpenItemAllocationsTx(ctx, tx, session.CurrentCompanyID, input.PartyID, input.Currency, input.PaymentKind, amount)
+		allocations, err = fifoOpenItemAllocationsTx(ctx, tx, session, input.PartyID, input.Currency, input.PaymentKind, amount)
 		if err != nil {
 			return Payment{}, err
 		}
 	}
-	if _, err = s.applyAllocationsTx(ctx, tx, session, paymentID, "payment:"+input.IdempotencyKey, allocations, meta); err != nil {
+	if _, err = s.applyAllocationsTx(ctx, tx, session, paymentID, "payment:"+input.IdempotencyKey, allocations, input.TransactionDate, meta); err != nil {
 		return Payment{}, err
 	}
 	if err = writeAuditAndEventTx(ctx, tx, session, "FINANCE_PAYMENT_POSTED", "finance.payment.posted", "finance_payment", paymentID, meta, map[string]any{"payment_id": paymentID, "payment_kind": input.PaymentKind}); err != nil {
@@ -825,7 +833,8 @@ func (s *Service) postPayment(ctx context.Context, session identity.Session, inp
 // intentionally returns only the amount that can be applied; any excess
 // payment remains on the party ledger as an advance and can be allocated by a
 // later command.
-func fifoOpenItemAllocationsTx(ctx context.Context, tx pgx.Tx, companyID, partyID, currency, paymentKind string, amount *big.Rat) ([]AllocationInput, error) {
+func fifoOpenItemAllocationsTx(ctx context.Context, tx pgx.Tx, session identity.Session, partyID, currency, paymentKind string, amount *big.Rat) ([]AllocationInput, error) {
+	companyID := session.CurrentCompanyID
 	side := "RECEIVABLE"
 	if paymentKind == "PAYMENT" {
 		side = "PAYABLE"
@@ -836,7 +845,10 @@ func fifoOpenItemAllocationsTx(ctx context.Context, tx pgx.Tx, companyID, partyI
 		JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
 		WHERE oi.company_id=$1 AND oi.party_id=$2 AND oi.currency=$3 AND oi.side=$4
 		  AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
-		ORDER BY COALESCE(oi.due_date,'9999-12-31'::date),oi.document_date,oi.created_at,oi.id FOR UPDATE`, companyID, partyID, currency, side)
+		  AND (d.branch_id IS NULL
+		    OR NOT EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$5)
+		    OR EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$5 AND bs.branch_id=d.branch_id))
+		ORDER BY COALESCE(oi.due_date,'9999-12-31'::date),oi.document_date,oi.created_at,oi.id FOR UPDATE`, companyID, partyID, currency, side, session.User.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -876,6 +888,9 @@ func fifoOpenItemAllocationsTx(ctx context.Context, tx pgx.Tx, companyID, partyI
 		if open.Sign() > 0 {
 			items = append(items, OpenItem{ID: row.id, DocumentDate: row.documentDate, DueDate: row.dueDate, OpenAmount: amountString(open, 4)})
 		}
+	}
+	if err := attachOpenItemDues(ctx, tx, companyID, time.Now(), items); err != nil {
+		return nil, err
 	}
 	return FIFOAllocations(items, amountString(amount, 4))
 }
@@ -1271,7 +1286,7 @@ func (s *Service) ListOpenItems(ctx context.Context, session identity.Session, p
 // amounts are derived from immutable allocation/reversal rows at read time.
 // Cursor order is due date (NULLS LAST), document date, creation timestamp and
 // UUID, matching the deterministic FIFO order.
-func (s *Service) ListOpenItemsPage(ctx context.Context, session identity.Session, partyID, currency, side, cursor string, limit int) (OpenItemListResult, error) {
+func (s *Service) ListOpenItemsPage(ctx context.Context, session identity.Session, partyID, currency, side, cursor string, limit int, unplannedOnly ...bool) (OpenItemListResult, error) {
 	result := OpenItemListResult{Items: []OpenItem{}}
 	side = strings.ToUpper(strings.TrimSpace(side))
 	partyID = strings.TrimSpace(partyID)
@@ -1322,6 +1337,9 @@ LEFT JOIN LATERAL (
     WHERE attribution.company_id=oi.company_id AND attribution.document_id=oi.document_id
 ) returns ON TRUE
 WHERE oi.company_id=$1`
+	if len(unplannedOnly) > 0 && unplannedOnly[0] {
+		query += ` AND NOT EXISTS(SELECT 1 FROM finance_payment_plan_sources ps WHERE ps.company_id=oi.company_id AND ps.open_item_id=oi.id AND ps.active)`
+	}
 	if session.User.ID != "" {
 		args = append(args, session.User.ID)
 		query += fmt.Sprintf(` AND (d.branch_id IS NULL OR NOT EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$%d) OR EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$%d AND bs.branch_id=d.branch_id))`, len(args), len(args))
@@ -1398,6 +1416,10 @@ WHERE oi.company_id=$1`
 		result.Items = result.Items[:limit]
 		result.NextCursor = encodeOpenItemCursor(lastDue, last.DocumentDate, lastCreatedAt, last.ID)
 	}
+	rows.Close()
+	if err = attachOpenItemDues(ctx, s.pool, session.CurrentCompanyID, s.now(), result.Items); err != nil {
+		return result, err
+	}
 	return result, nil
 }
 
@@ -1454,7 +1476,7 @@ func (s *Service) AllocatePayment(ctx context.Context, session identity.Session,
 	if lockedPayment.Status == "REVERSED" || lockedPayment.ReversalOfID != nil {
 		return nil, domainError(ErrInvalidPaymentState, "ters kaydedilmiş işlem tahsis edilemez")
 	}
-	items, err := s.applyAllocationsTx(ctx, tx, session, paymentID, "allocate:"+strings.TrimSpace(meta.IdempotencyKey), inputs, meta)
+	items, err := s.applyAllocationsTx(ctx, tx, session, paymentID, "allocate:"+strings.TrimSpace(meta.IdempotencyKey), inputs, s.now(), meta)
 	if err != nil {
 		return nil, err
 	}
@@ -1531,14 +1553,14 @@ func (s *Service) AllocatePaymentFIFO(ctx context.Context, session identity.Sess
 	if unapplied.Sign() <= 0 {
 		return nil, domainError(ErrInvalidPaymentState, "dağıtılacak avans tutarı yok")
 	}
-	inputs, err := fifoOpenItemAllocationsTx(ctx, tx, session.CurrentCompanyID, lockedPayment.PartyID, lockedPayment.Currency, lockedPayment.PaymentKind, unapplied)
+	inputs, err := fifoOpenItemAllocationsTx(ctx, tx, session, lockedPayment.PartyID, lockedPayment.Currency, lockedPayment.PaymentKind, unapplied)
 	if err != nil {
 		return nil, err
 	}
 	if len(inputs) == 0 {
 		return nil, domainError(ErrPaymentAllocationExceedsOpenAmount, "bu cari ve para biriminde açık fatura yok")
 	}
-	items, err := s.applyAllocationsTx(ctx, tx, session, paymentID, "allocate-fifo:"+strings.TrimSpace(meta.IdempotencyKey), inputs, meta)
+	items, err := s.applyAllocationsTx(ctx, tx, session, paymentID, "allocate-fifo:"+strings.TrimSpace(meta.IdempotencyKey), inputs, s.now(), meta)
 	if err != nil {
 		return nil, err
 	}
@@ -1641,10 +1663,10 @@ func (s *Service) UnallocatePayment(ctx context.Context, session identity.Sessio
 		var created Allocation
 		created.ID = uuid.NewString()
 		key := "unallocate:" + meta.IdempotencyKey + ":" + allocationID
-		if err = tx.QueryRow(ctx, `INSERT INTO finance_payment_allocations(id,company_id,payment_id,party_id,target_type,target_id,open_item_id,currency,amount,idempotency_key,reversal_of_id,actor_user_id,snapshot)
-			SELECT $1,company_id,payment_id,party_id,target_type,target_id,open_item_id,currency,amount,$2,$3,$4,snapshot
+		if err = tx.QueryRow(ctx, `INSERT INTO finance_payment_allocations(id,company_id,payment_id,party_id,target_type,target_id,open_item_id,currency,amount,idempotency_key,reversal_of_id,actor_user_id,snapshot,effective_date)
+			SELECT $1,company_id,payment_id,party_id,target_type,target_id,open_item_id,currency,amount,$2,$3,$4,snapshot,$6::date
 			FROM finance_payment_allocations WHERE company_id=$5 AND id=$3 RETURNING id,payment_id,party_id,COALESCE(open_item_id::text,''),target_type,target_id,currency,amount::text,reversal_of_id,allocated_at`,
-			created.ID, key, allocationID, nullableUUID(session.User.ID), session.CurrentCompanyID).Scan(&created.ID, &created.PaymentID, &created.PartyID, &created.OpenItemID, &created.TargetType, &created.TargetID, &created.Currency, &created.Amount, &created.ReversalOfID, &created.AllocatedAt); err != nil {
+			created.ID, key, allocationID, nullableUUID(session.User.ID), session.CurrentCompanyID, s.now().Format("2006-01-02")).Scan(&created.ID, &created.PaymentID, &created.PartyID, &created.OpenItemID, &created.TargetType, &created.TargetID, &created.Currency, &created.Amount, &created.ReversalOfID, &created.AllocatedAt); err != nil {
 			return nil, mapFinanceConstraint(err)
 		}
 		result = append(result, created)
@@ -1733,15 +1755,29 @@ func (s *Service) ReversePayment(ctx context.Context, session identity.Session, 
 	if err = ensurePeriodOpen(ctx, tx, session.CurrentCompanyID, transactionDate); err != nil {
 		return Payment{}, err
 	}
-	reversalID, ledgerID := uuid.NewString(), uuid.NewString()
-	documentPrefix := "ODM"
-	if original.PaymentKind == "COLLECTION" {
-		documentPrefix = "THS"
-	}
-	reversalDocumentNo, err := nextPaymentNumberTx(ctx, tx, session.CurrentCompanyID, documentPrefix, transactionDate)
-	if err != nil {
+	// A payment reversal cannot precede an allocation or unallocation which
+	// already changed its invoice attribution. Otherwise the historical ledger
+	// would undo money before the corresponding allocation event existed.
+	var laterAllocation bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1 FROM finance_payment_allocations
+		WHERE company_id=$1 AND payment_id=$2
+		AND COALESCE(effective_date, CASE WHEN reversal_of_id IS NOT NULL
+		    THEN (allocated_at AT TIME ZONE 'UTC')::date ELSE $4::date END)>$3::date
+	)`, session.CurrentCompanyID, paymentID, transactionDate.Format("2006-01-02"), original.TransactionDate.Format("2006-01-02")).Scan(&laterAllocation); err != nil {
 		return Payment{}, err
 	}
+	if laterAllocation {
+		return Payment{}, fmt.Errorf("%w: ters kayıt tarihi son eşleştirme işleminden önce olamaz", identity.ErrValidation)
+	}
+
+	reversalID, ledgerID := uuid.NewString(), uuid.NewString()
+	// The reversal is named after the original document (e.g. THS0006-TERS)
+	// instead of drawing its own sequence number, so it reads as "the reversal
+	// of THS0006" rather than an unrelated new collection/payment. This is
+	// safe because finance_payments_company_id_reversal_of_id_key allows only
+	// one reversal per original payment.
+	reversalDocumentNo := original.DocumentNo + "-TERS"
 	var movementID *string
 	if original.MovementID != nil {
 		var accountID, direction string
@@ -2479,7 +2515,7 @@ func normalizeAllocationInputs(inputs []AllocationInput) ([]AllocationInput, err
 // the same rows, while a genuinely new command targeting the same
 // payment/open-item pair writes a new row instead of silently replaying an
 // older -- possibly already reversed -- allocation.
-func (s *Service) applyAllocationsTx(ctx context.Context, tx pgx.Tx, session identity.Session, paymentID, commandScope string, inputs []AllocationInput, meta identity.RequestMeta) ([]Allocation, error) {
+func (s *Service) applyAllocationsTx(ctx context.Context, tx pgx.Tx, session identity.Session, paymentID, commandScope string, inputs []AllocationInput, effectiveDate time.Time, meta identity.RequestMeta) ([]Allocation, error) {
 	if len(inputs) == 0 {
 		return []Allocation{}, nil
 	}
@@ -2570,7 +2606,7 @@ func (s *Service) applyAllocationsTx(ctx context.Context, tx pgx.Tx, session ide
 		}
 		var allocation Allocation
 		allocation.ID = uuid.NewString()
-		if err = tx.QueryRow(ctx, `INSERT INTO finance_payment_allocations(id,company_id,payment_id,party_id,target_type,target_id,open_item_id,currency,amount,idempotency_key,actor_user_id,snapshot) VALUES($1,$2,$3,$4,'DOCUMENT',$5,$6,$7,$8,$9,$10,$11) RETURNING allocated_at`, allocation.ID, session.CurrentCompanyID, paymentID, paymentParty, documentID, input.OpenItemID, paymentCurrency, amountString(amount, 4), key, nullableUUID(session.User.ID), jsonBytes(map[string]any{"document_date": documentDate, "due_date": dueDate})).Scan(&allocation.AllocatedAt); err != nil {
+		if err = tx.QueryRow(ctx, `INSERT INTO finance_payment_allocations(id,company_id,payment_id,party_id,target_type,target_id,open_item_id,currency,amount,idempotency_key,actor_user_id,snapshot,effective_date) VALUES($1,$2,$3,$4,'DOCUMENT',$5,$6,$7,$8,$9,$10,$11,$12::date) RETURNING allocated_at`, allocation.ID, session.CurrentCompanyID, paymentID, paymentParty, documentID, input.OpenItemID, paymentCurrency, amountString(amount, 4), key, nullableUUID(session.User.ID), jsonBytes(map[string]any{"document_date": documentDate, "due_date": dueDate}), effectiveDate.Format("2006-01-02")).Scan(&allocation.AllocatedAt); err != nil {
 			return nil, mapFinanceConstraint(err)
 		}
 		allocation.PaymentID, allocation.PartyID, allocation.OpenItemID, allocation.TargetType, allocation.TargetID, allocation.Currency, allocation.Amount, allocation.IdempotencyKey = paymentID, paymentParty, input.OpenItemID, "DOCUMENT", documentID, paymentCurrency, amountString(amount, 4), key
@@ -2588,7 +2624,18 @@ func FIFOAllocations(items []OpenItem, amount string) ([]AllocationInput, error)
 	if err != nil {
 		return nil, fmt.Errorf("%w: FIFO tutarı geçersiz", identity.ErrValidation)
 	}
-	ordered := append([]OpenItem(nil), items...)
+	ordered := make([]OpenItem, 0, len(items))
+	for _, item := range items {
+		if len(item.DueSchedule) == 0 {
+			ordered = append(ordered, item)
+			continue
+		}
+		for _, due := range item.DueSchedule {
+			part := item
+			part.OpenAmount, part.DueDate = due.OpenAmount, due.DueDate
+			ordered = append(ordered, part)
+		}
+	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if ordered[i].DueDate != nil || ordered[j].DueDate != nil {
 			if ordered[i].DueDate == nil {
@@ -2622,7 +2669,19 @@ func FIFOAllocations(items []OpenItem, amount string) ([]AllocationInput, error)
 			break
 		}
 	}
-	return result, nil
+	// One invoice may span several dated portions; allocation commands require
+	// one row per invoice, so fold portions back together after date ordering.
+	merged := make([]AllocationInput, 0, len(result))
+	positions := map[string]int{}
+	for _, part := range result {
+		if index, ok := positions[part.OpenItemID]; ok {
+			merged[index].Amount = amountString(new(big.Rat).Add(mustRat(merged[index].Amount), mustRat(part.Amount)), 4)
+		} else {
+			positions[part.OpenItemID] = len(merged)
+			merged = append(merged, part)
+		}
+	}
+	return merged, nil
 }
 
 // AllocateFIFO is the exported spelling used by command handlers and tests.
@@ -2837,6 +2896,8 @@ func paymentRequestHash(input PaymentInput, amount, rate *big.Rat) string {
 		}
 	}
 	payload := struct {
+		PaymentPlanID   string            `json:"payment_plan_id,omitempty"`
+		InstallmentNo   int               `json:"installment_no,omitempty"`
 		PartyID         string            `json:"party_id"`
 		AccountID       string            `json:"account_id,omitempty"`
 		PaymentKind     string            `json:"payment_kind"`
@@ -2854,6 +2915,7 @@ func paymentRequestHash(input PaymentInput, amount, rate *big.Rat) string {
 		AutoAllocate    bool              `json:"auto_allocate,omitempty"`
 		OverrideReason  string            `json:"override_reason,omitempty"`
 	}{
+		PaymentPlanID: input.PaymentPlanID, InstallmentNo: input.InstallmentNo,
 		PartyID: input.PartyID, AccountID: input.AccountID, PaymentKind: input.PaymentKind,
 		PaymentMethod: input.PaymentMethod, Currency: input.Currency,
 		Amount: amountString(amount, 4), ExchangeRate: amountString(rate, 10),
@@ -3048,6 +3110,8 @@ func mapFinanceConstraint(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.ConstraintName {
+		case "finance_payment_plans_company_id_idempotency_key_key", "finance_payment_plan_one_active_source":
+			return domainError(ErrIdempotencyConflict, "Faturanın vade planı değişti; plan listesini yenileyin.")
 		case "finance_payments_company_id_idempotency_key_key":
 			return domainError(ErrPaymentAlreadyPosted, "ödeme daha önce kaydedilmiş")
 		case "finance_payments_company_id_reversal_of_id_key":

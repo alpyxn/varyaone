@@ -584,6 +584,10 @@ func (s *Service) UpdatePurchaseOrder(ctx context.Context, session identity.Sess
 		return PurchaseOrder{}, err
 	}
 	total := purchaseOrderTotal(input.Lines)
+	// One memo for the whole save: the same product and the same
+	// branch/warehouse pair recur across lines, and each repeat re-ran the same
+	// two reads. Per call, and company and user are part of every key.
+	checks := newPurchaseLineChecks()
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return PurchaseOrder{}, err
@@ -632,7 +636,7 @@ func (s *Service) UpdatePurchaseOrder(ctx context.Context, session identity.Sess
 	}
 	for index := range input.Lines {
 		line := &input.Lines[index]
-		if err = ensurePurchaseProduct(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, line.LineType); err != nil {
+		if err = checks.product(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, line.LineType); err != nil {
 			return PurchaseOrder{}, err
 		}
 		line.WarehouseID = strings.TrimSpace(line.WarehouseID)
@@ -644,7 +648,7 @@ func (s *Service) UpdatePurchaseOrder(ctx context.Context, session identity.Sess
 			if line.WarehouseID == "" {
 				line.WarehouseID = input.WarehouseID
 			}
-			if err = s.ensureScope(ctx, session, input.BranchID, line.WarehouseID); err != nil {
+			if err = checks.scope(ctx, s, session, input.BranchID, line.WarehouseID); err != nil {
 				return PurchaseOrder{}, err
 			}
 		}

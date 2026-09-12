@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { cn, type WithElementRef } from '$lib/utils.js';
   import type { Snippet } from 'svelte';
   import type { HTMLAttributes } from 'svelte/elements';
@@ -44,12 +45,12 @@
     {#if children}
       {@render children()}
     {:else if singleErrorMessage}
-      {singleErrorMessage}
+      {errorMessage(singleErrorMessage, 'Alanı kontrol edin.')}
     {:else if isMultipleErrors}
       <ul class="ml-4 flex list-disc flex-col gap-1">
         {#each errors ?? [] as error, index (index)}
           {#if error?.message}
-            <li>{error.message}</li>
+            <li>{errorMessage(error, 'Alanı kontrol edin.')}</li>
           {/if}
         {/each}
       </ul>

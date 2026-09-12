@@ -1014,72 +1014,81 @@
           Henüz çalışma dönemi yok. Yukarıdan bir başlangıç tarihi ekleyin.
         </p>
       {:else}
-        <table>
-          <thead
-            ><tr><th>Başlangıç</th><th>Bitiş</th><th>Sonlandırma gerekçesi</th><th></th></tr></thead
-          >
-          <tbody>
-            {#each employments as em}
-              <tr>
-                <td>{formatDate(em.start_date)}</td>
-                <td>{em.end_date ? formatDate(em.end_date) : 'Açık'}</td>
-                <td>{em.termination_reason || '—'}</td>
-                <td>
-                  {#if canEdit && !em.end_date}
-                    <button
-                      class="link"
-                      onclick={() => {
-                        terminating = em.id;
-                        terminateForm = { end_date: '', termination_reason: '' };
-                      }}>Sonlandır</button
-                    >
-                  {/if}
-                </td>
-              </tr>
-              {#if terminating === em.id}
-                <tr class="inline-row">
-                  <td colspan="4">
-                    <form
-                      class="row-form"
-                      onsubmit={(e) => {
-                        e.preventDefault();
-                        void run(
-                          () =>
-                            hr.terminateEmployment(employeeID, em.id, em.version, terminateForm),
-                          'Çalışma dönemi sonlandırıldı.',
-                          'istihdam'
-                        ).then(() => (terminating = null));
-                      }}
-                    >
-                      <Field.Field
-                        ><Field.FieldLabel for="t-end">Bitiş tarihi</Field.FieldLabel><DateInput
-                          id="t-end"
-                          bind:value={terminateForm.end_date}
-                          ariaLabel="Bitiş tarihi"
-                        /></Field.Field
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="group"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
+          <table>
+            <thead
+              ><tr><th>Başlangıç</th><th>Bitiş</th><th>Sonlandırma gerekçesi</th><th></th></tr
+              ></thead
+            >
+            <tbody>
+              {#each employments as em}
+                <tr>
+                  <td>{formatDate(em.start_date)}</td>
+                  <td>{em.end_date ? formatDate(em.end_date) : 'Açık'}</td>
+                  <td>{em.termination_reason || '—'}</td>
+                  <td>
+                    {#if canEdit && !em.end_date}
+                      <button
+                        class="link"
+                        onclick={() => {
+                          terminating = em.id;
+                          terminateForm = { end_date: '', termination_reason: '' };
+                        }}>Sonlandır</button
                       >
-                      <Field.Field class="grow"
-                        ><Field.FieldLabel for="t-reason">Gerekçe</Field.FieldLabel><Input
-                          id="t-reason"
-                          bind:value={terminateForm.termination_reason}
-                          placeholder="Örn. İstifa"
-                        /></Field.Field
-                      >
-                      <Button
-                        type="submit"
-                        disabled={!terminateForm.end_date || !terminateForm.termination_reason}
-                        >Kaydet</Button
-                      >
-                      <Button type="button" variant="ghost" onclick={() => (terminating = null)}
-                        >Vazgeç</Button
-                      >
-                    </form>
+                    {/if}
                   </td>
                 </tr>
-              {/if}
-            {/each}
-          </tbody>
-        </table>
+                {#if terminating === em.id}
+                  <tr class="inline-row">
+                    <td colspan="4">
+                      <form
+                        class="row-form"
+                        onsubmit={(e) => {
+                          e.preventDefault();
+                          void run(
+                            () =>
+                              hr.terminateEmployment(employeeID, em.id, em.version, terminateForm),
+                            'Çalışma dönemi sonlandırıldı.',
+                            'istihdam'
+                          ).then(() => (terminating = null));
+                        }}
+                      >
+                        <Field.Field
+                          ><Field.FieldLabel for="t-end">Bitiş tarihi</Field.FieldLabel><DateInput
+                            id="t-end"
+                            bind:value={terminateForm.end_date}
+                            ariaLabel="Bitiş tarihi"
+                          /></Field.Field
+                        >
+                        <Field.Field class="grow"
+                          ><Field.FieldLabel for="t-reason">Gerekçe</Field.FieldLabel><Input
+                            id="t-reason"
+                            bind:value={terminateForm.termination_reason}
+                            placeholder="Örn. İstifa"
+                          /></Field.Field
+                        >
+                        <Button
+                          type="submit"
+                          disabled={!terminateForm.end_date || !terminateForm.termination_reason}
+                          >Kaydet</Button
+                        >
+                        <Button type="button" variant="ghost" onclick={() => (terminating = null)}
+                          >Vazgeç</Button
+                        >
+                      </form>
+                    </td>
+                  </tr>
+                {/if}
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
   {:else if tab === 'ucret'}
@@ -1137,8 +1146,9 @@
                   bind:checked={termForm.is_minimum_wage}
                   onchange={onMinimumWageToggle}
                 />
-                Asgari ücretli — güncel asgari ücretle kilitlenir, asgari ücret değişince ücreti otomatik
-                güncellenir
+                Asgari ücretli — tutarı <a class="wage-link" href="/ayarlar/tanimlar/asgari-ucret"
+                  >asgari ücret tanımından</a
+                > değiştirebilirsiniz
               </label>
             </Field.Field>
             <Field.Field
@@ -1239,7 +1249,17 @@
             </div>
             <div class="wage-fig">
               <span class="wage-label">Ücret tipi</span>
-              <span>{activeTerm.is_minimum_wage ? 'Asgari ücretli' : 'Belirli tutar'}</span>
+              {#if activeTerm.is_minimum_wage}
+                <a
+                  href="/ayarlar/tanimlar/asgari-ucret"
+                  class="link"
+                  title="Asgari ücret tanımını görüntülemek ve değiştirmek için dokunun"
+                >
+                  Asgari ücretli
+                </a>
+              {:else}
+                <span>Belirli tutar</span>
+              {/if}
             </div>
             <div class="wage-fig">
               <span class="wage-label">Yürürlük</span>
@@ -1248,33 +1268,42 @@
           </div>
         {/if}
 
-        <table class="wage-history">
-          <thead
-            ><tr
-              ><th>Dönem</th><th class="num">Aylık brüt</th><th>Ücret tipi</th><th>Çalışma türü</th
-              ><th>Sigortalılık</th><th>Teşvik</th></tr
-            ></thead
-          >
-          <tbody>
-            {#each terms as t}
-              <tr class:current={!t.effective_to}>
-                <td>
-                  {#if t.effective_to}
-                    {formatDate(t.effective_from)} – {formatDate(t.effective_to)}
-                  {:else}
-                    <span class="pill">Güncel</span>
-                    {formatDate(t.effective_from)}’den itibaren
-                  {/if}
-                </td>
-                <td class="num">{money(t.gross_wage)} ₺</td>
-                <td>{t.is_minimum_wage ? 'Asgari ücretli' : 'Belirli tutar'}</td>
-                <td>{localizedEnum(t.work_type, 'work_type')}</td>
-                <td>{sgkStatusLabel(t.sgk_status)}</td>
-                <td>{schemeLabel(t.contribution_scheme_code || 'NO_DISCOUNT')}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="group"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
+          <table class="wage-history">
+            <thead
+              ><tr
+                ><th>Dönem</th><th class="num">Aylık brüt</th><th>Ücret tipi</th><th
+                  >Çalışma türü</th
+                ><th>Sigortalılık</th><th>Teşvik</th></tr
+              ></thead
+            >
+            <tbody>
+              {#each terms as t}
+                <tr class:current={!t.effective_to}>
+                  <td>
+                    {#if t.effective_to}
+                      {formatDate(t.effective_from)} – {formatDate(t.effective_to)}
+                    {:else}
+                      <span class="pill">Güncel</span>
+                      {formatDate(t.effective_from)}’den itibaren
+                    {/if}
+                  </td>
+                  <td class="num">{money(t.gross_wage)} ₺</td>
+                  <td>{t.is_minimum_wage ? 'Asgari ücretli' : 'Belirli tutar'}</td>
+                  <td>{localizedEnum(t.work_type, 'work_type')}</td>
+                  <td>{sgkStatusLabel(t.sgk_status)}</td>
+                  <td>{schemeLabel(t.contribution_scheme_code || 'NO_DISCOUNT')}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
   {:else if tab === 'belgeler'}
@@ -1355,44 +1384,53 @@
           {docArchived ? 'Arşivde belge yok.' : 'Belge yok.'}
         </p>
       {:else}
-        <table>
-          <thead>
-            <tr>
-              <th>Belge türü</th>
-              <th>Dosya</th>
-              <th>Hassasiyet</th>
-              <th class="num">Boyut</th>
-              <th>Yüklenme</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each documents as d}
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="group"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
+          <table>
+            <thead>
               <tr>
-                <td>{d.document_type}</td>
-                <td class="muted">{d.original_filename || '—'}</td>
-                <td>{localizedEnum(d.sensitivity, 'sensitivity')}</td>
-                <td class="num">{(d.size_bytes / 1024).toFixed(0)} KB</td>
-                <td>{formatDate(d.created_at)}</td>
-                <td>
-                  <a href={`/api/v1/hr/employees/${employeeID}/documents/${d.id}/download`}>İndir</a
-                  >
-                  {#if permissions.includes('hr.employee_document.edit') && !d.archived_at}
-                    · <button
-                      class="link"
-                      onclick={() =>
-                        void run(
-                          () => hr.archiveDocument(employeeID, d.id),
-                          'Belge arşivlendi.',
-                          'belgeler'
-                        )}>Arşivle</button
-                    >
-                  {/if}
-                </td>
+                <th>Belge türü</th>
+                <th>Dosya</th>
+                <th>Hassasiyet</th>
+                <th class="num">Boyut</th>
+                <th>Yüklenme</th>
+                <th></th>
               </tr>
-            {/each}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {#each documents as d}
+                <tr>
+                  <td>{d.document_type}</td>
+                  <td class="muted">{d.original_filename || '—'}</td>
+                  <td>{localizedEnum(d.sensitivity, 'sensitivity')}</td>
+                  <td class="num">{(d.size_bytes / 1024).toFixed(0)} KB</td>
+                  <td>{formatDate(d.created_at)}</td>
+                  <td>
+                    <a href={`/api/v1/hr/employees/${employeeID}/documents/${d.id}/download`}
+                      >İndir</a
+                    >
+                    {#if permissions.includes('hr.employee_document.edit') && !d.archived_at}
+                      · <button
+                        class="link"
+                        onclick={() =>
+                          void run(
+                            () => hr.archiveDocument(employeeID, d.id),
+                            'Belge arşivlendi.',
+                            'belgeler'
+                          )}>Arşivle</button
+                      >
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
   {:else if tab === 'zimmet'}
@@ -1409,21 +1447,29 @@
       {#if tabLoading}<p class="state">Yükleniyor…</p>
       {:else if !assetAssignments.length}<p class="state">Zimmet kaydı yok.</p>
       {:else}
-        <table>
-          <thead
-            ><tr><th>Sabit kıymet</th><th>Zimmet tarihi</th><th>İade tarihi</th><th>Not</th></tr
-            ></thead
-          >
-          <tbody>
-            {#each assetAssignments as a}
-              <tr
-                ><td>{a.asset_code} · {a.asset_name}</td><td>{formatDate(a.assigned_at)}</td><td
-                  >{a.returned_at ? formatDate(a.returned_at) : 'Açık'}</td
-                ><td>{a.assignment_note || '—'}</td></tr
-              >
-            {/each}
-          </tbody>
-        </table>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="group"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
+          <table>
+            <thead
+              ><tr><th>Sabit kıymet</th><th>Zimmet tarihi</th><th>İade tarihi</th><th>Not</th></tr
+              ></thead
+            >
+            <tbody>
+              {#each assetAssignments as a}
+                <tr
+                  ><td>{a.asset_code} · {a.asset_name}</td><td>{formatDate(a.assigned_at)}</td><td
+                    >{a.returned_at ? formatDate(a.returned_at) : 'Açık'}</td
+                  ><td>{a.assignment_note || '—'}</td></tr
+                >
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
   {:else if tab === 'avanslar'}
@@ -1440,27 +1486,38 @@
       </div>
       {#if tabLoading}<p class="state">Yükleniyor…</p>
       {:else if !advances.length}<p class="state">Avans kaydı yok.</p>
-      {:else}<table class="rows-link">
-          <thead
-            ><tr
-              ><th>Tarih</th><th>Açıklama</th><th>Durum</th><th class="num">Verilen</th><th
-                class="num">Kalan</th
-              ><th></th></tr
-            ></thead
-          ><tbody
-            >{#each advances as advance}<tr onclick={() => goto(`/personel/avanslar/${advance.id}`)}
-                ><td>{formatDate(advance.advance_date)}</td><td>{advance.description}</td><td
-                  >{advanceStatusLabel(advance.status)}</td
-                ><td class="num">{money(advance.original_amount)} ₺</td><td class="num"
-                  >{money(advance.outstanding_amount)} ₺</td
-                ><td class="go"
-                  ><a href={`/personel/avanslar/${advance.id}`} onclick={(e) => e.stopPropagation()}
-                    >Detay<ChevronRight size={13} /></a
-                  ></td
-                ></tr
-              >{/each}</tbody
-          >
-        </table>{/if}
+      {:else}
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="group"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
+          <table class="rows-link">
+            <thead
+              ><tr
+                ><th>Tarih</th><th>Açıklama</th><th>Durum</th><th class="num">Verilen</th><th
+                  class="num">Kalan</th
+                ><th></th></tr
+              ></thead
+            ><tbody
+              >{#each advances as advance}<tr
+                  onclick={() => goto(`/personel/avanslar/${advance.id}`)}
+                  ><td>{formatDate(advance.advance_date)}</td><td>{advance.description}</td><td
+                    >{advanceStatusLabel(advance.status)}</td
+                  ><td class="num">{money(advance.original_amount)} ₺</td><td class="num"
+                    >{money(advance.outstanding_amount)} ₺</td
+                  ><td class="go"
+                    ><a
+                      href={`/personel/avanslar/${advance.id}`}
+                      onclick={(e) => e.stopPropagation()}>Detay<ChevronRight size={13} /></a
+                    ></td
+                  ></tr
+                >{/each}</tbody
+            >
+          </table>
+        </div>{/if}
     </section>
   {:else if tab === 'plan'}
     <section class="card">
@@ -1505,20 +1562,28 @@
           Plan ataması yok. Puantaj üretmek için gereklidir.
         </p>
       {:else}
-        <table>
-          <thead><tr><th>Şablon</th><th>Geçerlilik</th></tr></thead>
-          <tbody>
-            {#each scheduleAssignments as a}
-              <tr
-                ><td>{a.template_code} · {a.template_name}</td><td
-                  >{formatDate(a.effective_from)} – {a.effective_to
-                    ? formatDate(a.effective_to)
-                    : 'Açık'}</td
-                ></tr
-              >
-            {/each}
-          </tbody>
-        </table>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+        <div
+          class="table-scroll"
+          tabindex="0"
+          role="group"
+          aria-label="Tablo — yatay kaydırılabilir"
+        >
+          <table>
+            <thead><tr><th>Şablon</th><th>Geçerlilik</th></tr></thead>
+            <tbody>
+              {#each scheduleAssignments as a}
+                <tr
+                  ><td>{a.template_code} · {a.template_name}</td><td
+                    >{formatDate(a.effective_from)} – {a.effective_to
+                      ? formatDate(a.effective_to)
+                      : 'Açık'}</td
+                  ></tr
+                >
+              {/each}
+            </tbody>
+          </table>
+        </div>
       {/if}
     </section>
   {/if}
@@ -1670,6 +1735,11 @@
     font-size: 12px;
     color: var(--text);
   }
+  .wage-link {
+    color: var(--success);
+    font-weight: 600;
+    text-decoration: underline;
+  }
   .muted.small {
     font-size: 11px;
     color: var(--text-muted);
@@ -1788,6 +1858,7 @@
     cursor: pointer;
     font-size: 12px;
     padding: 0;
+    text-decoration: none;
   }
   .state {
     padding: 20px 0;

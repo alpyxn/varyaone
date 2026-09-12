@@ -449,7 +449,13 @@
         </div>
         <span>{warehouse.stock_positions.length} kayıt</span>
       </div>
-      <div class="table-scroll">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
         <table>
           <thead>
             <tr><th>SKU</th><th>Stok</th><th>Fiziki</th><th>Rezerve</th><th>Kullanılabilir</th></tr>

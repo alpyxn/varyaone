@@ -22,8 +22,12 @@
     type RowSelectionState
   } from '@tanstack/svelte-table';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
+  import { Dialog } from 'bits-ui';
+  import { X } from '@lucide/svelte';
   import { Button } from '$lib/components/ui/button';
+  import { mediaQuery } from '$lib/design/viewport.svelte';
   import { normalizeColumnVisibility, type VaryaDataGridProps } from './types';
+  import { withGridSorting } from './query';
 
   let {
     columns,
@@ -52,12 +56,22 @@
     onRetry
   }: VaryaDataGridProps<T> = $props();
   let scrollElement = $state<HTMLDivElement>();
+  /** Below this width only the first few columns fit; the rest move into the
+   * per-row detail panel. Kept in sync with the `max-width: 680px` block. */
+  const narrow = mediaQuery('(max-width: 680px)');
+  /** Row whose hidden columns are being shown in the detail panel. */
+  let detailRow = $state<T | null>(null);
+  const detailOpen = $derived(detailRow !== null);
   let activeRow = $state(0);
   let activeColumnId = $state('');
   let selected = $state<RowSelectionState>({});
   const currentColumnVisibility = $derived(
     normalizeColumnVisibility(columns, columnVisibility ?? {})
   );
+  /** id -> definition, rebuilt when `columns` changes. Every header and every
+   *  visible cell needs its definition, and a linear scan per cell adds up on a
+   *  wide grid. */
+  const columnByID = $derived(new Map(columns.map((column) => [column.id, column])));
   const features = tableFeatures({
     rowSortingFeature,
     rowSelectionFeature,
@@ -180,13 +194,15 @@
   function updateSorting(updater: SortingState | ((old: SortingState) => SortingState)) {
     if (!query || !onQueryChange) return;
     const next = typeof updater === 'function' ? updater(sorting) : updater;
-    onQueryChange({
-      ...query,
-      sorting: next.map((sort) => {
-        const column = columns.find((item) => item.id === sort.id);
-        return { field: column?.queryField ?? sort.id, direction: sort.desc ? 'desc' : 'asc' };
-      })
-    });
+    onQueryChange(
+      withGridSorting(
+        query,
+        next.map((sort) => {
+          const column = columns.find((item) => item.id === sort.id);
+          return { field: column?.queryField ?? sort.id, direction: sort.desc ? 'desc' : 'asc' };
+        })
+      )
+    );
   }
 
   function updateColumnVisibility(
@@ -284,7 +300,10 @@
     aria-label="Kayıt tablosu"
     onkeydown={keydown}
   >
-    <table style:width={`${table.getTotalSize() + (selectable ? 38 : 0)}px`}>
+    <table
+      class:narrow={narrow.matches}
+      style:width={narrow.matches ? '100%' : `${table.getTotalSize() + (selectable ? 38 : 0)}px`}
+    >
       <caption class="sr-only">Kayıt tablosu</caption>
       <thead class:sticky={stickyHeader}
         >{#each table.getHeaderGroups() as headerGroup}<tr>
@@ -298,24 +317,27 @@
               >{/if}
             {#each headerGroup.headers as header, headerIndex}{@const sortState =
                 header.column.getIsSorted()}<th
+                aria-sort={sortState === 'asc'
+                  ? 'ascending'
+                  : sortState === 'desc'
+                    ? 'descending'
+                    : undefined}
                 class:mobile-secondary={headerIndex >= 3}
-                style:width={`${header.getSize()}px`}
-                class:align-right={columns.find((column) => column.id === header.id)?.align ===
-                  'right'}
+                style:width={narrow.matches ? undefined : `${header.getSize()}px`}
+                class:align-right={columnByID.get(header.id)?.align === 'right'}
               >
                 {#if header.column.getCanSort()}<button
                     class="sort-button"
                     onclick={header.column.getToggleSortingHandler()}
-                    >{columns.find((column) => column.id === header.id)
-                      ?.header}{#if sortState === 'asc'}<ArrowUp
+                    >{columnByID.get(header.id)?.header}{#if sortState === 'asc'}<ArrowUp
                         size={13}
                       />{:else if sortState === 'desc'}<ArrowDown size={13} />{:else}<ArrowUpDown
                         size={13}
                       />{/if}</button
-                  >{:else}{columns.find((column) => column.id === header.id)?.header}{/if}
+                  >{:else}{columnByID.get(header.id)?.header}{/if}
                 {#if header.column.getCanResize()}<button
                     class="resize-handle"
-                    aria-label={`${columns.find((column) => column.id === header.id)?.header} sütununu yeniden boyutlandır`}
+                    aria-label={`${columnByID.get(header.id)?.header} sütununu yeniden boyutlandır`}
                     onpointerdown={header.getResizeHandler()}
                     ondblclick={() => header.column.resetSize()}
                   ></button>{/if}
@@ -363,8 +385,8 @@
                     onchange={row.getToggleSelectedHandler()}
                   /></td
                 >{/if}
-              {#each row.getVisibleCells() as cell, cellIndex}{@const definition = columns.find(
-                  (column) => column.id === cell.column.id
+              {#each row.getVisibleCells() as cell, cellIndex}{@const definition = columnByID.get(
+                  cell.column.id
                 )}{@const value =
                   cell.getValue() == null || cell.getValue() === ''
                     ? '—'
@@ -374,11 +396,11 @@
                   class:active-cell={activeRow === virtualRow.index &&
                     activeColumnId === cell.column.id}
                   class:mobile-secondary={cellIndex >= 3}
+                  style:width={narrow.matches ? undefined : `${cell.column.getSize()}px`}
                   aria-colindex={cellIndex + 1 + (selectable ? 1 : 0)}
                   data-grid-cell
                   data-row-index={virtualRow.index}
                   data-grid-column={cell.column.id}
-                  style:width={`${cell.column.getSize()}px`}
                   >{#if link}<a
                       class="grid-link"
                       href={link}
@@ -391,20 +413,12 @@
                         .at(-1)?.column.id}<ChevronRight class="row-open" size={14} />{/if}</td
                 >{/each}
               <td class="mobile-more">
-                <details>
-                  <summary>Detay</summary>
-                  <dl>
-                    {#each row.getVisibleCells().slice(3) as detailCell}
-                      {@const detailColumn = columns.find(
-                        (column) => column.id === detailCell.column.id
-                      )}
-                      <div>
-                        <dt>{detailColumn?.header}</dt>
-                        <dd>{detailCell.getValue() ?? '—'}</dd>
-                      </div>
-                    {/each}
-                  </dl>
-                </details>
+                <button
+                  type="button"
+                  data-grid-no-open
+                  onclick={() => (detailRow = row.original)}
+                  aria-label="Satırın tüm alanlarını göster">Detay</button
+                >
               </td>
             </tr>{/each}{/if}
       </tbody>
@@ -429,6 +443,55 @@
     </div>{/if}
 </div>
 
+<!-- Narrow screens hide the trailing columns. This panel is how their values
+     stay reachable, so it lists every column, not just the hidden ones. -->
+<Dialog.Root
+  open={detailOpen}
+  onOpenChange={(value) => {
+    if (!value) detailRow = null;
+  }}
+>
+  <Dialog.Portal>
+    <Dialog.Overlay class="varya-grid-detail-overlay" />
+    <Dialog.Content class="varya-grid-detail">
+      <div class="detail-head">
+        <Dialog.Title>Kayıt detayı</Dialog.Title>
+        <Dialog.Close class="detail-close" aria-label="Kapat"
+          ><X size={17} aria-hidden="true" /></Dialog.Close
+        >
+      </div>
+      {#if detailRow}
+        {@const current = detailRow}
+        <dl class="detail-list">
+          {#each columns.filter((column) => currentColumnVisibility[column.id] !== false) as column}
+            {@const raw = column.accessor(current)}
+            <div>
+              <dt>{column.header}</dt>
+              <dd>
+                {#if column.cell}{@const Cell = column.cell}<Cell value={raw} row={current} />
+                {:else if column.link?.(current)}<a href={column.link(current)}
+                    >{raw == null || raw === '' ? '—' : String(raw)}</a
+                  >
+                {:else}{raw == null || raw === '' ? '—' : String(raw)}{/if}
+              </dd>
+            </div>
+          {/each}
+        </dl>
+        {#if onRowOpen}
+          <Button
+            class="detail-open"
+            onclick={() => {
+              const target = current;
+              detailRow = null;
+              onRowOpen?.(target);
+            }}>Kaydı aç</Button
+          >
+        {/if}
+      {/if}
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>
+
 <style>
   .varya-grid {
     overflow: hidden;
@@ -438,7 +501,7 @@
   }
   .grid-scroll {
     position: relative;
-    max-height: min(68vh, 680px);
+    max-height: min(68dvh, 680px);
     overflow: auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
@@ -510,33 +573,87 @@
   .mobile-more {
     display: none;
   }
-  .mobile-more details {
+  .mobile-more button {
     width: 100%;
-  }
-  .mobile-more summary {
+    height: 100%;
+    min-height: 40px;
+    border: 0;
+    background: transparent;
     color: var(--primary);
-    cursor: pointer;
+    font: inherit;
     font-size: 11px;
     font-weight: 700;
+    cursor: pointer;
   }
-  .mobile-more dl {
-    display: grid;
-    gap: 5px;
-    margin: 7px 0 0;
-    white-space: normal;
+  :global(.varya-grid-detail-overlay) {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    background: rgb(2 6 23 / 54%);
   }
-  .mobile-more dl > div {
-    display: grid;
-    grid-template-columns: minmax(80px, 0.45fr) minmax(0, 1fr);
-    gap: 8px;
+  :global(.varya-grid-detail) {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    z-index: 71;
+    width: min(460px, calc(100vw - 24px));
+    max-height: min(86dvh, 720px);
+    overflow-y: auto;
+    transform: translate(-50%, -50%);
+    padding: 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-panel);
+    background: var(--surface);
+    box-shadow: 0 24px 70px rgb(2 6 23 / 32%);
   }
-  .mobile-more dt {
+  .detail-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .detail-head :global(h2) {
+    margin: 0;
+    font-size: 15px;
+  }
+  :global(.detail-close) {
+    display: inline-grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border: 0;
+    border-radius: var(--radius-control);
+    background: transparent;
     color: var(--text-muted);
+    cursor: pointer;
   }
-  .mobile-more dd {
+  .detail-list {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0 0;
+  }
+  .detail-list > div {
+    display: grid;
+    grid-template-columns: minmax(96px, 0.4fr) minmax(0, 1fr);
+    gap: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  .detail-list dt {
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+  }
+  .detail-list dd {
     margin: 0;
     color: var(--text);
     overflow-wrap: anywhere;
+  }
+  :global(.detail-open) {
+    width: 100%;
+    margin-top: 12px;
   }
   .grid-link {
     overflow: hidden;
@@ -645,19 +762,28 @@
   }
   @media (max-width: 680px) {
     .grid-scroll {
-      max-height: min(70vh, 640px);
+      max-height: min(70dvh, 640px);
     }
     .mobile-secondary {
       display: none !important;
     }
+    /* The remaining columns share the width instead of keeping the desktop
+       pixel sizes, so the row fits without a sideways scroll. */
+    table.narrow thead th:not(.select-cell):not(.mobile-secondary),
+    table.narrow tbody td:not(.select-cell):not(.mobile-secondary):not(.mobile-more) {
+      flex: 1 1 0;
+      min-width: 0;
+      width: auto !important;
+    }
+    table.narrow .resize-handle {
+      display: none;
+    }
     .mobile-more {
       display: flex;
-      width: 76px !important;
-      flex: 0 0 76px;
-      height: auto;
-      padding: 4px 6px;
-      overflow: visible;
-      white-space: normal;
+      width: 72px !important;
+      flex: 0 0 72px;
+      padding: 0;
+      overflow: hidden;
     }
   }
   @keyframes spin {

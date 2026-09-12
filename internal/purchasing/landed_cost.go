@@ -144,7 +144,7 @@ func (s *Service) CreateLandedCost(ctx context.Context, session identity.Session
 		baseAmount := line.AllocatedAmount
 		if !sameCurrency {
 			if alloc, ok := new(big.Rat).SetString(line.AllocatedAmount); ok {
-				baseAmount = new(big.Rat).Quo(alloc, rate).FloatString(8)
+				baseAmount = new(big.Rat).Mul(alloc, rate).FloatString(8)
 			}
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO purchase_landed_cost_lines(id,company_id,landed_cost_id,goods_receipt_line_id,allocated_amount,base_allocated_amount,base_currency)
@@ -351,7 +351,7 @@ func (s *Service) PostLandedCost(ctx context.Context, session identity.Session, 
 		}
 		baseAllocated := allocated
 		if !sameCurrency {
-			baseAllocated = new(big.Rat).Quo(allocated, rate)
+			baseAllocated = new(big.Rat).Mul(allocated, rate)
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO stock_cost_adjustments(id,company_id,layer_id,reason_code,amount,currency,base_amount,base_currency,source_type,source_id,created_by)
 			VALUES($1,$2,$3,'LANDED_COST',$4,$5,$6,$7,'PURCHASE_LANDED_COST',$8,$9)`,

@@ -1,3 +1,4 @@
+import { errorMessage } from '$lib/errors';
 import type { ScanEvent } from './types';
 
 export type QueueStatus = 'pending' | 'failed';
@@ -93,7 +94,7 @@ export async function flushScanQueue(countID: string, send: QueueSender) {
       await enqueueScanEvent({
         ...entry,
         status: 'failed',
-        last_error: error instanceof Error ? error.message : 'Senkronizasyon başarısız.'
+        last_error: errorMessage(error, 'Senkronizasyon başarısız.')
       });
     }
   }

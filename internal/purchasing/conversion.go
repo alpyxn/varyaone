@@ -180,7 +180,11 @@ func (s *Service) ConvertPurchaseDocument(ctx context.Context, session identity.
 				if lineType == "SERVICE" {
 					warehouseID = ""
 				}
-				input.Lines = append(input.Lines, purchaseInvoiceConversionLine(lineType, sourceLine.ProductID, sourceLine.VariantID, warehouseID, sourceLine.UnitCode, base, sourceLine.ConversionFactor, quantity, sourceLine.UnitPrice, sourceLine.ID))
+				line := purchaseInvoiceConversionLine(lineType, sourceLine.ProductID, sourceLine.VariantID, warehouseID, sourceLine.UnitCode, base, sourceLine.ConversionFactor, quantity, sourceLine.UnitPrice, sourceLine.ID)
+				line.DiscountAmount = purchaseConversionDiscount(sourceLine, quantity)
+				line.TaxBase = subtract(line.GrossAmount, line.DiscountAmount)
+				line.PayableAmount = line.TaxBase
+				input.Lines = append(input.Lines, line)
 			}
 			if len(input.Lines) == 0 {
 				return nil, ErrOverDelivery
@@ -306,10 +310,27 @@ func purchaseInvoiceConversionLine(lineType, productID, variantID, warehouseID, 
 		GrossAmount:         gross,
 		DiscountAmount:      "0",
 		TaxBase:             gross,
-		TaxAmount:           "0",
-		WithholdingAmount:   "0",
-		PayableAmount:       gross,
+		// An omitted tax is resolved by the ordinary invoice tax engine.
+		// Explicit zero would be an override, even for a conversion.
+		TaxAmount:         "",
+		WithholdingAmount: "0",
+		PayableAmount:     gross,
 	}
+}
+
+// Use cumulative rounded shares so partial invoices together preserve the
+// order's exact discount, including the last storage-scale remainder.
+func purchaseConversionDiscount(line purchaseConversionOrderLine, quantity string) string {
+	discount, _ := new(big.Rat).SetString(zero(line.DiscountAmount))
+	ordered, _ := new(big.Rat).SetString(line.OrderedQuantity)
+	invoiced, _ := new(big.Rat).SetString(zero(line.InvoicedQuantity))
+	current, _ := new(big.Rat).SetString(quantity)
+	if discount == nil || ordered == nil || ordered.Sign() <= 0 || invoiced == nil || current == nil {
+		return "0"
+	}
+	before := new(big.Rat).Quo(new(big.Rat).Mul(discount, invoiced), ordered)
+	after := new(big.Rat).Quo(new(big.Rat).Mul(discount, new(big.Rat).Add(invoiced, current)), ordered)
+	return subtract(canonical(after), canonical(before))
 }
 
 func (s *Service) loadPurchaseConversionOrder(ctx context.Context, companyID, id string) (purchaseConversionOrder, error) {

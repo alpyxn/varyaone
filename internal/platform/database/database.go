@@ -51,6 +51,14 @@ func OpenServing(ctx context.Context, databaseURL string) (*pgxpool.Pool, error)
 		if _, err := conn.Exec(ctx, `SET `+companyGUC+` TO DEFAULT`); err != nil {
 			return false, nil // discard a connection we cannot put into a known state
 		}
+		// Session advisory locks outlive the code that took them: a request
+		// that panicked or returned without releasing the backup write barrier
+		// would leave it held on a pooled connection, and the next backup would
+		// then wait for a request that finished long ago. Releasing here makes
+		// the lock effectively request-scoped no matter how a request ends.
+		if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock_all()`); err != nil {
+			return false, nil
+		}
 		return true, nil
 	}
 

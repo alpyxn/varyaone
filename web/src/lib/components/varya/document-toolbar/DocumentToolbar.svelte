@@ -68,6 +68,7 @@
   .header-actions,
   .toolbar-status {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 7px;
   }
@@ -82,13 +83,11 @@
   @media (max-width: 640px) {
     .document-header {
       flex-direction: column;
-    }
-    .document-tools {
-      overflow-x: auto;
+      align-items: stretch;
     }
     .header-actions {
       width: 100%;
-      justify-content: space-between;
+      justify-content: flex-start;
     }
   }
 </style>

@@ -1,6 +1,12 @@
 <script lang="ts">
   import { Building2, Check, ChevronsUpDown, Loader2, Plus, Search } from '@lucide/svelte';
   import type { Session } from '$lib/api';
+  import {
+    busyGuardLabel,
+    discardUnsavedChanges,
+    hasUnsavedChanges
+  } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
 
   let {
     session,
@@ -53,11 +59,36 @@
     }
   }
 
+  // Şirket değişimi açık formu kaldırır; aynı kayıp denetimi burada da çalışır.
+  let pendingCompanyID = $state('');
+  let unsavedOpen = $state(false);
+
   async function choose(companyID: string) {
     if (companyID === session?.current_company_id) {
       open = false;
       return;
     }
+    // Süren bir kayıt varken şirket değiştirmek, isteğin hangi şirkete
+    // yazıldığını belirsizleştirir; geçiş beklenir.
+    if (busyGuardLabel()) return;
+    if (hasUnsavedChanges()) {
+      pendingCompanyID = companyID;
+      unsavedOpen = true;
+      return;
+    }
+    await switchTo(companyID);
+  }
+
+  async function discardAndSwitch() {
+    const target = pendingCompanyID;
+    unsavedOpen = false;
+    pendingCompanyID = '';
+    // Eski formun verisi yeni şirkete taşınmaz.
+    discardUnsavedChanges();
+    if (target) await switchTo(target);
+  }
+
+  async function switchTo(companyID: string) {
     switching = companyID;
     try {
       await onchange(companyID);
@@ -72,11 +103,21 @@
   }
 
   function onWindowKey(event: KeyboardEvent) {
+    if (unsavedOpen) return;
     if (open && event.key === 'Escape') open = false;
   }
 </script>
 
 <svelte:window onpointerdown={onWindowPointer} onkeydown={onWindowKey} />
+
+<UnsavedChangesDialog
+  bind:open={unsavedOpen}
+  onKeepEditing={() => {
+    unsavedOpen = false;
+    pendingCompanyID = '';
+  }}
+  onDiscard={() => void discardAndSwitch()}
+/>
 
 <div class="cs-root" bind:this={wrap}>
   <button
@@ -202,7 +243,7 @@
     left: 0;
     z-index: 40;
     width: max(260px, 100%);
-    max-width: 340px;
+    max-width: min(340px, calc(100vw - 20px));
     display: flex;
     flex-direction: column;
     padding: 5px;

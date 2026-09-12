@@ -7,6 +7,10 @@
   let session = $state<Session | null>(null);
   let message = $state('');
   let messageTone = $state<'success' | 'error'>('success');
+  let currentPassword = $state('');
+  let newPassword = $state('');
+  let newPasswordAgain = $state('');
+  let changingPassword = $state(false);
   let secret = $state('');
   let uri = $state('');
   let qrDataUrl = $state('');
@@ -24,6 +28,37 @@
       await goto('/giris');
     }
   });
+
+  async function changePassword() {
+    message = '';
+    if (newPassword.length < 12) {
+      messageTone = 'error';
+      message = 'Yeni parola en az 12 karakter olmalıdır.';
+      return;
+    }
+    if (newPassword !== newPasswordAgain) {
+      messageTone = 'error';
+      message = 'Yeni parolalar birbiriyle eşleşmiyor.';
+      return;
+    }
+    changingPassword = true;
+    try {
+      await api<void>('/security/password', {
+        method: 'POST',
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword })
+      });
+      currentPassword = '';
+      newPassword = '';
+      newPasswordAgain = '';
+      messageTone = 'success';
+      message = 'Parolanız değiştirildi.';
+    } catch (error) {
+      messageTone = 'error';
+      message = (error as APIError).message || 'Parola değiştirilemedi.';
+    } finally {
+      changingPassword = false;
+    }
+  }
 
   async function beginTOTP() {
     message = '';
@@ -112,13 +147,51 @@
 
 <section class="panel-grid">
   <article class="card form">
+    <h2 class="panel-title">Parola değiştir</h2>
+    <label class="field"
+      >Mevcut parola<input
+        bind:value={currentPassword}
+        type="password"
+        autocomplete="current-password"
+      /></label
+    >
+    <label class="field"
+      >Yeni parola <span class="hint">En az 12 karakter</span><input
+        bind:value={newPassword}
+        type="password"
+        minlength="12"
+        autocomplete="new-password"
+      /></label
+    >
+    <label class="field"
+      >Yeni parola (tekrar)<input
+        bind:value={newPasswordAgain}
+        type="password"
+        minlength="12"
+        autocomplete="new-password"
+      /></label
+    >
+    <div class="actions-row">
+      <button
+        class="button"
+        type="button"
+        disabled={changingPassword || !currentPassword || !newPassword}
+        onclick={changePassword}
+      >
+        {changingPassword ? 'Değiştiriliyor…' : 'Parolayı değiştir'}
+      </button>
+    </div>
+  </article>
+  <article class="card form">
     <h2 class="panel-title">İki adımlı doğrulama</h2>
     {#if session?.user.totp_enabled && !secret && recoveryCodes.length === 0}
       <div class="notice success">İki adımlı doğrulama hesabınızda etkin.</div>
       {#if !showDisableForm}
-        <button class="button secondary" type="button" onclick={() => (showDisableForm = true)}
-          >İki adımlı doğrulamayı kapat</button
-        >
+        <div class="actions-row">
+          <button class="button secondary" type="button" onclick={() => (showDisableForm = true)}
+            >İki adımlı doğrulamayı kapat</button
+          >
+        </div>
       {:else}
         <p class="lead">Kapatmak için parolanızı doğrulayın.</p>
         <label class="field"
@@ -147,7 +220,9 @@
         Google Authenticator, Microsoft Authenticator veya benzeri bir uygulamayla oturum açarken
         ikinci bir doğrulama adımı isteyin.
       </p>
-      <button class="button" type="button" onclick={beginTOTP}>TOTP kurulumunu başlat</button>
+      <div class="actions-row">
+        <button class="button" type="button" onclick={beginTOTP}>TOTP kurulumunu başlat</button>
+      </div>
     {:else if secret}
       <ol class="totp-steps">
         <li>
@@ -172,9 +247,11 @@
               placeholder="000000"
             /></label
           >
-          <button class="button" type="button" disabled={confirming} onclick={confirmTOTP}
-            >{confirming ? 'Doğrulanıyor…' : 'Doğrula ve etkinleştir'}</button
-          >
+          <div class="actions-row">
+            <button class="button" type="button" disabled={confirming} onclick={confirmTOTP}
+              >{confirming ? 'Doğrulanıyor…' : 'Doğrula ve etkinleştir'}</button
+            >
+          </div>
         </li>
       </ol>
     {:else}

@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { Bug, Lightbulb, X, GripHorizontal } from '@lucide/svelte';
   import { toast } from 'svelte-sonner';
   import { api, APIRequestError } from '$lib/api';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
 
@@ -59,6 +61,7 @@
     }
   });
 
+  /** reset() yalnızca başarılı gönderim veya onaylanmış vazgeçme sonrası. */
   function reset() {
     category = 'bug';
     message = '';
@@ -66,15 +69,33 @@
     submitting = false;
   }
 
+  // Masaüstü ve mobilde aynı kapanma politikası.
+  const unsaved = new UnsavedChangesGuard({
+    snapshot: () => ({ category, message, contact }),
+    isBusy: () => submitting,
+    onClose: () => {
+      open = false;
+      pos = null;
+      reset();
+    }
+  });
+
+  $effect(() => unsaved.registerPageGuard('Geri bildirim'));
+
+  $effect(() => {
+    if (open) untrack(() => unsaved.reset());
+    else untrack(() => unsaved.release());
+  });
+
   function close() {
-    if (submitting) return;
-    open = false;
-    pos = null;
-    reset();
+    unsaved.requestClose();
   }
 
   function onKey(event: KeyboardEvent) {
-    if (open && event.key === 'Escape') close();
+    if (!open || event.key !== 'Escape' || event.defaultPrevented) return;
+    // Esc önce çıkış onayına ulaşır; alttaki form kapanmaz.
+    if (unsaved.confirmOpen) return;
+    close();
   }
 
   async function submit(event: SubmitEvent) {
@@ -91,9 +112,7 @@
         body: JSON.stringify({ category, message: trimmed, contact: contact.trim() })
       });
       toast.success('Geri bildiriminiz için teşekkürler!');
-      open = false;
-      pos = null;
-      reset();
+      unsaved.closeAfterSave();
     } catch (error) {
       const detail =
         error instanceof APIRequestError ? error.message : 'Geri bildirim gönderilemedi.';
@@ -107,13 +126,8 @@
 
 {#if open && (isDesktop ? pos : true)}
   {#if !isDesktop}
-    <div
-      class="feedback-overlay"
-      role="presentation"
-      onclick={(e) => {
-        if (e.target === e.currentTarget) close();
-      }}
-    ></div>
+    <!-- Dış alana tıklamak veri giriş penceresini kapatmaz. -->
+    <div class="feedback-overlay" role="presentation"></div>
   {/if}
   <div
     class="feedback-dialog"
@@ -134,13 +148,23 @@
     >
       {#if isDesktop}<GripHorizontal size={15} aria-hidden="true" />{/if}
       <h2 id="feedback-title">Geri bildirim gönder</h2>
-      <button type="button" class="feedback-close" aria-label="Kapat" onclick={close}>
+      <button
+        type="button"
+        class="feedback-close"
+        aria-label="Kapat"
+        disabled={submitting}
+        onclick={close}
+      >
         <X size={14} />
       </button>
     </div>
 
     <div class="feedback-body">
-      <form onsubmit={submit}>
+      <form
+        oninput={() => unsaved.noteUserInput()}
+        onchange={() => unsaved.noteUserInput()}
+        onsubmit={submit}
+      >
         <div class="feedback-types" role="radiogroup" aria-label="Geri bildirim türü">
           <button
             type="button"
@@ -198,6 +222,12 @@
       </form>
     </div>
   </div>
+
+  <UnsavedChangesDialog
+    bind:open={unsaved.confirmOpen}
+    onKeepEditing={() => unsaved.keepEditing()}
+    onDiscard={() => unsaved.discardAndClose()}
+  />
 {/if}
 
 <style>

@@ -111,7 +111,10 @@ func (s *Service) UpdateGoodsReceipt(ctx context.Context, session identity.Sessi
 	if err = s.ensureExchangeRate(ctx, session, input.Currency, input.ReceiptDate, &input.ExchangeRate); err != nil {
 		return GoodsReceipt{}, err
 	}
-	if err = s.ensureScope(ctx, session, input.BranchID, input.WarehouseID); err != nil {
+	// One memo for the whole save: the document's own warehouse is normally the
+	// one most lines use, so checking it here also answers for them.
+	checks := newPurchaseLineChecks()
+	if err = checks.scope(ctx, s, session, input.BranchID, input.WarehouseID); err != nil {
 		return GoodsReceipt{}, err
 	}
 	if err = s.ensureSupplier(ctx, session.CurrentCompanyID, input.SupplierID); err != nil {
@@ -140,14 +143,14 @@ func (s *Service) UpdateGoodsReceipt(ctx context.Context, session identity.Sessi
 		if line.Currency != input.Currency {
 			return GoodsReceipt{}, validation("mal kabul satırlarının para birimi belgeyle eşleşmelidir")
 		}
-		if err = ensurePurchaseProduct(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, "PRODUCT"); err != nil {
+		if err = checks.product(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, "PRODUCT"); err != nil {
 			return GoodsReceipt{}, err
 		}
 		line.WarehouseID = strings.TrimSpace(line.WarehouseID)
 		if line.WarehouseID == "" {
 			line.WarehouseID = input.WarehouseID
 		}
-		if err = s.ensureScope(ctx, session, input.BranchID, line.WarehouseID); err != nil {
+		if err = checks.scope(ctx, s, session, input.BranchID, line.WarehouseID); err != nil {
 			return GoodsReceipt{}, err
 		}
 		accepted := zero(line.AcceptedQuantity)
@@ -299,9 +302,6 @@ func (s *Service) UpdatePurchaseInvoice(ctx context.Context, session identity.Se
 	if err = s.ensureSupplier(ctx, session.CurrentCompanyID, input.SupplierID); err != nil {
 		return PurchaseInvoice{}, err
 	}
-	if err = s.deriveSupplierDueDate(ctx, session.CurrentCompanyID, input.SupplierID, input.InvoiceDate, &input.DueDate); err != nil {
-		return PurchaseInvoice{}, err
-	}
 	if input.PurchaseOrderID != "" {
 		if err = s.ensurePurchaseOrderScope(ctx, tx, session, input.PurchaseOrderID); err != nil {
 			return PurchaseInvoice{}, err
@@ -319,6 +319,7 @@ func (s *Service) UpdatePurchaseInvoice(ctx context.Context, session identity.Se
 	}
 	var subtotal, discount, tax, payable string
 	headerWarehouse := strings.TrimSpace(input.WarehouseID)
+	checks := newPurchaseLineChecks()
 	for index := range input.Lines {
 		line := &input.Lines[index]
 		if err = validateInvoiceLine(line); err != nil {
@@ -327,7 +328,7 @@ func (s *Service) UpdatePurchaseInvoice(ctx context.Context, session identity.Se
 		if err = s.resolvePurchaseInvoiceLineDefaults(ctx, tx, session, input, line, index+1); err != nil {
 			return PurchaseInvoice{}, err
 		}
-		if err = ensurePurchaseProduct(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, line.LineType); err != nil {
+		if err = checks.product(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, line.LineType); err != nil {
 			return PurchaseInvoice{}, err
 		}
 		line.BaseQuantity, line.ConversionFactor, err = resolvePurchaseConversionTx(ctx, tx, session.CurrentCompanyID, line.ProductID, line.UnitCode, line.Quantity, line.BaseQuantity, line.ConversionFactor)
@@ -346,7 +347,7 @@ func (s *Service) UpdatePurchaseInvoice(ctx context.Context, session identity.Se
 			if line.WarehouseID == "" {
 				return PurchaseInvoice{}, validation("alış faturası ürün satırı için depo gereklidir")
 			}
-			if err = s.ensureScope(ctx, session, input.BranchID, line.WarehouseID); err != nil {
+			if err = checks.scope(ctx, s, session, input.BranchID, line.WarehouseID); err != nil {
 				return PurchaseInvoice{}, err
 			}
 			if headerWarehouse == "" {
@@ -478,7 +479,8 @@ func (s *Service) UpdatePurchaseReturn(ctx context.Context, session identity.Ses
 	if err = s.ensureExchangeRate(ctx, session, input.Currency, input.ReturnDate, &input.ExchangeRate); err != nil {
 		return PurchaseReturn{}, err
 	}
-	if err = s.ensureScope(ctx, session, input.BranchID, input.WarehouseID); err != nil {
+	checks := newPurchaseLineChecks()
+	if err = checks.scope(ctx, s, session, input.BranchID, input.WarehouseID); err != nil {
 		return PurchaseReturn{}, err
 	}
 	if err = s.ensureSupplier(ctx, session.CurrentCompanyID, input.SupplierID); err != nil {
@@ -498,14 +500,14 @@ func (s *Service) UpdatePurchaseReturn(ctx context.Context, session identity.Ses
 		if err = validateReturnLine(line, input.Currency); err != nil {
 			return PurchaseReturn{}, err
 		}
-		if err = ensurePurchaseProduct(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, "PRODUCT"); err != nil {
+		if err = checks.product(ctx, tx, session.CurrentCompanyID, line.ProductID, line.VariantID, "PRODUCT"); err != nil {
 			return PurchaseReturn{}, err
 		}
 		line.WarehouseID = strings.TrimSpace(line.WarehouseID)
 		if line.WarehouseID == "" {
 			line.WarehouseID = input.WarehouseID
 		}
-		if err = s.ensureScope(ctx, session, input.BranchID, line.WarehouseID); err != nil {
+		if err = checks.scope(ctx, s, session, input.BranchID, line.WarehouseID); err != nil {
 			return PurchaseReturn{}, err
 		}
 		line.BaseQuantity, line.ConversionFactor, err = resolvePurchaseConversionTx(ctx, tx, session.CurrentCompanyID, line.ProductID, line.UnitCode, line.Quantity, line.BaseQuantity, line.ConversionFactor)

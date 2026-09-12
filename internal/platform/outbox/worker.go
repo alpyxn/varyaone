@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/alpyxn/varyaone/internal/backup"
 )
 
 const maxAttempts = 10
@@ -69,6 +71,25 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) runOne(ctx context.Context) (bool, error) {
+	// Hold the backup write barrier for the whole cycle. The worker is a writer
+	// — it claims, acks and dead-letters rows — so a backup that pinned the
+	// file tree without pausing it would capture a database the files no longer
+	// match.
+	//
+	// The barrier is taken before claiming rather than around each statement,
+	// so a paused worker starts no new work at all. The cost is that a backup
+	// can wait for one in-flight event; the engine bounds that wait and reports
+	// a timeout rather than producing an archive it cannot vouch for.
+	barrier, err := w.pool.Acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer barrier.Release()
+	if err := backup.AcquireWriteBarrier(ctx, barrier); err != nil {
+		return false, err
+	}
+	defer backup.ReleaseWriteBarrier(barrier)
+
 	event, found, err := w.claim(ctx)
 	if err != nil || !found {
 		return false, err

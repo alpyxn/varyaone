@@ -1,0 +1,7 @@
+{
+  "Replace": {
+    "/home/user/projects/varyaone/internal/platform/httpapi/security_review_probe_test.go": "/home/user/projects/varyaone/output/security-review-2026-09-12/httpapi_probe_test.go",
+    "/home/user/projects/varyaone/internal/identity/security_review_probe_test.go": "/home/user/projects/varyaone/output/security-review-2026-09-12/identity_probe_test.go",
+    "/home/user/projects/varyaone/internal/dashboard/security_review_probe_test.go": "/home/user/projects/varyaone/output/security-review-2026-09-12/dashboard_probe_test.go"
+  }
+}

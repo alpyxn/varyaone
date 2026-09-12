@@ -392,8 +392,9 @@
                 bind:checked={employment.is_minimum_wage}
                 onchange={onMinimumWageToggle}
               />
-              Asgari ücretli — güncel asgari ücretle kilitlenir, asgari ücret değişince ücreti otomatik
-              güncellenir
+              Asgari ücretli — tutarı <a class="wage-link" href="/ayarlar/tanimlar/asgari-ucret"
+                >asgari ücret tanımından</a
+              > değiştirebilirsiniz
             </label>
           </Field.Field>
           <Field.Field>
@@ -525,6 +526,11 @@
     gap: 8px;
     font-size: 13px;
     line-height: 1.5;
+  }
+  .wage-link {
+    color: var(--success);
+    font-weight: 600;
+    text-decoration: underline;
   }
   .section-head h3 {
     margin: 0;

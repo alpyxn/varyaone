@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { LoaderCircle, Plus, ScanLine, X } from '@lucide/svelte';
   import { api, type Session } from '$lib/api';
   import { Button } from '$lib/components/ui/button';
@@ -25,6 +25,10 @@
     isActiveStandardWarehouse,
     type Warehouse
   } from '$lib/features/warehouses/types';
+  import { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
+  import { DraftRecovery } from '$lib/forms/draft-recovery.svelte';
+  import { DraftNotice } from '$lib/components/varya/draft-notice';
 
   type ProductOption = {
     id: string;
@@ -185,17 +189,94 @@
     lines = [newLine()];
     formError = '';
   }
-  function openCreateDialog() {
-    restoreFocusElement =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    resetForm();
-    dialogOpen = true;
-    const standard = warehouses.filter(isActiveStandardWarehouse);
-    if (standard.length === 1) selectSourceOption(warehousePickerOption(standard[0]));
-    setTimeout(() => dialogElement?.focus(), 0);
+  /** Kayda giden transfer modelinden üretilen karşılaştırma değeri. */
+  function formSnapshot() {
+    return {
+      sourceWarehouseID,
+      destinationWarehouseID,
+      transferType,
+      lines: lines.map((line) => ({
+        productID: line.productID,
+        quantity: line.quantity,
+        variantQuantities: { ...line.variantQuantities }
+      }))
+    };
   }
-  function closeCreateDialog() {
-    if (submitting) return;
+
+  // closeCreateDialog() kontrollü kapanmanın tek giriş noktası; gerçek kapanma
+  // yalnızca buradan geçer.
+  const unsaved = new UnsavedChangesGuard({
+    snapshot: formSnapshot,
+    isBusy: () => submitting,
+    onClose: () => finishClose()
+  });
+
+  // Menüden/geri tuşundan/şirket değişiminden "sil ve çık", pencere içindeki
+  // "sil ve çık" ile aynı sonucu vermeli: yerel taslak da gitmeli. `drafts`
+  // aşağıda tanımlı olduğu için silme çağrı anında okunur.
+  $effect(() => unsaved.registerPageGuard('Yeni transfer', () => drafts.discardForNavigation()));
+
+  type TransferDraftData = {
+    sourceWarehouseID: string;
+    destinationWarehouseID: string;
+    sourceWarehouse: WarehousePickerOption | null;
+    destinationWarehouse: WarehousePickerOption | null;
+    transferType: 'QUICK' | 'WORKFLOW';
+    lines: TransferDraftLine[];
+  };
+
+  /** Çok satırlı transfer hazırlama formu için yerel kurtarma taslağı. */
+  const drafts = new DraftRecovery<TransferDraftData>({
+    scope: () => {
+      const userID = session?.user?.id;
+      const companyID = session?.current_company_id;
+      if (!userID || !companyID) return null;
+      return { userID, companyID, formType: 'stock-transfer', recordID: '' };
+    },
+    data: () => ({
+      sourceWarehouseID,
+      destinationWarehouseID,
+      sourceWarehouse: selectedSourceWarehouse,
+      destinationWarehouse: selectedDestinationWarehouse,
+      transferType,
+      lines
+    }),
+    enabled: () => dialogOpen && !submitting
+  });
+
+  // Düzenleme durduktan kısa süre sonra yazılır.
+  $effect(() => {
+    formSnapshot();
+    if (!dialogOpen || !unsaved.isDirty) return;
+    untrack(() => drafts.note());
+  });
+
+  $effect(() => () => drafts.destroy());
+
+  async function restoreDraft() {
+    const data = drafts.restore();
+    if (!data) return;
+    transferType = data.transferType;
+    if (data.sourceWarehouseID) {
+      // Kaynak depo ürünleri yeniden yüklenir; satırlar bunun ardından konur.
+      await selectSource(data.sourceWarehouseID);
+      if (data.sourceWarehouse) selectedSourceWarehouse = data.sourceWarehouse;
+    }
+    destinationWarehouseID = data.destinationWarehouseID;
+    selectedDestinationWarehouse = data.destinationWarehouse;
+    lines = data.lines.map((line) => ({
+      ...line,
+      loading: false,
+      error: '',
+      pickerOpen: false,
+      requestKey: nextRequestKey()
+    }));
+    formError = '';
+  }
+
+  function finishClose() {
+    // "Değişiklikleri sil ve çık" yerel taslağı da siler.
+    drafts.clear();
     dialogOpen = false;
     formError = '';
     setTimeout(() => {
@@ -204,8 +285,26 @@
       restoreFocusElement = null;
     }, 0);
   }
+
+  function openCreateDialog() {
+    restoreFocusElement =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    resetForm();
+    dialogOpen = true;
+    const standard = warehouses.filter(isActiveStandardWarehouse);
+    if (standard.length === 1) selectSourceOption(warehousePickerOption(standard[0]));
+    // Tek depo ön seçimi gibi varsayılanlar yerleştikten sonra temiz durum.
+    unsaved.reset();
+    drafts.start();
+    setTimeout(() => dialogElement?.focus(), 0);
+  }
+  function closeCreateDialog() {
+    unsaved.requestClose();
+  }
   function handleDialogKeydown(event: KeyboardEvent) {
     if (!dialogOpen) return;
+    // İç içe seçiciler ve çıkış onayı Esc'yi kendileri karşılar.
+    if (unsaved.confirmOpen) return;
     const nestedPicker = document.querySelector('.entity-picker-dialog');
     if (nestedPicker?.contains(event.target as Node)) return;
     if (event.key === 'Escape') {
@@ -554,7 +653,8 @@
         transferType === 'QUICK'
           ? 'Hızlı transfer teslim alındı.'
           : 'Transfer sevke çıkarıldı ve IN_TRANSIT durumuna alındı.';
-      dialogOpen = false;
+      drafts.clear();
+      unsaved.closeAfterSave();
       listVersion += 1;
     } catch (cause) {
       formError = errorMessage(cause, 'Transfer oluşturulamadı.');
@@ -618,11 +718,8 @@
 {/key}
 
 {#if dialogOpen}
-  <div
-    class="dialog-backdrop"
-    role="presentation"
-    onclick={(event) => event.target === event.currentTarget && closeCreateDialog()}
-  >
+  <!-- Veri giriş penceresinde dış alana tıklamak pencereyi kapatmaz. -->
+  <div class="dialog-backdrop" role="presentation">
     <div
       bind:this={dialogElement}
       class="dialog"
@@ -639,7 +736,20 @@
           ><X size={18} /></button
         >
       </header>
-      <div class="dialog-body">
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="dialog-body"
+        oninput={() => unsaved.noteUserInput()}
+        onchange={() => unsaved.noteUserInput()}
+      >
+        {#if drafts.found}
+          <DraftNotice
+            savedAt={drafts.savedAt}
+            onRestore={() => void restoreDraft()}
+            onDiscard={() => drafts.discard()}
+          />
+        {/if}
+        {#if drafts.error}<div class="form-error" role="status">{drafts.error}</div>{/if}
         {#if formError}<div class="form-error" role="alert">{formError}</div>{/if}
         <div class="form-grid">
           <div class="field">
@@ -778,6 +888,12 @@
       </footer>
     </div>
   </div>
+
+  <UnsavedChangesDialog
+    bind:open={unsaved.confirmOpen}
+    onKeepEditing={() => unsaved.keepEditing()}
+    onDiscard={() => unsaved.discardAndClose()}
+  />
 {/if}
 
 <style>

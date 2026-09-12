@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import type { Snippet } from 'svelte';
   import { Dialog } from 'bits-ui';
-  import { LoaderCircle, X } from '@lucide/svelte';
+  import { LoaderCircle } from '@lucide/svelte';
   import { Button } from '$lib/components/ui/button';
+  import type { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
 
   type Props = {
     open?: boolean;
@@ -11,6 +14,11 @@
     cancelLabel?: string;
     confirmLabel?: string;
     children?: Snippet;
+    /**
+     * children alanında veri girişi varsa, o formun değişiklik denetimi.
+     * Salt işlem onaylarında verilmez — onaya ikinci onay eklenmez.
+     */
+    guard?: UnsavedChangesGuard;
     onConfirm: () => Promise<void> | void;
   };
 
@@ -21,6 +29,7 @@
     cancelLabel = 'Vazgeç',
     confirmLabel = 'Tamam',
     children,
+    guard,
     onConfirm
   }: Props = $props();
 
@@ -31,40 +40,68 @@
     error = '';
   }
 
+  /** X, Esc, dış tıklama ve Vazgeç için tek kapanma yolu. */
+  function requestClose() {
+    if (busy) return;
+    if (guard) {
+      guard.requestClose();
+      return;
+    }
+    reset();
+    open = false;
+  }
+
   async function submit() {
     busy = true;
     error = '';
     try {
       await onConfirm();
+      guard?.markClean();
+      reset();
       open = false;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'İşlem tamamlanamadı.';
+      error = errorMessage(cause, 'İşlem tamamlanamadı.');
     } finally {
       busy = false;
     }
   }
 </script>
 
-<Dialog.Root bind:open onOpenChange={(next) => !next && !busy && reset()}>
+<Dialog.Root bind:open>
   <Dialog.Portal>
     <Dialog.Overlay class="confirm-dialog-overlay" />
-    <Dialog.Content class="confirm-dialog" aria-describedby="confirm-dialog-description">
+    <Dialog.Content
+      class="confirm-dialog"
+      aria-describedby="confirm-dialog-description"
+      onInteractOutside={(event) => {
+        // İşlem sürerken ve veri girişi varken dış tıklama kapatmaz.
+        if (busy || guard) event.preventDefault();
+      }}
+      onEscapeKeydown={(event) => {
+        event.preventDefault();
+        requestClose();
+      }}
+    >
       <div class="confirm-dialog-heading">
-        <div>
-          <Dialog.Title>{title}</Dialog.Title>
-          <Dialog.Description id="confirm-dialog-description">{description}</Dialog.Description>
-        </div>
-        <Dialog.Close class="confirm-dialog-close" aria-label="Kapat" disabled={busy}>
-          <X size={17} />
-        </Dialog.Close>
+        <Dialog.Title>{title}</Dialog.Title>
+        <Dialog.Description id="confirm-dialog-description">{description}</Dialog.Description>
       </div>
 
       {#if error}<p class="confirm-dialog-error" role="alert">{error}</p>{/if}
 
-      {#if children}<div class="confirm-dialog-body">{@render children()}</div>{/if}
+      {#if children}<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <div
+          class="confirm-dialog-body"
+          oninput={() => guard?.noteUserInput()}
+          onchange={() => guard?.noteUserInput()}
+        >
+          {@render children()}
+        </div>{/if}
 
       <div class="confirm-dialog-actions">
-        <Dialog.Close class="confirm-dialog-cancel" disabled={busy}>{cancelLabel}</Dialog.Close>
+        <button class="confirm-dialog-cancel" type="button" disabled={busy} onclick={requestClose}
+          >{cancelLabel}</button
+        >
         <Button disabled={busy} onclick={() => void submit()}>
           {#if busy}<LoaderCircle class="spin" size={14} />{/if}{confirmLabel}
         </Button>
@@ -72,6 +109,14 @@
     </Dialog.Content>
   </Dialog.Portal>
 </Dialog.Root>
+
+{#if guard}
+  <UnsavedChangesDialog
+    bind:open={guard.confirmOpen}
+    onKeepEditing={() => guard.keepEditing()}
+    onDiscard={() => guard.discardAndClose()}
+  />
+{/if}
 
 <style>
   :global(.confirm-dialog-overlay) {
@@ -86,6 +131,8 @@
     top: 50%;
     left: 50%;
     width: min(440px, calc(100vw - 32px));
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
     transform: translate(-50%, -50%);
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-panel);
@@ -93,15 +140,12 @@
     box-shadow: 0 20px 60px rgb(10 30 27 / 22%);
     padding: 18px;
   }
-  .confirm-dialog-heading,
   .confirm-dialog-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-  }
-  .confirm-dialog-heading {
-    align-items: flex-start;
   }
   .confirm-dialog-heading :global(h2) {
     margin: 0;
@@ -113,20 +157,6 @@
     color: var(--text-muted);
     font-size: 12px;
     line-height: 1.5;
-  }
-  :global(.confirm-dialog-close) {
-    display: inline-grid;
-    place-items: center;
-    width: 28px;
-    height: 28px;
-    border: 0;
-    border-radius: var(--radius-control);
-    background: transparent;
-    color: var(--text-muted);
-  }
-  :global(.confirm-dialog-close:hover) {
-    background: var(--surface-muted);
-    color: var(--text);
   }
   .confirm-dialog-error {
     margin: 14px 0 0;

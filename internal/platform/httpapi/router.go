@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/alpyxn/varyaone/internal/agenda"
-	"github.com/alpyxn/varyaone/internal/backup"
 	"github.com/alpyxn/varyaone/internal/dashboard"
 	"github.com/alpyxn/varyaone/internal/demo"
 	"github.com/alpyxn/varyaone/internal/email"
@@ -33,6 +32,7 @@ import (
 	payrollpayment "github.com/alpyxn/varyaone/internal/payroll/payment"
 	payrollrun "github.com/alpyxn/varyaone/internal/payroll/run"
 	"github.com/alpyxn/varyaone/internal/platform/httpapi/contract"
+	"github.com/alpyxn/varyaone/internal/platform/opctl"
 	"github.com/alpyxn/varyaone/internal/preferences"
 	"github.com/alpyxn/varyaone/internal/pricing"
 	"github.com/alpyxn/varyaone/internal/products"
@@ -53,6 +53,7 @@ type Readiness interface {
 type apiHandler struct {
 	release   string
 	readiness Readiness
+	logger    *slog.Logger
 }
 
 func (h apiHandler) GetLiveness(w http.ResponseWriter, _ *http.Request) {
@@ -63,6 +64,12 @@ func (h apiHandler) GetReadiness(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	if err := h.readiness.Check(ctx); err != nil {
+		// The response stays deliberately vague — it is served unauthenticated —
+		// but the reason has to go somewhere. Without this, a readiness failure
+		// is a 503 with no way to find out what is wrong short of guessing.
+		if h.logger != nil {
+			h.logger.Warn("readiness check failed", "error", err, "trace_id", TraceID(r.Context()))
+		}
 		writeError(w, r, http.StatusServiceUnavailable, "NOT_READY", "Varya One henüz istek almaya hazır değil.")
 		return
 	}
@@ -107,7 +114,9 @@ type routerOptions struct {
 	payrollPayment  *payrollpayment.Service
 	payrollDeliv    *delivery.Service
 	fixedAsset      *fixedasset.Service
-	systemBackup    *backup.Engine
+	systemBackup    backupEngine
+	opController    *opctl.Controller
+	controlDir      string
 	spa             http.Handler
 	secureCookies   bool
 	scopePool       *pgxpool.Pool
@@ -147,8 +156,17 @@ func WithSPA(handler http.Handler) RouterOption {
 	return func(o *routerOptions) { o.spa = handler }
 }
 
-func WithSystemBackup(engine *backup.Engine) RouterOption {
-	return func(options *routerOptions) { options.systemBackup = engine }
+// WithSystemBackup mounts the backup, restore and operation-status routes. The
+// controller is not optional: the destructive half of these routes is only safe
+// because every operation takes the installation's lease and leaves a durable
+// record, and a route mounted without one would be neither coordinated nor
+// recoverable.
+func WithSystemBackup(engine backupEngine, controller *opctl.Controller, controlDir string) RouterOption {
+	return func(options *routerOptions) {
+		options.systemBackup = engine
+		options.opController = controller
+		options.controlDir = controlDir
+	}
 }
 
 func WithParty(service *party.Service) RouterOption {
@@ -303,7 +321,11 @@ func NewRouter(logger *slog.Logger, release string, readiness Readiness, options
 	router.Use(RequestContext)
 	router.Use(func(next http.Handler) http.Handler { return Recover(logger, next) })
 	router.Use(func(next http.Handler) http.Handler { return AccessLog(logger, next) })
-	router.Use(middleware.Timeout(30 * time.Second))
+	// The 30s request timeout is right for the ordinary API and wrong for the
+	// two operations that legitimately take hours. Those carry their own
+	// bounded contexts and their own socket deadlines, so they are exempted
+	// here by path rather than the limit being relaxed for everything.
+	router.Use(timeoutExcept(30*time.Second, "/api/v1/system/"))
 	// The demo guard runs before every route: it refuses the operations the
 	// public showcase must not perform and answers "being rebuilt" during a
 	// reset. A normal installation never installs it.
@@ -314,7 +336,7 @@ func NewRouter(logger *slog.Logger, release string, readiness Readiness, options
 		demoState = newDemoStateCache(configuration.demo.Runner)
 		router.Use(demoGuard(demoState))
 	}
-	contract.HandlerFromMux(apiHandler{release: release, readiness: readiness}, router)
+	contract.HandlerFromMux(apiHandler{release: release, readiness: readiness, logger: logger}, router)
 	if demoState != nil && configuration.identity != nil {
 		mountDemoRoutes(router, configuration.identity, configuration.secureCookies, configuration.demo, demoState)
 	}
@@ -421,8 +443,9 @@ func NewRouter(logger *slog.Logger, release string, readiness Readiness, options
 		if configuration.payrollDeliv != nil {
 			mountPayrollDeliveryRoutes(router, configuration.identity, configuration.payrollDeliv)
 		}
-		if configuration.systemBackup != nil {
-			mountSystemRoutes(router, configuration.identity, configuration.systemBackup)
+		if configuration.systemBackup != nil && configuration.opController != nil {
+			mountSystemRoutes(router, configuration.identity, configuration.systemBackup,
+				configuration.opController, defaultSpoolDir(configuration.controlDir))
 		}
 	}
 	router.NotFound(func(w http.ResponseWriter, r *http.Request) {
@@ -439,4 +462,29 @@ func NewRouter(logger *slog.Logger, release string, readiness Readiness, options
 		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "İstenen kaynak bulunamadı.")
 	})
 	return router
+}
+
+// timeoutExcept applies a request timeout to everything except the given path
+// prefixes.
+//
+// chi's Timeout middleware cancels the request context after a fixed duration.
+// That is the right default and a wrong fit for the backup routes, where a
+// legitimate operation runs for hours; those routes set their own bounded,
+// detached contexts and their own socket deadlines instead. Exempting them by
+// prefix keeps the decision visible in one place, rather than lifting the limit
+// for the whole API to accommodate two endpoints.
+func timeoutExcept(limit time.Duration, prefixes ...string) func(http.Handler) http.Handler {
+	timeout := middleware.Timeout(limit)
+	return func(next http.Handler) http.Handler {
+		limited := timeout(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(r.URL.Path, prefix) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			limited.ServeHTTP(w, r)
+		})
+	}
 }

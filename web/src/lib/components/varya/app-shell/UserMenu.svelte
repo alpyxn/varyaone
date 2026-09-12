@@ -84,6 +84,7 @@
     right: 0;
     z-index: 40;
     min-width: 190px;
+    max-width: calc(100vw - 24px);
     display: flex;
     flex-direction: column;
     padding: 5px;

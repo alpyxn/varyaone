@@ -11,15 +11,26 @@ import (
 	"github.com/alpyxn/varyaone/internal/exchange"
 	"github.com/alpyxn/varyaone/internal/platform/config"
 	"github.com/alpyxn/varyaone/internal/platform/migrations"
+	"github.com/alpyxn/varyaone/internal/platform/opctl"
 	"github.com/alpyxn/varyaone/internal/platform/outbox"
 	"github.com/alpyxn/varyaone/internal/pulse"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func RunWorker(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool, runner *migrations.Runner) error {
+	// The same gate the API applies. A worker is a writer too — outbox delivery
+	// sends e-mail, the schedulers post rows — so an interrupted restore must
+	// stop it just as firmly, and for the same reason.
+	controller, err := opctl.New(cfg.ControlDir)
+	if err != nil {
+		return fmt.Errorf("initialize operation controller: %w", err)
+	}
+	if err := controller.GateStartup(); err != nil {
+		return err
+	}
 	startupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := (readiness{pool: pool, migrations: runner}).Check(startupCtx); err != nil {
+	if err := (readiness{pool: pool, migrations: runner, controller: controller, storageRoot: cfg.StorageRoot}).Check(startupCtx); err != nil {
 		return fmt.Errorf("worker startup check: %w", err)
 	}
 	logger.Info("worker started", "mode", "postgres-outbox")

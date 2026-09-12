@@ -188,6 +188,10 @@
               autocomplete="new-password"
             />
           </label>
+          <div class="notice">
+            Bu parolayı güvenli bir yere kaydedin. "Şifremi unuttum" mekanizması yoktur —
+            unutursanız ancak sunucuya erişimi olan biri veritabanından sıfırlayabilir.
+          </div>
         </div>
       {:else if step === 2}
         <div class="form-section">

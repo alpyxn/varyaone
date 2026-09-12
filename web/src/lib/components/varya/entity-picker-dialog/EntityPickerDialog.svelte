@@ -1,8 +1,10 @@
 <script module lang="ts">
+  import { errorMessage } from '$lib/errors';
   let pickerSequence = 0;
 </script>
 
 <script lang="ts" generics="T extends import('./types').EntityOption">
+  import { dismissOnBackdrop } from '../dismiss-on-backdrop';
   import { Check, ChevronDown, LoaderCircle, Search, X } from '@lucide/svelte';
   import {
     entityMetaText,
@@ -114,9 +116,14 @@
     if (activeIndex >= visibleResults.length) activeIndex = Math.max(0, visibleResults.length - 1);
   });
 
+  // Only the keyboard moves the list under the pointer. Scrolling on a
+  // hover-driven activeIndex change shifts the row out from under the cursor
+  // between mousedown and mouseup, so the click lands on a different option.
+  let keyboardNav = $state(false);
+
   $effect(() => {
     const currentId = activeOption ? resultId(activeIndex) : '';
-    if (!open || !currentId || typeof document === 'undefined') return;
+    if (!open || !currentId || !keyboardNav || typeof document === 'undefined') return;
 
     const scrollTimer = setTimeout(() => {
       document.getElementById(currentId)?.scrollIntoView({ block: 'nearest' });
@@ -186,7 +193,7 @@
       if (payload !== undefined) resolvedResults = extractEntityOptions<T>(payload);
     } catch (cause) {
       if (controller.signal.aborted || requestId !== requestSequence) return;
-      searchError = cause instanceof Error && cause.message ? cause.message : errorText;
+      searchError = errorMessage(cause, errorText);
     } finally {
       if (requestId === requestSequence) searching = false;
     }
@@ -200,10 +207,6 @@
     selected = option;
     open = false;
     onSelect?.(option);
-    // A parent selection handler can synchronously rerender the trigger while
-    // the option click is still bubbling. Close once more after that update so
-    // the same click cannot leave the picker open on the newly selected item.
-    setTimeout(() => (open = false), 0);
   }
 
   function clearQuery() {
@@ -228,15 +231,19 @@
 
     if (event.key === 'ArrowDown') {
       event.preventDefault();
+      keyboardNav = true;
       activeIndex = Math.min(visibleResults.length - 1, activeIndex + 1);
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
+      keyboardNav = true;
       activeIndex = Math.max(0, activeIndex - 1);
     } else if (event.key === 'Home') {
       event.preventDefault();
+      keyboardNav = true;
       activeIndex = 0;
     } else if (event.key === 'End') {
       event.preventDefault();
+      keyboardNav = true;
       activeIndex = visibleResults.length - 1;
     } else if (event.key === 'Enter' && activeOption) {
       event.preventDefault();
@@ -245,8 +252,10 @@
   }
 
   function handleDialogKeydown(event: KeyboardEvent) {
+    if (event.defaultPrevented) return;
     if (open && event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       open = false;
       return;
     }
@@ -304,9 +313,7 @@
   <div
     class="entity-picker-overlay"
     role="presentation"
-    onclick={(event) => {
-      if (event.target === event.currentTarget) open = false;
-    }}
+    use:dismissOnBackdrop={() => (open = false)}
   >
     <div
       bind:this={dialogElement}
@@ -403,7 +410,10 @@
                   event.stopPropagation();
                   selectOption(option);
                 }}
-                onmouseenter={() => (activeIndex = index)}
+                onmouseenter={() => {
+                  keyboardNav = false;
+                  activeIndex = index;
+                }}
               >
                 <span class="result-mark">
                   {#if selected?.id === option.id}<Check size={15} aria-hidden="true" />{:else}<span
@@ -506,7 +516,7 @@
     z-index: 201;
     display: flex;
     width: min(680px, calc(100vw - 28px));
-    max-height: min(760px, 80vh);
+    max-height: min(760px, 80dvh);
     transform: translateX(-50%);
     flex-direction: column;
     overflow: hidden;
@@ -810,7 +820,7 @@
   @media (max-width: 520px) {
     :global(.entity-picker-dialog) {
       top: 5vh;
-      max-height: 90vh;
+      max-height: 90dvh;
     }
 
     .dialog-heading,

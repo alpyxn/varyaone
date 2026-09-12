@@ -45,6 +45,7 @@
   type Member = {
     user: { id: string; email: string; display_name: string };
     is_active: boolean;
+    is_instance_owner: boolean;
     version: number;
     role_ids: string[];
   };
@@ -81,6 +82,7 @@
   let inviteName = $state('');
   let inviteEmail = $state('');
   let invitePassword = $state('');
+  let invitePasswordConfirm = $state('');
   let inviteRoleIDs = $state<string[]>([]);
 
   // --- kullanıcı rol düzenleme ---
@@ -88,6 +90,13 @@
   let memberRoleDraft = $state<string[]>([]);
   let denied = $state(false);
   let showInvite = $state(false);
+
+  // --- kullanıcı parolasını sıfırlama ---
+  let resettingMemberID = $state<string | null>(null);
+  let resetPassword = $state('');
+  let resetPasswordConfirm = $state('');
+  let resettingBusy = $state(false);
+  let togglingMemberID = $state<string | null>(null);
 
   const rolelessCount = $derived(members.filter((m) => m.role_ids.length === 0).length);
 
@@ -239,6 +248,10 @@
   }
 
   async function inviteUser() {
+    if (invitePassword !== invitePasswordConfirm) {
+      notify('Parolalar eşleşmiyor.', 'error');
+      return;
+    }
     try {
       await api<Member>('/users', {
         method: 'POST',
@@ -254,6 +267,7 @@
       inviteName = '';
       inviteEmail = '';
       invitePassword = '';
+      invitePasswordConfirm = '';
       inviteRoleIDs = [];
       showInvite = false;
       notify('Kullanıcı eklendi.');
@@ -291,6 +305,55 @@
       await refresh();
     } catch (error) {
       notify((error as APIError).message, 'error');
+    }
+  }
+
+  function startResetPassword(member: Member) {
+    resettingMemberID = member.user.id;
+    resetPassword = '';
+    resetPasswordConfirm = '';
+  }
+
+  async function saveResetPassword(member: Member) {
+    if (resetPassword.length < 12) {
+      notify('Parola en az 12 karakter olmalıdır.', 'error');
+      return;
+    }
+    if (resetPassword !== resetPasswordConfirm) {
+      notify('Parolalar eşleşmiyor.', 'error');
+      return;
+    }
+    resettingBusy = true;
+    try {
+      await api<void>(`/users/${member.user.id}/password`, {
+        method: 'POST',
+        body: JSON.stringify({ new_password: resetPassword })
+      });
+      resettingMemberID = null;
+      resetPassword = '';
+      resetPasswordConfirm = '';
+      notify('Kullanıcının parolası değiştirildi.');
+    } catch (error) {
+      notify((error as APIError).message, 'error');
+    } finally {
+      resettingBusy = false;
+    }
+  }
+
+  async function toggleMemberActive(member: Member) {
+    togglingMemberID = member.user.id;
+    try {
+      await api<Member>(`/users/${member.user.id}/active`, {
+        method: 'PUT',
+        headers: { 'If-Match': `"${member.version}"` },
+        body: JSON.stringify({ is_active: !member.is_active })
+      });
+      notify(member.is_active ? 'Kullanıcı pasife alındı.' : 'Kullanıcı etkinleştirildi.');
+      await refresh();
+    } catch (error) {
+      notify((error as APIError).message, 'error');
+    } finally {
+      togglingMemberID = null;
     }
   }
 
@@ -373,6 +436,14 @@
             placeholder="en az 12 karakter"
           /></label
         >
+        <label class="field"
+          >İlk parola (tekrar)<input
+            bind:value={invitePasswordConfirm}
+            type="password"
+            autocomplete="new-password"
+            placeholder="en az 12 karakter"
+          /></label
+        >
       </div>
       <div class="chip-row">
         {#each roles as role (role.id)}
@@ -403,6 +474,7 @@
           disabled={!inviteEmail.trim() ||
             inviteRoleIDs.length === 0 ||
             invitePassword.length < 12 ||
+            invitePassword !== invitePasswordConfirm ||
             !inviteName.trim()}
           onclick={inviteUser}>Kullanıcıyı ekle</button
         >
@@ -600,8 +672,45 @@
                   onclick={() => saveMemberRoles(member)}>Kaydet</button
                 >
               </div>
+            {:else if resettingMemberID === member.user.id}
+              <label class="field"
+                >Yeni parola <span class="hint">En az 12 karakter</span><input
+                  bind:value={resetPassword}
+                  type="password"
+                  minlength="12"
+                  autocomplete="new-password"
+                /></label
+              >
+              <label class="field"
+                >Yeni parola (tekrar)<input
+                  bind:value={resetPasswordConfirm}
+                  type="password"
+                  minlength="12"
+                  autocomplete="new-password"
+                /></label
+              >
+              <div class="u-actions">
+                <button
+                  class="button secondary sm"
+                  type="button"
+                  onclick={() => (resettingMemberID = null)}>Vazgeç</button
+                >
+                <button
+                  class="button sm"
+                  type="button"
+                  disabled={resettingBusy ||
+                    resetPassword.length < 12 ||
+                    resetPassword !== resetPasswordConfirm}
+                  onclick={() => saveResetPassword(member)}
+                  >{resettingBusy ? 'Kaydediliyor…' : 'Parolayı değiştir'}</button
+                >
+              </div>
             {:else}
               <div class="u-roles">
+                {#if member.is_instance_owner}<span class="tag" title="İlk kurulumu tamamlayan kullanıcı"
+                    >İlk kullanıcı</span
+                  >{/if}
+                {#if !member.is_active}<span class="tag warn">Pasif</span>{/if}
                 {#each member.role_ids as id (id)}
                   <span class="tag">{roleName(id)}</span>
                 {/each}
@@ -610,6 +719,19 @@
                   <button class="linkish" type="button" onclick={() => startEditMember(member)}
                     >düzenle</button
                   >
+                  <button class="linkish" type="button" onclick={() => startResetPassword(member)}
+                    >parola sıfırla</button
+                  >
+                  {#if !member.is_instance_owner}
+                    <button
+                      class="linkish"
+                      class:danger={member.is_active}
+                      type="button"
+                      disabled={togglingMemberID === member.user.id}
+                      onclick={() => toggleMemberActive(member)}
+                      >{member.is_active ? 'pasife al' : 'etkinleştir'}</button
+                    >
+                  {/if}
                 {/if}
               </div>
             {/if}
@@ -1032,6 +1154,9 @@
     font-size: 11px;
     font-weight: 600;
     cursor: pointer;
+  }
+  .linkish.danger {
+    color: var(--danger);
   }
 
   .tag {

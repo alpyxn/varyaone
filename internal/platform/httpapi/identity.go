@@ -60,6 +60,9 @@ func mountIdentityRoutes(router chi.Router, service *identity.Service, secureCoo
 				r.Post("/roles", handler.createRole)
 				r.Put("/roles/{roleID}", handler.updateRole)
 				r.Post("/users", handler.addMember)
+				r.Post("/security/password", handler.changePassword)
+				r.Post("/users/{userID}/password", handler.setMemberPassword)
+				r.Put("/users/{userID}/active", handler.setMemberActive)
 				r.Put("/company", handler.updateCompany)
 			})
 		})
@@ -192,7 +195,11 @@ func (h identityHandler) requireSession(next http.Handler) http.Handler {
 			return
 		}
 		ctx := contextWithSession(r, session)
-		ctx, release := scopeRequestConnection(ctx, session.CurrentCompanyID)
+		ctx, release, err := scopeRequestConnection(ctx, session.CurrentCompanyID, isMutatingRequest(r))
+		if err != nil {
+			writeError(w, r, http.StatusServiceUnavailable, "COMPANY_SCOPE_UNAVAILABLE", "Şirket erişimi şu anda hazırlanamadı. Lütfen tekrar deneyin.")
+			return
+		}
 		defer release()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -319,7 +326,21 @@ func (h identityHandler) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h identityHandler) beginTOTP(w http.ResponseWriter, r *http.Request) {
-	secret, uri, err := h.service.BeginTOTP(r.Context(), sessionFromRequest(r), requestMeta(r))
+	var input struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		// The body is optional for a first-time setup (no active factor to
+		// reauthenticate against yet) — decode failures other than an absent
+		// body still fail closed here since the service checks the password
+		// only when it actually needs one.
+		input.Password = ""
+	}
+	secret, uri, err := h.service.BeginTOTP(r.Context(), sessionFromRequest(r), input.Password, requestMeta(r))
+	if errors.Is(err, identity.ErrInvalidCredentials) {
+		writeError(w, r, http.StatusUnprocessableEntity, "INVALID_CREDENTIALS", "Parola yanlış.")
+		return
+	}
 	if err != nil {
 		slog.Default().Error("begin totp failed", "trace_id", TraceID(r.Context()), "error", err)
 		writeError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "İki adımlı doğrulama kurulumu başlatılamadı.")
@@ -330,13 +351,14 @@ func (h identityHandler) beginTOTP(w http.ResponseWriter, r *http.Request) {
 
 func (h identityHandler) confirmTOTP(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Code string `json:"code"`
+		Code        string `json:"code"`
+		CurrentCode string `json:"current_code"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Doğrulama kodu geçersiz.")
 		return
 	}
-	codes, err := h.service.ConfirmTOTP(r.Context(), sessionFromRequest(r), input.Code, requestMeta(r))
+	codes, err := h.service.ConfirmTOTP(r.Context(), sessionFromRequest(r), input.Code, input.CurrentCode, requestMeta(r))
 	if errors.Is(err, identity.ErrInvalidCredentials) {
 		writeError(w, r, http.StatusUnprocessableEntity, "INVALID_TOTP", "Doğrulama kodu geçersiz.")
 		return
@@ -367,6 +389,65 @@ func (h identityHandler) disableTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h identityHandler) changePassword(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Parola bilgileri geçersiz.")
+		return
+	}
+	err := h.service.ChangeOwnPassword(r.Context(), sessionFromRequest(r), input.CurrentPassword, input.NewPassword, requestMeta(r))
+	if errors.Is(err, identity.ErrInvalidCredentials) {
+		writeError(w, r, http.StatusUnprocessableEntity, "INVALID_CREDENTIALS", "Mevcut parola yanlış.")
+		return
+	}
+	if err != nil {
+		h.writeMutationError(w, r, err, "Parola değiştirilemedi.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h identityHandler) setMemberPassword(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		NewPassword string `json:"new_password"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Parola bilgileri geçersiz.")
+		return
+	}
+	err := h.service.SetMemberPassword(r.Context(), sessionFromRequest(r), chi.URLParam(r, "userID"), input.NewPassword, requestMeta(r))
+	if err != nil {
+		h.writeMutationError(w, r, err, "Parola değiştirilemedi.")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h identityHandler) setMemberActive(w http.ResponseWriter, r *http.Request) {
+	version, err := parseIfMatch(r.Header.Get("If-Match"))
+	if err != nil {
+		writeError(w, r, http.StatusPreconditionRequired, "IF_MATCH_REQUIRED", "Kullanıcı güncellemesi için geçerli If-Match başlığı gereklidir.")
+		return
+	}
+	var input struct {
+		IsActive bool `json:"is_active"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "Kullanıcı durumu geçersiz.")
+		return
+	}
+	member, err := h.service.SetMemberActive(r.Context(), sessionFromRequest(r), chi.URLParam(r, "userID"), input.IsActive, version, requestMeta(r))
+	if err != nil {
+		h.writeMutationError(w, r, err, "Kullanıcı durumu değiştirilemedi.")
+		return
+	}
+	w.Header().Set("ETag", `"`+strconv.FormatInt(member.Version, 10)+`"`)
+	writeJSON(w, http.StatusOK, member)
 }
 
 func (h identityHandler) listAPITokens(w http.ResponseWriter, r *http.Request) {
@@ -569,6 +650,14 @@ func (h identityHandler) writeMutationError(w http.ResponseWriter, r *http.Reque
 		writeError(w, r, http.StatusConflict, "BASE_CURRENCY_LOCKED", message)
 		return
 	}
+	if errors.Is(err, identity.ErrNotFound) {
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "Kayıt bulunamadı.")
+		return
+	}
+	if errors.Is(err, identity.ErrConflict) {
+		writeError(w, r, http.StatusPreconditionFailed, "VERSION_CONFLICT", "Kayıt başka bir kullanıcı tarafından değiştirilmiş.")
+		return
+	}
 	writeError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", fallback)
 }
 
@@ -618,16 +707,50 @@ func requestMeta(r *http.Request) identity.RequestMeta {
 	return identity.RequestMeta{TraceID: TraceID(r.Context()), IP: clientIP(r), UserAgent: r.UserAgent(), IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key"))}
 }
 
-// clientIP prefers X-Forwarded-For, set by the SvelteKit proxy that fronts
-// every browser request, over RemoteAddr — which is otherwise always the
-// proxy's own address and would put every visitor in the same IP-scoped
-// login rate-limit bucket.
-func clientIP(r *http.Request) string {
-	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
-		if first, _, ok := strings.Cut(forwarded, ","); ok {
-			return strings.TrimSpace(first)
+var trustedProxyNets []*net.IPNet
+
+// SetTrustedProxyNets configures which RemoteAddr the server accepts an
+// incoming X-Forwarded-For header from. It must be called once, before the
+// server starts accepting connections — it is not safe for concurrent use
+// with request handling. A nil/empty list means no connection is trusted and
+// clientIP always falls back to RemoteAddr.
+func SetTrustedProxyNets(nets []*net.IPNet) {
+	trustedProxyNets = nets
+}
+
+func remoteIsTrustedProxy(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	for _, network := range trustedProxyNets {
+		if network.Contains(ip) {
+			return true
 		}
-		return forwarded
+	}
+	return false
+}
+
+// clientIP trusts X-Forwarded-For, set by the SvelteKit proxy that fronts
+// every browser request (see requestMeta doc), only when the connection
+// making the request comes from a configured trusted-proxy address —
+// otherwise the header is attacker-controlled input from a client hitting the
+// API directly, and using it would let that client pick its own login
+// rate-limit bucket or forge the IP recorded in audit trails. Untrusted and
+// proxied-but-header-absent connections both fall back to RemoteAddr, which
+// is otherwise always the proxy's own address.
+func clientIP(r *http.Request) string {
+	if remoteIsTrustedProxy(r.RemoteAddr) {
+		if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
+			if first, _, ok := strings.Cut(forwarded, ","); ok {
+				return strings.TrimSpace(first)
+			}
+			return forwarded
+		}
 	}
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

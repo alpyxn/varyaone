@@ -1,13 +1,21 @@
 <script lang="ts">
   import '$lib/styles.css';
+  import { installTurkishFormValidation } from '$lib/form-validation';
   import { onMount } from 'svelte';
-  import { goto } from '$app/navigation';
+  import { beforeNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { api, APIRequestError, type Session } from '$lib/api';
+  import { api, APIRequestError } from '$lib/api';
+  import { session as sessionStore } from '$lib/session.svelte';
   import { AppShell } from '$lib/components/varya/app-shell';
   import DemoResetCurtain from '$lib/components/varya/demo/DemoResetCurtain.svelte';
   import Logo from '$lib/components/varya/Logo.svelte';
   import { demo, watchDemoResets } from '$lib/demo.svelte';
+  import {
+    busyGuardLabel,
+    discardUnsavedChanges,
+    hasUnsavedChanges
+  } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
 
   let { children } = $props();
 
@@ -40,7 +48,7 @@
       }
 
       try {
-        const session = await api<Session>('/session');
+        const session = await sessionStore.load();
         // A demo reset deletes the company its visitors were working in and
         // builds a new one; their sessions survive but point at nothing. Left
         // alone that renders an empty shell with no company selected, so put
@@ -64,6 +72,62 @@
       checking = false;
     }
   }
+
+  // Açık ve değiştirilmiş bir form varken menü, geri tuşu veya başka bir kayda
+  // geçiş aynı kayıp denetiminden geçer.
+  let unsavedNavOpen = $state(false);
+  let pendingNavURL = $state<string | null>(null);
+  // "Değişiklikleri sil ve çık" sonrası geçişin kendisi yeniden sorulmamalı.
+  let leaving = false;
+
+  // Süren bir kayıt varken geçiş hiç sorulmadan durur: silinecek bir şey yok,
+  // sonucu beklenen bir istek var ve o istek geri alınamaz.
+  let busyNavLabel = $state<string | null>(null);
+
+  beforeNavigate((navigation) => {
+    if (leaving) return;
+    const busy = busyGuardLabel();
+    if (busy) {
+      navigation.cancel();
+      if (navigation.type === 'leave') return;
+      busyNavLabel = busy;
+      return;
+    }
+    if (!hasUnsavedChanges()) return;
+    navigation.cancel();
+    // Sekme kapatma/yenilemede tarayıcının kendi uyarısı kullanılır.
+    if (navigation.type === 'leave') return;
+    pendingNavURL = navigation.to?.url.href ?? null;
+    unsavedNavOpen = true;
+  });
+
+  async function leaveWithoutSaving() {
+    const target = pendingNavURL;
+    unsavedNavOpen = false;
+    pendingNavURL = null;
+    discardUnsavedChanges();
+    if (!target) return;
+    leaving = true;
+    try {
+      await goto(target);
+    } finally {
+      leaving = false;
+    }
+  }
+
+  onMount(() => {
+    // beforeunload yalnızca kaydedilmemiş veri varken etkin olur; tarayıcı
+    // kendi metnini gösterir, özel metin garanti edilmez.
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!busyGuardLabel() && !hasUnsavedChanges()) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  });
+
+  onMount(() => installTurkishFormValidation(document));
 
   onMount(() => {
     void (async () => {
@@ -94,11 +158,68 @@
   <AppShell>{@render children()}</AppShell>
 {/if}
 
+<UnsavedChangesDialog
+  bind:open={unsavedNavOpen}
+  onKeepEditing={() => {
+    unsavedNavOpen = false;
+    pendingNavURL = null;
+  }}
+  onDiscard={() => void leaveWithoutSaving()}
+  description="Ayrılırsanız bu sayfada yaptığınız değişiklikler silinecek."
+  discardLabel="Değişiklikleri sil ve ayrıl"
+/>
+
+{#if busyNavLabel}
+  <div class="busy-nav" role="alertdialog" aria-modal="true" aria-labelledby="busy-nav-title">
+    <div class="busy-nav-card">
+      <h2 id="busy-nav-title">Kayıt sürüyor</h2>
+      <p>{busyNavLabel} kaydediliyor. İşlem bitmeden sayfadan ayrılamazsınız.</p>
+      <button type="button" onclick={() => (busyNavLabel = null)}>Tamam</button>
+    </div>
+  </div>
+{/if}
+
 <!-- Only the rebuild curtain is app-wide; the demo's information card lives at
      the bottom of the company settings page. -->
 <DemoResetCurtain />
 
 <style>
+  /* Süren bir kayıt yüzünden durdurulan geçişin bildirimi. */
+  .busy-nav {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    background: color-mix(in srgb, var(--foreground, #111) 45%, transparent);
+    z-index: 120;
+  }
+  .busy-nav-card {
+    width: min(420px, 100%);
+    display: grid;
+    gap: 12px;
+    padding: 20px;
+    border-radius: 12px;
+    background: var(--surface, #fff);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 25%);
+  }
+  .busy-nav-card h2 {
+    margin: 0;
+    font-size: 1.05rem;
+  }
+  .busy-nav-card p {
+    margin: 0;
+    color: var(--muted-foreground, #555);
+  }
+  .busy-nav-card button {
+    justify-self: end;
+    min-height: 44px;
+    padding: 0 20px;
+    border: 1px solid var(--border, #d4d4d8);
+    border-radius: 8px;
+    background: var(--surface, #fff);
+    cursor: pointer;
+  }
   .boot-splash {
     position: fixed;
     inset: 0;

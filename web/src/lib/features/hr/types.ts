@@ -1,3 +1,4 @@
+import { errorMessage } from '$lib/errors';
 import { formatAmount } from '$lib/design/formatters';
 
 export type Employee = {
@@ -59,7 +60,8 @@ export type EmployeeReadiness = {
 
 /** Çalışanın puantaja girilmesini engelleyen ilk sebep, yoksa boş. */
 export function timesheetBlocker(r: EmployeeReadiness | undefined): string {
-  return r?.issues.find((i) => i.blocks === 'TIMESHEET')?.message ?? '';
+  const issue = r?.issues.find((i) => i.blocks === 'TIMESHEET');
+  return issue ? errorMessage(issue, 'Çalışanın puantaj bilgilerini kontrol edin.') : '';
 }
 
 export type OccupationCode = { code: string; name: string };
@@ -459,7 +461,7 @@ export function payrollErrorDetails(value: unknown): PayrollErrorDetail[] {
       code: String(d.code ?? ''),
       field: d.field ? String(d.field) : undefined,
       component: d.component ? String(d.component) : undefined,
-      message: d.message ? String(d.message) : undefined
+      message: d.message ? errorMessage(d, 'Çalışanın bordro bilgilerini kontrol edin.') : undefined
     });
   }
   return out;

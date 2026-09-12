@@ -159,6 +159,9 @@
     top: calc(100% + 5px);
     right: 0;
     width: 250px;
+    max-width: calc(100vw - 24px);
+    max-height: min(70dvh, 460px);
+    overflow-y: auto;
     padding: 10px;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-panel);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { Dialog } from 'bits-ui';
@@ -20,6 +21,8 @@
   import { formatDate, formatMoney } from '$lib/design/formatters';
   import { parseMoneyInput } from '$lib/design/decimal';
   import { localizedEnum } from '$lib/design/labels';
+  import { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { UnsavedChangesDialog } from '$lib/components/varya/unsaved-changes-dialog';
 
   type Account = {
     id: string;
@@ -105,7 +108,7 @@
   );
   const hasMovements = $derived(movements.length > 0);
   function errorText(cause: unknown, fallback: string) {
-    return cause instanceof Error && cause.message ? cause.message : fallback;
+    return errorMessage(cause, fallback);
   }
 
   async function loadSession() {
@@ -187,11 +190,24 @@
     }
   }
 
+  // Hareket giriş penceresi X, Esc ve Vazgeç için aynı kontrollü akışı
+  // kullanır; dış alana tıklamak kapatmaz.
+  const movementUnsaved = new UnsavedChangesGuard({
+    snapshot: () => ({ ...movementForm }),
+    isBusy: () => movementBusy,
+    onClose: () => {
+      movementOpen = false;
+    }
+  });
+
+  $effect(() => movementUnsaved.registerPageGuard('Hesap hareketi'));
+
   function openMovement(direction: 'IN' | 'OUT') {
     movementForm = { direction, amount: '', description: '', override_reason: '' };
     movementNeedsOverride = false;
     movementOverrideSignature = '';
     movementOpen = true;
+    movementUnsaved.reset();
   }
 
   async function submitMovement(event: SubmitEvent) {
@@ -229,7 +245,7 @@
         })
       });
       toast.success(movementForm.direction === 'IN' ? 'Giriş kaydedildi.' : 'Çıkış kaydedildi.');
-      movementOpen = false;
+      movementUnsaved.closeAfterSave();
       await loadAccount(true);
       tab = 'hareketler';
     } catch (cause) {
@@ -390,36 +406,44 @@
         {#if !hasMovements}
           <p class="muted">Bu hesapta henüz hareket yok.</p>
         {:else}
-          <table class="grid-table">
-            <thead>
-              <tr
-                ><th>Tarih</th><th>Hareket</th><th>Kaynak</th><th>Yön</th><th>Açıklama</th><th
-                  class="right">Tutar</th
-                ></tr
-              >
-            </thead>
-            <tbody>
-              {#each movements as movement (movement.id)}
-                <tr>
-                  <td>{formatDate(movement.transaction_date)}</td>
-                  <td>{localizedEnum(movement.movement_kind, 'movement_kind')}</td>
-                  <td>
-                    {#if movement.source_href}<a href={movement.source_href}
-                        >{movement.source_label}</a
-                      >{:else}{movement.source_label || '—'}{/if}
-                  </td>
-                  <td>{movement.direction === 'IN' ? 'Giriş' : 'Çıkış'}</td>
-                  <td>{movement.description || '—'}</td>
-                  <td class="right" class:negative={movement.direction === 'OUT'}>
-                    {movement.direction === 'OUT' ? '-' : ''}{formatMoney(
-                      movement.amount,
-                      movement.currency
-                    )}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+          <div
+            class="table-scroll"
+            tabindex="0"
+            role="group"
+            aria-label="Tablo — yatay kaydırılabilir"
+          >
+            <table class="grid-table">
+              <thead>
+                <tr
+                  ><th>Tarih</th><th>Hareket</th><th>Kaynak</th><th>Yön</th><th>Açıklama</th><th
+                    class="right">Tutar</th
+                  ></tr
+                >
+              </thead>
+              <tbody>
+                {#each movements as movement (movement.id)}
+                  <tr>
+                    <td>{formatDate(movement.transaction_date)}</td>
+                    <td>{localizedEnum(movement.movement_kind, 'movement_kind')}</td>
+                    <td>
+                      {#if movement.source_href}<a href={movement.source_href}
+                          >{movement.source_label}</a
+                        >{:else}{movement.source_label || '—'}{/if}
+                    </td>
+                    <td>{movement.direction === 'IN' ? 'Giriş' : 'Çıkış'}</td>
+                    <td>{movement.description || '—'}</td>
+                    <td class="right" class:negative={movement.direction === 'OUT'}>
+                      {movement.direction === 'OUT' ? '-' : ''}{formatMoney(
+                        movement.amount,
+                        movement.currency
+                      )}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
         {/if}
       </section>
     {:else}
@@ -469,13 +493,18 @@
 </main>
 
 {#if account}
-  <Dialog.Root
-    bind:open={movementOpen}
-    onOpenChange={(next) => !next && !movementBusy && (movementOpen = false)}
-  >
+  <Dialog.Root bind:open={movementOpen}>
     <Dialog.Portal>
       <Dialog.Overlay class="dialog-overlay" />
-      <Dialog.Content class="movement-dialog" aria-describedby="movement-dialog-description">
+      <Dialog.Content
+        class="movement-dialog"
+        aria-describedby="movement-dialog-description"
+        onInteractOutside={(event) => event.preventDefault()}
+        onEscapeKeydown={(event) => {
+          event.preventDefault();
+          movementUnsaved.requestClose();
+        }}
+      >
         <div class="dialog-heading">
           <div>
             <Dialog.Title>
@@ -486,11 +515,22 @@
               ancak ters kayıtla yapılır.
             </Dialog.Description>
           </div>
-          <Dialog.Close class="close-button" aria-label="Kapat" disabled={movementBusy}>
+          <button
+            class="close-button"
+            type="button"
+            aria-label="Kapat"
+            disabled={movementBusy}
+            onclick={() => movementUnsaved.requestClose()}
+          >
             <X size={17} />
-          </Dialog.Close>
+          </button>
         </div>
-        <form class="movement-form" onsubmit={submitMovement}>
+        <form
+          class="movement-form"
+          oninput={() => movementUnsaved.noteUserInput()}
+          onchange={() => movementUnsaved.noteUserInput()}
+          onsubmit={submitMovement}
+        >
           <label>
             <span>Tutar ({account.currency})</span>
             <Input
@@ -514,8 +554,11 @@
             active={movementNeedsOverride}
           />
           <div class="dialog-actions">
-            <Dialog.Close type="button" class="cancel-button" disabled={movementBusy}
-              >Vazgeç</Dialog.Close
+            <button
+              type="button"
+              class="cancel-button"
+              disabled={movementBusy}
+              onclick={() => movementUnsaved.requestClose()}>Vazgeç</button
             >
             <Button type="submit" disabled={movementBusy}>
               {movementBusy ? 'Kaydediliyor…' : 'Kaydet'}
@@ -525,6 +568,12 @@
       </Dialog.Content>
     </Dialog.Portal>
   </Dialog.Root>
+
+  <UnsavedChangesDialog
+    bind:open={movementUnsaved.confirmOpen}
+    onKeepEditing={() => movementUnsaved.keepEditing()}
+    onDiscard={() => movementUnsaved.discardAndClose()}
+  />
 
   <ConfirmDialog
     bind:open={confirmActiveOpen}
@@ -543,6 +592,7 @@
     margin: 0 auto;
     padding: 24px;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 18px;
   }
   .page-shell :global(button) {

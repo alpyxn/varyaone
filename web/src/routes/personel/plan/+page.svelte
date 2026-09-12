@@ -163,7 +163,13 @@
     {:else if !templates.length}
       <p class="list-state">Şablon yok.</p>
     {:else}
-      <div class="table-scroll">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
         <table class="data-table">
           <thead><tr><th>Kod</th><th>Ad</th><th aria-label="İşlemler"></th></tr></thead>
           <tbody>

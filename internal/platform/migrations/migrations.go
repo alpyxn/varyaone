@@ -37,6 +37,19 @@ type Status struct {
 	Current int64
 	Latest  int64
 	Pending int
+	// Unknown counts applied migrations whose version is HIGHER than the
+	// highest this binary carries. It is the "old binary, newer schema" case,
+	// which a pending count alone cannot see: pending is zero because there is
+	// nothing left to apply, and the installation is nevertheless served by
+	// code that does not understand its own database.
+	//
+	// It deliberately counts only versions above Latest, not every applied
+	// version missing from the embedded set. History here has been squashed —
+	// a baseline replaces the migrations that built it — so an installation
+	// that predates the squash legitimately carries rows for files that no
+	// longer exist. Those are not a newer schema; treating them as one would
+	// take every long-lived installation out of service.
+	Unknown int
 }
 
 type migration struct {
@@ -151,8 +164,19 @@ func (r *Runner) Status(ctx context.Context) (Status, error) {
 			pending++
 		}
 	}
-	return Status{Current: currentVersion, Latest: latest, Pending: pending}, nil
+	unknown := 0
+	for version := range applied {
+		if version > latest {
+			unknown++
+		}
+	}
+	return Status{Current: currentVersion, Latest: latest, Pending: pending, Unknown: unknown}, nil
 }
+
+// ErrSchemaNewer is returned when the database carries migrations this binary
+// does not have. Serving that installation would mean running code against a
+// schema it was never written for.
+var ErrSchemaNewer = errors.New("database schema is newer than this binary")
 
 func (r *Runner) IsCurrent(ctx context.Context) error {
 	status, err := r.Status(ctx)
@@ -161,6 +185,10 @@ func (r *Runner) IsCurrent(ctx context.Context) error {
 	}
 	if status.Pending > 0 {
 		return ErrPending
+	}
+	if status.Unknown > 0 {
+		return fmt.Errorf("%w (%d bilinmeyen migration, en yüksek uygulanan %d, bu sürüm %d)",
+			ErrSchemaNewer, status.Unknown, status.Current, status.Latest)
 	}
 	return nil
 }

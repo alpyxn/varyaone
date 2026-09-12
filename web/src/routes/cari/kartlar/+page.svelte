@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { api, type Session } from '$lib/api';
+  import ListFilters from '$lib/components/varya/list-filters/ListFilters.svelte';
+  import type { ListFilter } from '$lib/components/varya/list-filters/types';
+  import { readListState, writeListState } from '$lib/components/varya/list-filters/state';
+
   import { afterNavigate, goto } from '$app/navigation';
   import { Download, Filter, Plus, Search, X } from '@lucide/svelte';
   import { onMount } from 'svelte';
@@ -32,7 +37,6 @@
     tag_summary: false,
     custom_field_summary: false,
     default_currency: false,
-    payment_term: false,
     price_list: false,
     sales_rep: false,
     default_discount_rate: false,
@@ -68,9 +72,10 @@
     row.is_customer && row.is_supplier ? 'both' : row.is_customer ? 'customer' : 'supplier';
   const rateValue = (value: string) => `${formatQuantity(value || '0')}%`;
   const columns: VaryaColumn<Party>[] = [
-    { id: 'code', header: 'Cari Kodu', accessor: (row) => row.code, width: 120 },
+    { id: 'code', sortable: true, header: 'Cari Kodu', accessor: (row) => row.code, width: 120 },
     {
       id: 'trade_name',
+      sortable: true,
       header: 'Ticari Ad',
       accessor: (row) => text(row.trade_name, row.display_name),
       width: 260,
@@ -78,12 +83,14 @@
     },
     {
       id: 'legal_name',
+      sortable: true,
       header: 'Resmî Unvan',
       accessor: (row) => row.legal_name,
       width: 260
     },
     {
       id: 'first_name',
+      sortable: true,
       header: 'Ad',
       accessor: (row) => row.first_name,
       width: 140,
@@ -91,6 +98,7 @@
     },
     {
       id: 'last_name',
+      sortable: true,
       header: 'Soyad',
       accessor: (row) => row.last_name,
       width: 140,
@@ -98,31 +106,53 @@
     },
     {
       id: 'kind',
+      sortable: true,
       header: 'Cari Türü',
       accessor: (row) => (row.kind === 'PERSON' ? 'Kişi' : 'Kurum'),
       width: 110
     },
     {
       id: 'roles',
+      sortable: true,
       header: 'Cari Rolü',
       accessor: roleValue,
       width: 165,
       cell: PartyTypeCell
     },
-    { id: 'tax_number', header: 'Vergi Numarası', accessor: (row) => row.tax_number, width: 135 },
+    {
+      id: 'tax_number',
+      sortable: true,
+      header: 'Vergi Numarası',
+      accessor: (row) => row.tax_number,
+      width: 135
+    },
     {
       id: 'identity_number',
+      sortable: true,
       header: 'T.C. Kimlik No',
       accessor: (row) => row.identity_number,
       width: 135
     },
-    { id: 'tax_office', header: 'Vergi Dairesi', accessor: (row) => row.tax_office, width: 150 },
-    { id: 'phone', header: 'Telefon', accessor: (row) => row.phone, width: 130 },
-    { id: 'email', header: 'E-posta', accessor: (row) => row.email, width: 220 },
-    { id: 'address_summary', header: 'Adres', accessor: (row) => row.address_summary, width: 300 },
-    { id: 'city', header: 'Şehir', accessor: (row) => row.city, width: 130 },
+    {
+      id: 'tax_office',
+      sortable: true,
+      header: 'Vergi Dairesi',
+      accessor: (row) => row.tax_office,
+      width: 150
+    },
+    { id: 'phone', sortable: true, header: 'Telefon', accessor: (row) => row.phone, width: 130 },
+    { id: 'email', sortable: true, header: 'E-posta', accessor: (row) => row.email, width: 220 },
+    {
+      id: 'address_summary',
+      sortable: true,
+      header: 'Adres',
+      accessor: (row) => row.address_summary,
+      width: 300
+    },
+    { id: 'city', sortable: true, header: 'Şehir', accessor: (row) => row.city, width: 130 },
     {
       id: 'contact_summary',
+      sortable: true,
       header: 'İletişim Detayı',
       accessor: (row) => row.contact_summary,
       width: 320,
@@ -130,6 +160,7 @@
     },
     {
       id: 'group_summary',
+      sortable: true,
       header: 'Cari Grubu',
       accessor: (row) => row.group_summary,
       width: 180,
@@ -137,6 +168,7 @@
     },
     {
       id: 'tag_summary',
+      sortable: true,
       header: 'Etiketler',
       accessor: (row) => row.tag_summary,
       width: 180,
@@ -144,6 +176,7 @@
     },
     {
       id: 'custom_field_summary',
+      sortable: true,
       header: 'Özel Alanlar',
       accessor: (row) => row.custom_field_summary,
       width: 260,
@@ -151,20 +184,15 @@
     },
     {
       id: 'default_currency',
+      sortable: true,
       header: 'Para Birimi',
       accessor: (row) => row.default_currency,
       width: 105,
       defaultVisible: false
     },
     {
-      id: 'payment_term',
-      header: 'Ödeme Koşulu',
-      accessor: (row) => text(row.payment_term_name, row.payment_term_id) || 'Peşin',
-      width: 190,
-      defaultVisible: false
-    },
-    {
       id: 'price_list',
+      sortable: true,
       header: 'Fiyat Listesi',
       accessor: (row) => row.price_list_id,
       width: 170,
@@ -172,6 +200,7 @@
     },
     {
       id: 'sales_rep',
+      sortable: true,
       header: 'Satış Temsilcisi',
       accessor: (row) => text(row.sales_rep_name, row.sales_rep_user_id),
       width: 180,
@@ -179,6 +208,7 @@
     },
     {
       id: 'default_discount_rate',
+      sortable: true,
       header: 'İskonto',
       accessor: (row) => rateValue(row.default_discount_rate),
       width: 95,
@@ -187,6 +217,7 @@
     },
     {
       id: 'credit_limit',
+      sortable: true,
       header: 'Kredi Limiti',
       accessor: (row) => row.credit_limit,
       width: 135,
@@ -196,6 +227,7 @@
     },
     {
       id: 'risk_limit',
+      sortable: true,
       header: 'Risk Limiti',
       accessor: (row) => row.risk_limit,
       width: 135,
@@ -205,6 +237,7 @@
     },
     {
       id: 'balance',
+      sortable: true,
       header: 'Bakiye',
       accessor: (row) => row.balance,
       width: 135,
@@ -213,6 +246,7 @@
     },
     {
       id: 'risk_policy',
+      sortable: true,
       header: 'Risk',
       accessor: (row) => row.risk_policy,
       width: 90,
@@ -220,6 +254,7 @@
     },
     {
       id: 'status',
+      sortable: true,
       header: 'Durum',
       accessor: (row) => (row.is_active ? 'ACTIVE' : 'INACTIVE'),
       width: 90,
@@ -227,6 +262,7 @@
     },
     {
       id: 'created_at',
+      sortable: true,
       header: 'Oluşturulma',
       accessor: (row) => row.created_at,
       width: 130,
@@ -235,6 +271,7 @@
     },
     {
       id: 'updated_at',
+      sortable: true,
       header: 'Güncellenme',
       accessor: (row) => row.updated_at,
       width: 130,
@@ -242,6 +279,67 @@
       defaultVisible: false
     }
   ];
+
+  let listSession = $state<Session>();
+  let extraFilters = $state<ListFilter[]>([]);
+  function changeListFilter(field: string, value: string) {
+    clearTimeout(debounce);
+    query = {
+      ...query,
+      filters: [
+        ...query.filters.filter((f) => f.field !== field),
+        ...(value ? [{ field, operator: 'eq' as const, value }] : [])
+      ],
+      pagination: { mode: 'cursor', pageSize: 50 }
+    };
+    void load();
+  }
+  function rememberFilters() {
+    if (listSession)
+      writeListState(listSession, 'party-cards', {
+        search,
+        includeInactive,
+        query: { ...query, pagination: { mode: 'cursor', pageSize: 50 } }
+      });
+  }
+  async function initializeFilters() {
+    try {
+      listSession = await api<Session>('/session');
+      const saved = readListState<{
+        search: string;
+        includeInactive: boolean;
+        query: VaryaGridQuery;
+        warehouseID?: string;
+      }>(listSession, 'party-cards');
+      if (saved && Array.isArray(saved.query?.filters)) {
+        search = saved.search ?? '';
+        includeInactive = saved.includeInactive === true;
+        query = saved.query;
+      }
+      const groups = await api<{ items: { id: string; name: string }[] }>('/party-settings/groups');
+      extraFilters = [
+        {
+          field: 'role',
+          label: 'Cari rolü',
+          kind: 'select',
+          options: [
+            { value: 'customer', label: 'Müşteri' },
+            { value: 'supplier', label: 'Tedarikçi' }
+          ]
+        },
+        {
+          field: 'group_id',
+          label: 'Cari grubu',
+          kind: 'select',
+          options: groups.items.map((g) => ({ value: g.id, label: g.name }))
+        }
+      ];
+    } catch {
+      /* The list remains available if optional references cannot load. */
+    }
+    await load();
+  }
+
   async function load(append = false) {
     activeRequest?.abort();
     const request = new AbortController();
@@ -262,6 +360,7 @@
       if (sequence !== requestSequence) return;
       rows = append ? [...rows, ...result.items] : result.items;
       nextCursor = result.next_cursor;
+      rememberFilters();
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === 'AbortError' && !timedOut) return;
       if (sequence !== requestSequence) return;
@@ -371,7 +470,7 @@
   }
 
   onMount(() => {
-    void load();
+    void initializeFilters();
     visibilityRequest = new AbortController();
     void loadColumnVisibility(visibilityRequest.signal);
     return () => {
@@ -424,6 +523,19 @@
       ><Download size={14} />Dışa Aktar</Button
     >{/snippet}
 </DocumentToolbar>
+<div style="padding: 8px 16px;">
+  <ListFilters
+    filters={extraFilters}
+    values={Object.fromEntries(
+      query.filters.map((f) => [f.field, Array.isArray(f.value) ? f.value.join(',') : f.value])
+    )}
+    onChange={changeListFilter}
+    onClear={() => {
+      query = { ...query, filters: [], pagination: { mode: 'cursor', pageSize: 50 } };
+      void load();
+    }}
+  />
+</div>
 {#if visibilitySaveError}<p class="preference-error" role="status">{visibilitySaveError}</p>{/if}
 <VaryaDataGrid
   {columns}

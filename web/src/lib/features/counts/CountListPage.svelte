@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
   import { Plus, RefreshCw, Search } from '@lucide/svelte';
@@ -215,7 +216,7 @@
       if (id === '—') throw new Error('Sayım kimliği alınamadı.');
       await goto('/stok/sayim/' + encodeURIComponent(id));
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Yeni sayım oluşturulamadı.';
+      error = errorMessage(cause, 'Yeni sayım oluşturulamadı.');
     } finally {
       saving = false;
     }
@@ -345,7 +346,8 @@
       {hasActiveFilters ? 'Seçilen filtrelerde sayım bulunamadı.' : 'Henüz sayım bulunamadı.'}
     </div>
   {:else}
-    <div class="table-scroll">
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+    <div class="table-scroll" tabindex="0" role="region" aria-label="Tablo — yatay kaydırılabilir">
       <table>
         <thead
           ><tr

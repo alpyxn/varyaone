@@ -1,3 +1,4 @@
+import { errorMessage } from '$lib/errors';
 export type CountMode = 'OPEN';
 
 export type CountPass = {
@@ -161,7 +162,10 @@ export function normalizeCount(value: unknown, fallbackID = ''): CountView {
       scope_id: String(firstValue(exception, ['scope_id', 'line_id']) ?? '') || undefined,
       barcode: String(firstValue(exception, ['barcode']) ?? '') || undefined,
       status: String(firstValue(exception, ['status', 'state']) ?? 'OPEN').toUpperCase(),
-      message: String(firstValue(exception, ['message', 'reason']) ?? 'İnceleme gerekli'),
+      message: errorMessage(
+        firstValue(exception, ['message', 'reason']),
+        'Sayım satırını inceleyin.'
+      ),
       severity: severity === 'warning' ? 'warning' : 'error',
       created_at: String(firstValue(exception, ['created_at', 'occurred_at']) ?? ''),
       details: asRecord(exception.details)

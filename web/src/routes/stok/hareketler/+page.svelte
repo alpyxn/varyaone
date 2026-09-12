@@ -1,12 +1,15 @@
 <script lang="ts">
+  import ListFilters from '$lib/components/varya/list-filters/ListFilters.svelte';
+  import type { ListFilter } from '$lib/components/varya/list-filters/types';
+  import type { EntityOption } from '$lib/components/varya/entity-picker-dialog/types';
+  import { readListState, writeListState } from '$lib/components/varya/list-filters/state';
+
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { ChevronDown, ChevronRight, RefreshCw, Search, ExternalLink } from '@lucide/svelte';
   import { api, type Session } from '$lib/api';
-  import { matchesSearch } from '$lib/filtering';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
-  import { DateInput } from '$lib/components/varya/date-input';
   import { DocumentToolbar } from '$lib/components/varya/document-toolbar';
   import { formatDate, formatMoney, formatQuantityWithUnit } from '$lib/design/formatters';
   import { addDecimalStrings, canonicalDecimal } from '$lib/design/decimal';
@@ -20,23 +23,102 @@
   let loading = $state(true);
   let error = $state('');
   let search = $state('');
-  let dateFrom = $state('');
-  let dateTo = $state('');
+  let filterValues = $state<Record<string, string>>({});
+  let entities = $state<Record<string, EntityOption>>({});
   let loadedOperations = $state<MovementOperation[]>([]);
-  const operations = $derived(loadedOperations.filter(matches));
-  let pageNumber = $state(1);
-  const pageSize = 25;
-  const totalPages = $derived(Math.max(1, Math.ceil(operations.length / pageSize)));
-  // Narrowing the search can drop the result set below the current page, which
-  // would otherwise leave the table blank until the user pages back.
-  $effect(() => {
-    if (pageNumber > totalPages) pageNumber = totalPages;
-  });
-  const visibleOperations = $derived(
-    operations.slice((pageNumber - 1) * pageSize, pageNumber * pageSize)
-  );
+  const operations = $derived(loadedOperations);
+  const visibleOperations = $derived(operations);
+  let cursor = $state('');
+  let nextCursor = $state('');
+  let cursorHistory = $state<string[]>([]);
+  let searchTimer: ReturnType<typeof setTimeout>;
+  let activeRequest: AbortController | undefined;
+  const filters: ListFilter[] = [
+    {
+      field: 'product_id',
+      label: 'Ürün',
+      kind: 'entity',
+      entity: {
+        title: 'Ürün seç',
+        description: 'Ürün adı veya koduyla arayın.',
+        triggerPlaceholder: 'Tüm ürünler',
+        search: async (q, signal) => {
+          const r = await api<{ items: { id: string; name: string; code: string }[] }>(
+            `/products?${new URLSearchParams({ q, limit: '50', include_inactive: 'true' })}`,
+            { signal }
+          );
+          return r.items.map((p) => ({ id: p.id, title: p.name, subtitle: p.code }));
+        }
+      }
+    },
+    {
+      field: 'warehouse_id',
+      label: 'Depo',
+      kind: 'entity',
+      entity: {
+        title: 'Depo seç',
+        description: 'Depo adı veya koduyla arayın.',
+        triggerPlaceholder: 'Tüm depolar',
+        search: async (q, signal) => {
+          const r = await api<{ items: { id: string; name: string; code: string }[] }>(
+            `/warehouses?${new URLSearchParams({ q, limit: '50', include_inactive: 'true' })}`,
+            { signal }
+          );
+          return r.items.map((p) => ({ id: p.id, title: p.name, subtitle: p.code }));
+        }
+      }
+    },
+    {
+      field: 'movement_type',
+      label: 'Hareket türü',
+      kind: 'select',
+      options: [
+        { value: 'PURCHASE_RECEIPT', label: 'Alış / mal kabul' },
+        { value: 'SALES_DISPATCH', label: 'Satış / sevk' },
+        { value: 'SALES_RETURN', label: 'Satış iadesi' },
+        { value: 'PURCHASE_RETURN', label: 'Alış iadesi' },
+        { value: 'TRANSFER_IN', label: 'Transfer giriş' },
+        { value: 'TRANSFER_OUT', label: 'Transfer çıkış' },
+        { value: 'COUNT_ADJUSTMENT', label: 'Sayım' },
+        { value: 'MANUAL_ADJUSTMENT', label: 'Manuel düzeltme' },
+        { value: 'DAMAGE', label: 'Hasar' },
+        { value: 'WASTE', label: 'Fire' },
+        { value: 'RECONCILIATION', label: 'Mutabakat' }
+      ]
+    },
+    { field: 'from', label: 'Hareket tarihi başlangıç', kind: 'date' },
+    { field: 'to', label: 'Hareket tarihi bitiş', kind: 'date' },
+    {
+      field: 'direction',
+      label: 'Yön',
+      kind: 'select',
+      options: [
+        { value: 'IN', label: 'Giriş' },
+        { value: 'OUT', label: 'Çıkış' }
+      ]
+    }
+  ];
+  function resetList() {
+    clearTimeout(searchTimer);
+    cursor = '';
+    cursorHistory = [];
+    void load();
+  }
+  function setFilter(field: string, value: string) {
+    filterValues = { ...filterValues, [field]: value };
+    resetList();
+  }
+  function remember() {
+    if (session)
+      writeListState(session, 'stock-movement-feed', {
+        search,
+        filterValues,
+        entities,
+        cursor,
+        cursorHistory
+      });
+  }
   let expanded = $state<Set<string>>(new Set());
-  let loadSequence = 0;
 
   function value(item: Record<string, unknown>, keys: string | string[]): Value {
     for (const key of Array.isArray(keys) ? keys : [keys]) {
@@ -60,32 +142,8 @@
       : [];
   }
 
-  function normalizeList(payload: unknown): MovementOperation[] {
-    if (!payload || typeof payload !== 'object') return [];
-    const source = payload as ListResponse;
-    return Array.isArray(source.items) ? source.items : [];
-  }
-
   function operationKey(operation: MovementOperation) {
     return text(operation, ['operation_id', 'id', 'movement_id'], JSON.stringify(operation));
-  }
-
-  function movementTimestamp(operation: MovementOperation) {
-    const raw = value(operation, ['posted_at', 'movement_date', 'created_at', 'updated_at']);
-    if (!raw) return 0;
-    const timestamp = Date.parse(String(raw));
-    return Number.isNaN(timestamp) ? 0 : timestamp;
-  }
-
-  function newestFirst(left: MovementOperation, right: MovementOperation) {
-    const byDate = movementTimestamp(right) - movementTimestamp(left);
-    return byDate || operationKey(right).localeCompare(operationKey(left));
-  }
-
-  function isGroupedOperationDuplicate(movement: MovementOperation) {
-    return (
-      String(value(movement, 'source_type') ?? '').toUpperCase() === 'STOCK_MOVEMENT_OPERATION'
-    );
   }
 
   function lineAttributes(line: Line) {
@@ -199,69 +257,28 @@
     }, '0');
   }
 
-  function matches(operation: MovementOperation) {
-    if (!search.trim()) return true;
-    const lineText = linesOf(operation)
-      .flatMap((line) => [variantLabel(line), text(line, ['variant_code', 'sku'])])
-      .join(' ');
-    return matchesSearch(
-      [
-        operationTitle(operation),
-        text(operation, ['operation_no', 'movement_no', 'document_no', 'id']),
-        text(operation, ['warehouse_name', 'warehouse.name']),
-        directionLabel(operation),
-        sourceDocumentLabel(operation),
-        lineText
-      ].join(' '),
-      search
-    );
-  }
-
   async function load() {
-    const requestID = ++loadSequence;
+    activeRequest?.abort();
+    const request = new AbortController();
+    activeRequest = request;
     loading = true;
     error = '';
     try {
-      const params = new URLSearchParams({ limit: '100' });
-      if (dateFrom) params.set('from', dateFrom);
-      if (dateTo) params.set('to', dateTo);
-      const [operationResult, movementResult] = await Promise.allSettled([
-        api<ListResponse>(`/stock-movement-operations?${params}`),
-        api<ListResponse>(`/stock-movements?${params}`)
-      ]);
-      if (operationResult.status === 'rejected' && movementResult.status === 'rejected') {
-        throw operationResult.reason;
-      }
-
-      const groupedOperations =
-        operationResult.status === 'fulfilled' ? normalizeList(operationResult.value) : [];
-      const standaloneMovements =
-        movementResult.status === 'fulfilled'
-          ? normalizeList(movementResult.value).filter(
-              (movement) => !isGroupedOperationDuplicate(movement)
-            )
-          : [];
-      if (requestID === loadSequence) {
-        // A posted operation can be returned by both the grouped-operation
-        // and raw-movement endpoints. Keep one row per operation so keyed
-        // Svelte rows remain stable and the user never sees duplicate work.
-        const unique = new Map<string, MovementOperation>();
-        for (const operation of [...groupedOperations, ...standaloneMovements]) {
-          const key = operationKey(operation);
-          if (!unique.has(key)) unique.set(key, operation);
-        }
-        loadedOperations = [...unique.values()].sort(newestFirst);
-        pageNumber = 1;
-      }
+      const params = new URLSearchParams({ q: search, limit: '50', cursor });
+      for (const [k, v] of Object.entries(filterValues)) if (v) params.set(k, v);
+      const result = await api<ListResponse>(`/stock-movement-feed?${params}`, {
+        signal: request.signal
+      });
+      if (request.signal.aborted) return;
+      loadedOperations = result.items ?? [];
+      nextCursor = result.next_cursor ?? '';
+      expanded = new Set();
+      remember();
     } catch (cause) {
-      if (requestID === loadSequence) {
-        error =
-          typeof cause === 'object' && cause && 'message' in cause
-            ? String((cause as { message?: unknown }).message)
-            : 'Stok hareketleri alınamadı.';
-      }
+      if (!request.signal.aborted)
+        error = cause instanceof Error ? cause.message : 'Stok hareketleri alınamadı.';
     } finally {
-      if (requestID === loadSequence) loading = false;
+      if (activeRequest === request) loading = false;
     }
   }
 
@@ -284,10 +301,38 @@
   }
 
   onMount(() => {
-    void api<Session>('/session')
-      .then((result) => (session = result))
-      .catch(() => (session = null));
-    void load();
+    let alive = true;
+    void (async () => {
+      try {
+        session = await api<Session>('/session');
+        if (!alive) return;
+        const saved = readListState<{
+          search: string;
+          filterValues: Record<string, string>;
+          entities: Record<string, EntityOption>;
+          cursor: string;
+          cursorHistory: string[];
+        }>(session, 'stock-movement-feed');
+        if (saved) {
+          search = saved.search ?? '';
+          filterValues = saved.filterValues ?? {};
+          entities = saved.entities ?? {};
+          cursor = saved.cursor ?? '';
+          cursorHistory = saved.cursorHistory ?? [];
+        }
+        await load();
+      } catch {
+        if (alive) {
+          error = 'Oturum bilgisi alınamadı.';
+          loading = false;
+        }
+      }
+    })();
+    return () => {
+      alive = false;
+      clearTimeout(searchTimer);
+      activeRequest?.abort();
+    };
   });
 </script>
 
@@ -297,7 +342,15 @@
   {#snippet tools()}
     <div class="toolbar-search">
       <Search size={15} aria-hidden="true" />
-      <Input bind:value={search} placeholder="Stok, varyant veya depo ara" />
+      <Input
+        bind:value={search}
+        aria-label="Stok hareketi ara"
+        placeholder="Stok, varyant, belge veya depo ara"
+        oninput={() => {
+          clearTimeout(searchTimer);
+          searchTimer = setTimeout(resetList, 250);
+        }}
+      />
     </div>
     <Button variant="outline" onclick={() => void load()} disabled={loading}>
       <RefreshCw size={14} />Yenile
@@ -312,13 +365,29 @@
     <div class="list-heading">
       <span>{operations.length} işlem</span>
     </div>
-    <div class="date-toolbar" aria-label="Stok hareketi tarih filtresi">
-      <label><span>Başlangıç</span><DateInput bind:value={dateFrom} ariaLabel="Başlangıç" /></label>
-      <label><span>Bitiş</span><DateInput bind:value={dateTo} ariaLabel="Bitiş" /></label>
-      <Button variant="outline" size="sm" onclick={() => void load()} disabled={loading}
-        >Tarih aralığını uygula</Button
-      >
-    </div>
+    <ListFilters
+      {filters}
+      values={filterValues}
+      {entities}
+      onChange={setFilter}
+      onEntity={(filter, option) => {
+        entities = { ...entities, [filter.field]: option };
+        setFilter(filter.field, option.id);
+      }}
+      onClear={() => {
+        filterValues = {};
+        entities = {};
+        resetList();
+      }}
+    />
+    {#if search}<Button
+        variant="ghost"
+        size="sm"
+        onclick={() => {
+          search = '';
+          resetList();
+        }}>Aramayı temizle</Button
+      >{/if}
 
     {#if error}
       <div class="inline-error" role="alert">{error}</div>
@@ -327,7 +396,13 @@
     {:else if operations.length === 0}
       <div class="empty">Kayıt bulunamadı.</div>
     {:else}
-      <div class="table-scroll">
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex (a scrollable region must be reachable by keyboard) -->
+      <div
+        class="table-scroll"
+        tabindex="0"
+        role="region"
+        aria-label="Tablo — yatay kaydırılabilir"
+      >
         <table>
           <thead>
             <tr>
@@ -447,19 +522,27 @@
         </table>
       </div>
       <div class="pagination" aria-label="Stok hareketi sayfaları">
-        <span>{pageNumber}. sayfa · {operations.length} işlem</span>
+        <span>{cursorHistory.length + 1}. sayfa · {operations.length} işlem</span>
         <div>
           <Button
             variant="outline"
             size="sm"
-            onclick={() => (pageNumber = Math.max(1, pageNumber - 1))}
-            disabled={pageNumber === 1}>Önceki</Button
+            onclick={() => {
+              cursor = cursorHistory.at(-1) ?? '';
+              cursorHistory = cursorHistory.slice(0, -1);
+              void load();
+            }}
+            disabled={loading || !cursorHistory.length}>Önceki</Button
           >
           <Button
             variant="outline"
             size="sm"
-            onclick={() => (pageNumber = Math.min(totalPages, pageNumber + 1))}
-            disabled={pageNumber >= totalPages}>Sonraki</Button
+            onclick={() => {
+              cursorHistory = [...cursorHistory, cursor];
+              cursor = nextCursor;
+              void load();
+            }}
+            disabled={loading || !nextCursor}>Sonraki</Button
           >
         </div>
       </div>
@@ -504,28 +587,6 @@
   }
   .table-scroll {
     overflow-x: auto;
-  }
-  .date-toolbar,
-  .pagination {
-    display: flex;
-    align-items: end;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 12px;
-  }
-  .date-toolbar label {
-    display: grid;
-    gap: 4px;
-    color: var(--text-muted);
-    font-size: 11px;
-  }
-  .date-toolbar :global(input) {
-    min-height: var(--control-height);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-control);
-    background: var(--surface);
-    color: var(--text);
-    padding: 0 8px;
   }
   .pagination {
     align-items: center;

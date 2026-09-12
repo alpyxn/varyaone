@@ -16,7 +16,7 @@ FROM build AS binary
 FROM alpine:3.24 AS runtime
 RUN apk add --no-cache ca-certificates tzdata wget libwebp postgresql18-client && \
     addgroup -S varyaone && adduser -S -G varyaone varyaone && \
-    mkdir -p /var/lib/varyaone/storage && \
+    mkdir -p /var/lib/varyaone/storage /var/lib/varyaone/control && \
     chown -R varyaone:varyaone /var/lib/varyaone
 COPY --from=build /out/varyaone /usr/local/bin/varyaone
 USER varyaone

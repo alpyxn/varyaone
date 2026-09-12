@@ -1,7 +1,6 @@
 package pulse
 
 import (
-	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -33,28 +32,6 @@ func TestNoUsageTelemetry(t *testing.T) {
 	} {
 		if strings.Contains(code, banned) {
 			t.Errorf("pulse.go reintroduces usage telemetry (%q)", banned)
-		}
-	}
-}
-
-func TestInstallPayloadCarriesOnlyOpaqueFields(t *testing.T) {
-	payload := map[string]any{
-		"install_id":  "11111111-1111-4111-8111-111111111111",
-		"app_version": "1.2.3",
-		"setup_at":    "2026-09-01T10:00:00Z",
-	}
-	blob, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var generic map[string]any
-	if err := json.Unmarshal(blob, &generic); err != nil {
-		t.Fatal(err)
-	}
-	allowed := map[string]bool{"install_id": true, "app_version": true, "setup_at": true}
-	for k := range generic {
-		if !allowed[k] {
-			t.Errorf("unexpected field %q in install payload", k)
 		}
 	}
 }

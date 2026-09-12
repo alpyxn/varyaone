@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { errorMessage } from '$lib/errors';
+  import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import {
     DatabaseBackup,
@@ -9,13 +10,23 @@
     CircleCheck,
     Loader,
     FileArchive,
-    HardDriveDownload
+    HardDriveDownload,
+    RefreshCw
   } from '@lucide/svelte';
   import { api, APIRequestError, type Session } from '$lib/api';
   import { Button } from '$lib/components/ui/button';
   import { FileDrop } from '$lib/components/varya/file-drop';
   import { ConfirmDialog } from '$lib/components/varya/confirm-dialog';
-  import { downloadBackup, restoreBackup, type RestoreResult } from '$lib/features/settings/backup';
+  import {
+    downloadBackup,
+    restoreBackup,
+    followOperation,
+    operationStatus,
+    needsRecovery,
+    newOperationKey,
+    type RestoreResult,
+    type OperationRecord
+  } from '$lib/features/settings/backup';
 
   let loading = $state(true);
   let denied = $state(false);
@@ -27,7 +38,37 @@
   let error = $state('');
   let result = $state<RestoreResult | null>(null);
 
+  /**
+   * The operation this page is following. It is loaded on mount as well as
+   * after a restore: a restore outlives the page that started it, so someone
+   * who closed the tab, lost the connection or signed in again must be able to
+   * come back here and see what happened rather than be shown a blank form.
+   */
+  let tracked = $state<OperationRecord | null>(null);
+  let recovery = $state<OperationRecord | null>(null);
+  let follower: AbortController | null = null;
+
   const selected = $derived(files[0] ?? null);
+  const locked = $derived(recovery !== null);
+
+  const PHASE_LABELS: Record<string, string> = {
+    VALIDATING: 'Dosya doğrulanıyor',
+    PREPARED: 'Hazırlandı',
+    QUIESCING: 'Yazmalar durduruluyor',
+    SAFETY_VERIFIED: 'Yedek doğrulandı',
+    CANDIDATE_READY: 'Yeni veritabanı hazırlandı',
+    SWITCHING: 'Değiştiriliyor',
+    CHECKING: 'Kontrol ediliyor',
+    COMMITTED: 'Tamamlandı',
+    FAILED_UNCHANGED: 'Başarısız — sistem değişmedi',
+    ROLLING_BACK: 'Geri alınıyor',
+    ROLLED_BACK: 'Geri alındı',
+    RECOVERY_REQUIRED: 'Kurtarma gerekiyor'
+  };
+
+  function phaseLabel(record: OperationRecord): string {
+    return PHASE_LABELS[record.phase] ?? record.phase;
+  }
 
   onMount(async () => {
     try {
@@ -39,7 +80,45 @@
     } finally {
       loading = false;
     }
+    if (denied) return;
+    await refreshStatus();
   });
+
+  onDestroy(() => follower?.abort());
+
+  async function refreshStatus() {
+    try {
+      const status = await operationStatus();
+      if (!status.operation) return;
+      if (needsRecovery(status.operation)) {
+        recovery = status.operation;
+        tracked = status.operation;
+        return;
+      }
+      if (status.running) {
+        tracked = status.operation;
+        track(status.operation.id);
+      }
+    } catch {
+      /* status is diagnostic; a page that cannot fetch it still works */
+    }
+  }
+
+  function track(id: string) {
+    follower?.abort();
+    follower = new AbortController();
+    restoring = true;
+    followOperation(id, (record) => (tracked = record), follower.signal)
+      .then((record) => {
+        if (needsRecovery(record)) recovery = record;
+        else if (record.phase === 'COMMITTED') error = '';
+        else if (record.error) error = record.error;
+      })
+      .catch(() => {
+        /* aborted, or the API went away mid-restore — the record survives */
+      })
+      .finally(() => (restoring = false));
+  }
 
   function humanSize(bytes: number) {
     if (bytes < 1024) return `${bytes} B`;
@@ -53,21 +132,37 @@
     error = '';
   }
 
+  const INCONSISTENT_CODES = ['SYSTEM_INCONSISTENT', 'RESTORE_STORAGE_PARTIAL'];
+
   async function runRestore() {
     if (!selected) return;
     restoring = true;
     error = '';
+    result = null;
+    // One key per confirmed click. A retry after a lost response carries the
+    // same key and is answered with the original operation instead of starting
+    // a second restore on top of the first.
+    const operationKey = newOperationKey();
     try {
-      result = await restoreBackup(selected, force);
+      const outcome = await restoreBackup(selected, { force, operationKey });
+      if (outcome.kind === 'running') {
+        track(outcome.operationId);
+        return;
+      }
+      result = outcome.result;
       files = [];
+      await refreshStatus();
     } catch (cause) {
-      error =
-        cause instanceof APIRequestError || cause instanceof Error
-          ? cause.message
-          : 'Geri yükleme başarısız oldu.';
+      error = errorMessage(cause, 'Geri yükleme başarısız oldu.');
+      if (cause instanceof APIRequestError && INCONSISTENT_CODES.includes(cause.code)) {
+        // Not a retryable failure: the database has already changed. Refresh
+        // so the recovery banner comes from the server's record rather than
+        // from this one response, which the user may never see again.
+        await refreshStatus();
+      }
       throw cause;
     } finally {
-      restoring = false;
+      if (!follower) restoring = false;
     }
   }
 </script>
@@ -148,7 +243,7 @@
         <Button
           type="button"
           variant="danger"
-          disabled={!selected || restoring}
+          disabled={!selected || restoring || locked}
           onclick={() => (confirmOpen = true)}
         >
           {#if restoring}
@@ -159,15 +254,43 @@
         </Button>
       </div>
 
-      {#if error}
+      {#if tracked && restoring}
+        <p class="notice progress">
+          <RefreshCw size={15} class="spin" />
+          <span>
+            {phaseLabel(tracked)} — işlem <code>{tracked.id}</code>. Bu sayfayı kapatabilirsiniz;
+            işlem sunucuda sürer ve geri döndüğünüzde durumu burada görürsünüz.
+          </span>
+        </p>
+      {/if}
+
+      {#if recovery}
+        <p class="notice critical">
+          <TriangleAlert size={15} />
+          <span>
+            <strong>Sistem tutarsız durumda.</strong> Veritabanı değişti ancak geri yükleme
+            tamamlanamadı (işlem <code>{recovery.id}</code>). Sistemi kullanmayın ve yeniden
+            denemeyin. Sunucuda:
+            <code>./deploy.sh system-status</code> ile durumu inceleyin, düzelttikten sonra
+            <code>./deploy.sh system-resolve "ne yapıldı"</code> ile yeniden açın.
+            {#if recovery.error}<br /><span class="detail">{recovery.error}</span>{/if}
+          </span>
+        </p>
+      {:else if error}
         <p class="notice error">{error}</p>
       {/if}
       {#if result}
         <p class="notice ok">
           <CircleCheck size={15} />
-          {new Date(result.restored_from).toLocaleString('tr-TR')} tarihli yedek geri yüklendi —
-          {result.objects} dosya, şema sürümü {result.migration_version}. Oturumunuz sona ermiş
-          olabilir; gerekirse yeniden giriş yapın.
+          <span>
+            {new Date(result.restored_from).toLocaleString('tr-TR')} tarihli yedek geri yüklendi —
+            {result.objects} dosya, şema sürümü {result.migration_version}.
+            {#if result.restart_required}
+              <br />Veriler doğru: uygulama geri yüklenen veritabanına kendiliğinden yeniden
+              bağlandı. İsterseniz sunucuda <code>./deploy.sh restart</code> ile servisleri tazeleyebilirsiniz.
+            {/if}
+            <br />Oturumunuz sona ermiş olabilir; gerekirse yeniden giriş yapın.
+          </span>
         </p>
       {/if}
     </section>
@@ -300,6 +423,31 @@
     display: flex;
     align-items: flex-start;
     gap: 7px;
+  }
+
+  .notice.progress {
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    background: var(--surface-muted);
+    color: var(--text-subtle);
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+
+  .notice .detail {
+    color: var(--text-muted);
+    font-size: 11.5px;
+  }
+
+  .notice.critical {
+    padding: 9px 11px;
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-control);
+    background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+    color: var(--danger);
+    font-size: 12.5px;
+    line-height: 1.5;
   }
 
   :global(.spin) {

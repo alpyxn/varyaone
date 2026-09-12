@@ -1,0 +1,32 @@
+# Measured runtime of each database-backed test package, in seconds.
+#
+# Bin-packing hints for .github/scripts/db_test_groups.py, nothing more. The
+# package list itself is always discovered from the source tree, so a package
+# missing from this file still runs -- it is just placed as if it were average.
+# Stale numbers cost balance, never coverage.
+#
+# Measured with `go test -race -p 1` against a PostgreSQL 18.4 container, on a
+# developer machine rather than a GitHub runner. Absolute values will differ on
+# CI; the ratios are what the split needs.
+# Re-measure with:
+#   go test -race -p 1 -json $(.github/scripts/db_test_groups.py all)
+#
+# package<TAB>seconds
+github.com/alpyxn/varyaone/internal/backup	1.0
+github.com/alpyxn/varyaone/internal/commerce	8.4
+github.com/alpyxn/varyaone/internal/demo	65.6
+github.com/alpyxn/varyaone/internal/finance	116.6
+github.com/alpyxn/varyaone/internal/hr/advance	5.2
+github.com/alpyxn/varyaone/internal/identity	27.2
+github.com/alpyxn/varyaone/internal/inventory	151.0
+github.com/alpyxn/varyaone/internal/party	18.8
+github.com/alpyxn/varyaone/internal/platform/database	1.1
+github.com/alpyxn/varyaone/internal/platform/httpapi	32.7
+github.com/alpyxn/varyaone/internal/platform/migrations	27.6
+github.com/alpyxn/varyaone/internal/platform/outbox	17.0
+github.com/alpyxn/varyaone/internal/pricing	5.2
+github.com/alpyxn/varyaone/internal/products	18.1
+github.com/alpyxn/varyaone/internal/pulse	5.2
+github.com/alpyxn/varyaone/internal/purchasing	29.5
+github.com/alpyxn/varyaone/internal/reporting	9.7
+github.com/alpyxn/varyaone/internal/sales	29.8

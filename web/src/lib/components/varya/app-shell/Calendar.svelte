@@ -16,6 +16,7 @@
   } from '@lucide/svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import { focusTrap } from '$lib/a11y/overlay';
   import { TimeInput } from '$lib/components/varya/time-input';
   import {
     listEvents,
@@ -43,7 +44,20 @@
 
   const WEEKDAYS = ['Pt', 'Sa', 'Ça', 'Pe', 'Cu', 'Ct', 'Pz'];
 
-  let open = $state(false);
+  let {
+    /** Bound by the shell so the narrow-screen tools menu can open it. */
+    open = $bindable(false),
+    /** The topbar hides the inline trigger once the tools menu owns it. */
+    showTrigger = true,
+    /** Lets the tools menu keep showing the "events due today" badge when
+     * the inline trigger is hidden. */
+    onpendingchange
+  }: {
+    open?: boolean;
+    showTrigger?: boolean;
+    onpendingchange?: (count: number) => void;
+  } = $props();
+  /** Free-floating draggable panel above this width; a bottom sheet below it. */
   let isDesktop = $state(true);
   let pos = $state<{ x: number; y: number } | null>(null);
   let drag: { dx: number; dy: number } | null = null;
@@ -81,6 +95,7 @@
   const todayPendingCount = $derived(
     (eventsByDate.get(todayISO()) ?? []).filter((event) => isPending(event)).length
   );
+  $effect(() => onpendingchange?.(todayPendingCount));
 
   function shiftMonth(delta: number) {
     const d = new Date(viewYear, viewMonth + delta, 1);
@@ -197,7 +212,7 @@
   }
 
   function onKeydown(event: KeyboardEvent) {
-    if (!open || !isDesktop) return;
+    if (!open) return;
     const target = event.target as HTMLElement | null;
     if (
       target &&
@@ -237,12 +252,26 @@
 
   function toggle() {
     open = !open;
-    if (open) {
-      pos = clamp((window.innerWidth - PANEL_W) / 2, (window.innerHeight - PANEL_H) / 2 - 40);
+  }
+
+  let wasOpen = false;
+  $effect(() => {
+    // Covers both the inline trigger and the narrow-screen tools menu, which
+    // flips `open` from outside this component.
+    if (open && !wasOpen) {
       goToday();
       void refresh();
     }
-  }
+    wasOpen = open;
+  });
+
+  $effect(() => {
+    // Opened from the tools menu, or the viewport crossed the breakpoint:
+    // make sure the floating panel always has a position to render at.
+    if (open && isDesktop && !pos) {
+      pos = clamp((window.innerWidth - PANEL_W) / 2, (window.innerHeight - PANEL_H) / 2 - 40);
+    }
+  });
 
   let timer: ReturnType<typeof setInterval> | undefined;
   let reload: ReturnType<typeof setInterval> | undefined;
@@ -258,7 +287,10 @@
     const mq = window.matchMedia('(min-width: 981px)');
     const update = () => {
       isDesktop = mq.matches;
-      if (!isDesktop) open = false;
+      // The sheet has no coordinates; drop them so a switch back to the
+      // desktop recomputes a position inside the new viewport.
+      if (!isDesktop) pos = null;
+      else if (open) pos = clamp(pos?.x ?? 0, pos?.y ?? 0);
     };
     update();
     mq.addEventListener('change', update);
@@ -282,7 +314,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-{#if isDesktop}
+{#if showTrigger}
   <span class="calendar-slot" class:has-today={todayPendingCount > 0}>
     <Button
       variant="ghost"
@@ -299,18 +331,37 @@
   </span>
 {/if}
 
-{#if open && pos && isDesktop}
-  <div class="cal-panel" style="left:{pos.x}px; top:{pos.y}px;" role="dialog" aria-label="Takvim">
+{#if open && !isDesktop}
+  <button
+    type="button"
+    class="cal-scrim"
+    tabindex="-1"
+    aria-label="Takvimi kapat"
+    onclick={() => (open = false)}
+  ></button>
+{/if}
+
+{#if open && (isDesktop ? pos : true)}
+  <div
+    class="cal-panel"
+    class:cal-sheet={!isDesktop}
+    style={isDesktop && pos ? `left:${pos.x}px; top:${pos.y}px;` : undefined}
+    role="dialog"
+    aria-modal={!isDesktop}
+    aria-label="Takvim"
+    tabindex="-1"
+    use:focusTrap={{ active: !isDesktop, onclose: () => (open = false) }}
+  >
     <div
       class="cal-head"
       role="toolbar"
       tabindex="-1"
-      aria-label="Pencereyi taşı"
-      onpointerdown={startDrag}
-      onpointermove={onDrag}
-      onpointerup={endDrag}
+      aria-label={isDesktop ? 'Pencereyi taşı' : 'Takvim'}
+      onpointerdown={isDesktop ? startDrag : undefined}
+      onpointermove={isDesktop ? onDrag : undefined}
+      onpointerup={isDesktop ? endDrag : undefined}
     >
-      <GripHorizontal size={15} aria-hidden="true" />
+      {#if isDesktop}<GripHorizontal size={15} aria-hidden="true" />{/if}
       <span>Takvim</span>
       <button
         type="button"
@@ -427,6 +478,14 @@
 {/if}
 
 <style>
+  .cal-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 2147482999;
+    border: 0;
+    padding: 0;
+    background: rgb(2 6 23 / 52%);
+  }
   .calendar-slot {
     position: relative;
     display: inline-flex;
@@ -763,5 +822,32 @@
     margin: 0;
     color: var(--danger);
     font-size: 11px;
+  }
+
+  /* Narrow screens: a bottom sheet pinned to the safe area instead of a
+     draggable window, so it never lands off-screen or under the keyboard. */
+  .cal-panel.cal-sheet {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: auto;
+    max-height: 92dvh;
+    overflow-y: auto;
+    border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    user-select: auto;
+  }
+  .cal-sheet .cal-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    cursor: default;
+    font-size: 13px;
+  }
+  .cal-sheet .cal-icon-btn,
+  .cal-sheet .cal-nav {
+    width: 36px;
+    height: 36px;
   }
 </style>

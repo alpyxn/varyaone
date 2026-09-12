@@ -172,6 +172,7 @@ func (r *Runner) seed(ctx context.Context, session identity.Session) error {
 		{"purchases", r.seedPurchases},
 		{"sales", r.seedSales},
 		{"stock operations", r.seedStockOperations},
+		{"stock count", r.seedStockCount},
 		{"settlements", r.seedSettlements},
 		{"hr", r.seedHR},
 		{"timesheet", r.seedTimesheet},
@@ -262,6 +263,17 @@ func (r *Runner) seedFinanceAccounts(ctx context.Context, session identity.Sessi
 		}, seedMeta(opening.key)); err != nil {
 			return err
 		}
+	}
+	// One till-to-bank deposit. Every company that takes cash makes this move,
+	// and without it the account-transfer screens are the only finance list in
+	// the demo with nothing on them — which is how their record page came to be
+	// the one no browser test could open.
+	if _, err = svc.finance.PostFinanceTransfer(ctx, session, finance.FinanceTransferInput{
+		FromAccountID: cash.ID, ToAccountID: bank.ID, Amount: "12500.00",
+		TransactionDate: r.day(-20), Description: "Kasa fazlasının bankaya yatırılması",
+		IdempotencyKey: "demo-seed:finance-transfer",
+	}, seedMeta("finance-transfer")); err != nil {
+		return err
 	}
 	return nil
 }

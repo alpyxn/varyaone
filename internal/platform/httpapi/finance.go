@@ -31,11 +31,15 @@ func mountFinanceRoutes(router chi.Router, identityService *identity.Service, se
 		r.Get("/payments", h.listPayments)
 		r.Get("/payments/{paymentID}", h.getPayment)
 		r.Get("/party-aging", h.partyAging)
+		r.Get("/payment-plans", h.listPaymentPlans)
+		r.Get("/payment-plans/{planID}", h.getPaymentPlan)
 		r.Get("/transfers", h.listFinanceTransfers)
 		r.Get("/transfers/{transferID}", h.getFinanceTransfer)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.requireCSRF)
 			r.Post("/allocation-preview", h.previewAllocation)
+			r.Post("/payment-plans", h.createPaymentPlan)
+			r.Post("/payment-plans/{planID}/cancel", h.cancelPaymentPlan)
 			r.Post("/accounts", h.createAccount)
 			r.Post("/collections", h.postCollection)
 			r.Post("/payments", h.postPayment)
@@ -487,9 +491,9 @@ func (h financeHandler) listPayments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Ödeme tarih aralığı geçersiz.")
 		return
 	}
-	result, err := h.service.ListPaymentsPaged(r.Context(), sessionFromRequest(r), finance.PaymentListOptions{PartyID: r.URL.Query().Get("party_id"), Method: r.URL.Query().Get("method"), Status: r.URL.Query().Get("status"), AccountID: r.URL.Query().Get("account_id"), AmountMin: r.URL.Query().Get("amount_min"), AmountMax: r.URL.Query().Get("amount_max"), Query: r.URL.Query().Get("q"), From: from, To: to, Cursor: r.URL.Query().Get("cursor"), Limit: queryLimit(r, 50, 200)})
+	result, err := h.service.ListPaymentsPaged(r.Context(), sessionFromRequest(r), finance.PaymentListOptions{Kind: "PAYMENT", PartyID: r.URL.Query().Get("party_id"), Method: r.URL.Query().Get("method"), Status: r.URL.Query().Get("status"), AccountID: r.URL.Query().Get("account_id"), AmountMin: r.URL.Query().Get("amount_min"), AmountMax: r.URL.Query().Get("amount_max"), Query: r.URL.Query().Get("q"), From: from, To: to, Cursor: r.URL.Query().Get("cursor"), Limit: queryLimit(r, 50, 200)})
 	if err != nil {
-		writeFinanceError(w, r, err, "Tahsilat ve ödemeler okunamadı.")
+		writeFinanceError(w, r, err, "Ödemeler okunamadı.")
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -536,7 +540,7 @@ func paymentDateRange(r *http.Request) (*time.Time, *time.Time, error) {
 }
 
 func (h financeHandler) listOpenItems(w http.ResponseWriter, r *http.Request) {
-	result, err := h.service.ListOpenItemsPage(r.Context(), sessionFromRequest(r), r.URL.Query().Get("party_id"), r.URL.Query().Get("currency"), r.URL.Query().Get("side"), r.URL.Query().Get("cursor"), queryLimit(r, 100, 500))
+	result, err := h.service.ListOpenItemsPage(r.Context(), sessionFromRequest(r), r.URL.Query().Get("party_id"), r.URL.Query().Get("currency"), r.URL.Query().Get("side"), r.URL.Query().Get("cursor"), queryLimit(r, 100, 500), r.URL.Query().Get("unplanned_only") == "true")
 	if err != nil {
 		writeFinanceError(w, r, err, "Açık cari kalemler okunamadı.")
 		return

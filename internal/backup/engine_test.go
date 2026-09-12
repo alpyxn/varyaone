@@ -24,8 +24,14 @@ func TestEngineRoundTrip(t *testing.T) {
 	if baseURL == "" {
 		t.Skip("VARYAONE_TEST_DATABASE_URL is not set")
 	}
-	if _, err := exec.LookPath("pg_dump"); err != nil {
-		t.Skip("pg_dump is not on PATH")
+	// With a test database configured, a missing client tool is a failure, not
+	// a reason to skip. A skip here reads as a pass in CI, which would mean the
+	// only test that actually restores a database could silently stop running
+	// and nothing would say so.
+	for _, tool := range []string{"pg_dump", "pg_restore"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("%s is not on PATH; the restore rehearsal cannot run", tool)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -101,7 +107,14 @@ func TestEngineRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err = engine.Restore(ctx, &archive, RestoreOptions{}); err != nil {
+	// SkipMigrations: this fixture is a throwaway database holding one toy table
+	// and a migration table containing only version 1, so a forward run would
+	// try to build the entire real application schema on top of it. That is not
+	// a case a restore meets — a real archive carries the source installation's
+	// full migration history, so the forward run applies only what the source
+	// was behind on — and it is not what this test is about, which is that rows
+	// and bytes survive the round trip.
+	if _, err = engine.Restore(ctx, &archive, RestoreOptions{SkipMigrations: true}); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 

@@ -1,9 +1,13 @@
 <script lang="ts">
+  import { errorMessage, errorFieldLabel } from '$lib/errors';
   import { page } from '$app/state';
-  import { beforeNavigate, goto } from '$app/navigation';
-  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { onMount, untrack } from 'svelte';
   import { toast } from 'svelte-sonner';
   import { ConfirmDialog } from '$lib/components/varya/confirm-dialog';
+  import { registerUnsavedGuard } from '$lib/forms/unsaved-changes.svelte';
+  import { DraftRecovery } from '$lib/forms/draft-recovery.svelte';
+  import { DraftNotice } from '$lib/components/varya/draft-notice';
   import { ReasonDialog } from '$lib/components/varya/reason-dialog';
   import {
     ArrowLeft,
@@ -301,27 +305,66 @@
     return Boolean(isEditable && isDirty && !navigationInProgress);
   }
 
-  let unsavedNavOpen = $state(false);
-  let pendingNavUrl = $state<string | null>(null);
+  // Sayfadan ayrılma, yenileme ve şirket değişimi denetimi ortak kayıtta
+  // toplanır; burada ikinci bir uyarı kurulmaz.
+  $effect(() =>
+    registerUnsavedGuard({
+      label: 'Belge',
+      isDirty: () => shouldPromptForUnsavedChanges(),
+      discard: () => {
+        navigationInProgress = true;
+        drafts.clear();
+      }
+    })
+  );
 
-  beforeNavigate((navigation) => {
-    if (!shouldPromptForUnsavedChanges()) return;
-    // Tarayıcıdan tamamen ayrılırken tarayıcının kendi uyarısına bırak.
-    if (navigation.type === 'leave') {
-      navigation.cancel();
-      return;
-    }
-    navigation.cancel();
-    pendingNavUrl = navigation.to?.url.href ?? null;
-    unsavedNavOpen = true;
+  /**
+   * Uzun ticari belge formu için yerel kurtarma taslağı. Resmî "taslak belge"
+   * kaydından ayrıdır; onu üretmez, onunla yarışmaz.
+   */
+  const drafts = new DraftRecovery<{ form: DocumentForm; lines: LineDraft[] }>({
+    scope: () => {
+      const userID = session?.user?.id;
+      const companyID = session?.current_company_id;
+      if (!userID || !companyID || !config) return null;
+      return {
+        userID,
+        companyID,
+        formType: `${direction}-${resource ?? ''}`,
+        recordID: isNew ? '' : (record?.id ?? page.params.id ?? '')
+      };
+    },
+    recordVersion: () => (isNew ? '' : String(record?.version ?? '')),
+    data: () => ({ form, lines }),
+    enabled: () => isEditable && !saving && !submitting && !navigationInProgress
   });
 
-  async function confirmLeaveUnsaved() {
-    const target = pendingNavUrl;
-    unsavedNavOpen = false;
-    pendingNavUrl = null;
-    navigationInProgress = true;
-    if (target) await goto(target);
+  // Düzenleme durduktan kısa süre sonra yazılır; yükleme sırasında yazılmaz.
+  $effect(() => {
+    currentSnapshot;
+    if (!dirtyTrackingReady || !isDirty) return;
+    untrack(() => drafts.note());
+  });
+
+  $effect(() => () => drafts.destroy());
+
+  function restoreDraft() {
+    const data = drafts.restore();
+    if (!data) return;
+    form = data.form;
+    // Satırların geçici yükleme durumları taslaktan taşınmaz.
+    lines = data.lines.map((line) => ({
+      ...line,
+      variantLoading: false,
+      variantError: '',
+      variantRequestKey: undefined
+    }));
+    serverErrors = [];
+    validationError = '';
+    sourcePickerKey += 1;
+    // Geri yüklenen belge yeniden doğrulanır; kaydedilene kadar kirli sayılır.
+    validationError = checkForm(false);
+    void loadVariantOptions(lines);
   }
 
   function emptyLine(lineType: CommercialLineType = 'PRODUCT'): LineDraft {
@@ -1207,6 +1250,8 @@
           body: JSON.stringify(payload())
         }
       );
+      // Başarılı kayıt sonrası yerel taslak da silinir.
+      drafts.clear();
       if (isNew && result.id && !options.chain) {
         navigationInProgress = true;
         await goto(`${routePath}/${encodeURIComponent(result.id)}`);
@@ -1546,7 +1591,7 @@
     return {
       line: Number.isInteger(line) && line > 0 ? line : undefined,
       field: field || undefined,
-      message: message || 'Alanı kontrol edin.'
+      message: errorMessage({ ...entry, message }, 'Alanı kontrol edin.')
     };
   }
 
@@ -1643,7 +1688,7 @@
       }
       return cause.message ?? fallback;
     }
-    return cause instanceof Error && cause.message ? cause.message : fallback;
+    return errorMessage(cause, fallback);
   }
 
   function lineDisplayTotal(line: LineDraft) {
@@ -1752,10 +1797,12 @@
         await loadSourceFromQuery();
         loading = false;
         markClean();
+        drafts.start();
         setTimeout(() => document.getElementById('document-no')?.focus(), 0);
       } else {
         await load();
         await loadReferences();
+        drafts.start();
       }
     } catch (cause) {
       error = friendlyError(cause, 'Oturum bilgileri alınamadı.');
@@ -1764,11 +1811,6 @@
   }
 
   onMount(() => {
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!shouldPromptForUnsavedChanges()) return;
-      event.preventDefault();
-      event.returnValue = '';
-    };
     const handleEditorKeydown = (event: KeyboardEvent) => {
       if (
         !isEditable ||
@@ -1785,12 +1827,10 @@
     const removeShortcut = listenVaryaShortcut('save', () => {
       if (isEditable) void save();
     });
-    window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('keydown', handleEditorKeydown);
     void initialize();
     return () => {
       removeShortcut();
-      window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('keydown', handleEditorKeydown);
     };
   });
@@ -1933,6 +1973,16 @@
         <Button variant="outline" size="sm" onclick={printPage}><Printer size={14} />Yazdır</Button>
       {/if}
       {#if !isNew && documentStatus === 'POSTED'}
+        {#if !isNew && resource === 'invoices' && record?.id && documentStatus === 'POSTED' && session?.permissions.includes(isSales ? 'finance.collection.read' : 'finance.payment.read')}
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={() =>
+              goto(
+                `/cari/vade-planlari?${new URLSearchParams({ party_id: text(record?.party_id ?? record?.supplier_id), document_id: text(record?.id), currency, side: isSales ? 'RECEIVABLE' : 'PAYABLE' })}`
+              )}>Vade / Taksit Planı</Button
+          >
+        {/if}
         {#if canOpenFinanceAction}<Button
             variant="outline"
             size="sm"
@@ -1957,6 +2007,15 @@
   {:else if error && !record && !isNew}
     <StateBlock {error} onRetry={load} />
   {:else}
+    {#if drafts.found && isEditable}
+      <DraftNotice
+        savedAt={drafts.savedAt}
+        staleVersion={drafts.staleVersion}
+        onRestore={restoreDraft}
+        onDiscard={() => drafts.discard()}
+      />
+    {/if}
+    {#if drafts.error}<div class="form-error" role="status">{drafts.error}</div>{/if}
     {#if error}<div class="form-error" role="alert">
         <span>{error}</span>
         {#if staleConflict}
@@ -1983,7 +2042,7 @@
             <li>
               <button type="button" class="error-link" onclick={() => focusServerError(detail)}>
                 {detail.line
-                  ? `${detail.line}. satır${detail.field ? ` · ${detail.field}` : ''}: `
+                  ? `${detail.line}. satır${detail.field ? ` · ${errorFieldLabel(detail.field)}` : ''}: `
                   : ''}{detail.message}
               </button>
             </li>
@@ -2585,14 +2644,6 @@
       {/if}
     </div>
   {/if}
-  <ConfirmDialog
-    bind:open={unsavedNavOpen}
-    title="Kaydedilmemiş değişiklikler"
-    description="Bu belgede kaydedilmemiş değişiklikler var. Sayfadan ayrılırsanız bu değişiklikler kaybolur."
-    confirmLabel="Yine de ayrıl"
-    cancelLabel="Sayfada kal"
-    onConfirm={confirmLeaveUnsaved}
-  />
   <ConfirmDialog
     bind:open={deleteConfirmOpen}
     title="Taslağı sil"

@@ -9,6 +9,7 @@
     type EmailSendResult,
     type EmailTemplate
   } from '$lib/features/email/types';
+  import type { UnsavedChangesGuard } from '$lib/forms/unsaved-changes.svelte';
 
   type SendResult = EmailSendResult & { preview?: unknown };
 
@@ -20,6 +21,7 @@
     variables = [],
     attachmentNote = '',
     lockRecipients = false,
+    guard,
     onSend,
     onDone
   }: {
@@ -30,6 +32,8 @@
     variables?: string[];
     attachmentNote?: string;
     lockRecipients?: boolean;
+    /** Düzenlenen konu, gövde ve alıcılar için çıkış onayı denetimi. */
+    guard?: UnsavedChangesGuard;
     onSend: (p: {
       subject: string;
       body: string;
@@ -82,11 +86,25 @@
   const previewRow = $derived(previewRows[Math.min(previewIdx, previewRows.length - 1)] ?? null);
 
   onMount(async () => {
+    // Düzenlenebilir alanlar burada yaşıyor; denetimi açan pencereye bildir.
+    guard?.attach(
+      () => ({
+        subject,
+        body,
+        recipients: rows.map((row) => ({ email: row.email, name: row.name })),
+        newEmail,
+        newName
+      }),
+      () => sending
+    );
+    guard?.reset();
     try {
       templates = (await listEmailTemplates(scope)).items.filter((t) => t.is_active);
     } catch {
       templates = [];
     }
+    // Geç gelen taslak listesi kullanıcının yazdıklarını temiz kabul ettirmez.
+    guard?.captureInitial();
   });
 
   function applyTemplate() {
@@ -166,6 +184,8 @@
         body,
         recipientEmails: readyRows.map((r) => r.email.trim().toLowerCase())
       });
+      // Gönderim tamamlandı; kapanış uyarı çıkarmaz.
+      guard?.markClean();
     } catch (cause) {
       error = cause instanceof APIRequestError ? cause.message : 'Gönderim başarısız.';
     } finally {
@@ -174,7 +194,12 @@
   }
 </script>
 
-<div class="composer">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div
+  class="composer"
+  oninput={() => guard?.noteUserInput()}
+  onchange={() => guard?.noteUserInput()}
+>
   {#if result}
     <div class="done">
       <p class="notice ok">
@@ -292,7 +317,9 @@
     {#if error}<p class="notice error">{error}</p>{/if}
 
     <div class="foot">
-      {#if onDone}<Button variant="outline" onclick={() => onDone?.()}>Vazgeç</Button>{/if}
+      {#if onDone}<Button variant="outline" disabled={sending} onclick={() => onDone?.()}
+          >Vazgeç</Button
+        >{/if}
       <Button onclick={send} disabled={sending || readyRows.length === 0}>
         {sending ? 'Gönderiliyor…' : `${readyRows.length} kişiye gönder`}
       </Button>

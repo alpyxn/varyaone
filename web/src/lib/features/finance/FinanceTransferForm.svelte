@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from '$lib/errors';
   import { goto } from '$app/navigation';
   import { ArrowLeft, ArrowRightLeft } from '@lucide/svelte';
   import { toast } from 'svelte-sonner';
@@ -60,7 +61,7 @@
         session = sessionResult;
         accounts = (accountsResult.items ?? []).filter((a) => a.is_active);
       } catch (cause) {
-        error = cause instanceof Error ? cause.message : 'Transfer formu yüklenemedi.';
+        error = errorMessage(cause, 'Transfer formu yüklenemedi.');
       } finally {
         loading = false;
       }
@@ -133,7 +134,7 @@
       } else if (cause instanceof APIRequestError && cause.code === 'NEGATIVE_BALANCE_BLOCKED') {
         error = 'Kaynak hesap bakiyesi bu transfer için yetersiz.';
       } else {
-        error = cause instanceof Error ? cause.message : 'Transfer kaydedilemedi.';
+        error = errorMessage(cause, 'Transfer kaydedilemedi.');
       }
     } finally {
       saving = false;
@@ -210,6 +211,7 @@
     margin: 0 auto;
     padding: 24px;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
   }
   .page-shell > :global(button) {
@@ -235,6 +237,7 @@
   }
   label {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 6px;
     font-size: 0.85rem;
     font-weight: 650;
@@ -265,8 +268,18 @@
     color: var(--danger);
   }
   @media (max-width: 620px) {
+    /* `1fr` alone still floors at min-content; minmax(0, …) lets a long
+       label or value shrink instead of widening the card. */
     .form-card {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 640px) {
+    .page-shell {
+      padding: 16px 0;
+    }
+    .form-card {
+      padding: 14px;
     }
   }
 </style>

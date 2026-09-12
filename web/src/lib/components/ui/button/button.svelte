@@ -16,6 +16,7 @@
 </script>
 
 <button
+  data-slot="button"
   class={cn(
     'inline-flex shrink-0 items-center justify-center gap-1.5 rounded-[var(--radius-control)] border text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)] disabled:pointer-events-none disabled:opacity-50',
     variant === 'default' &&

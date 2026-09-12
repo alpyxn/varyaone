@@ -3,6 +3,7 @@
   import { toast } from 'svelte-sonner';
   import { Check, Pencil, Pin, PinOff } from '@lucide/svelte';
   import { api, type DashboardShortcuts, type RecentActivityEntry, type Session } from '$lib/api';
+  import { session as sessionStore } from '$lib/session.svelte';
   import { StateBlock } from '$lib/components/varya/status';
   import Logo from '$lib/components/varya/Logo.svelte';
   import {
@@ -70,7 +71,7 @@
     error = '';
     try {
       const [sessionResult, shortcuts, activity] = await Promise.all([
-        api<Session>('/session'),
+        sessionStore.load(),
         api<DashboardShortcuts>('/dashboard/shortcuts').catch(() => null),
         api<{ entries: RecentActivityEntry[] }>('/dashboard/recent-activity?limit=15').catch(
           () => null

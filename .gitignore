@@ -10,6 +10,9 @@ CLAUDE.md
 versionchanges.md
 bin/
 deploy/.lock-*
+# Geri dönüş kayıtları: image digest'leri ve .env kopyası (anahtar içerir).
+deploy/releases/
+deploy/logs/
 deploy/.deploy-self.*
 build/
 /dist/
@@ -35,10 +38,9 @@ internal/platform/spa/dist/favicon.svg
 internal/platform/spa/dist/version.json
 web/playwright-report/
 web/test-results/
+# The signed-in browser state the e2e `setup` project writes.
+web/e2e/.auth/
 
 
-# deploy.sh tarafindan uretilen nginx yapilandirmasi (domainli kurulum)
-deploy/nginx/conf.d/*.conf
-
-# Ayni nginx uzerinden yayinlanan statik icerik (bkz. compose.domain.yaml)
-deploy/nginx/site/
+# deploy.sh tarafindan uretilen host nginx server blogu (domainli kurulum)
+deploy/nginx/host/*.conf

@@ -111,11 +111,6 @@
 <header class="page-header">
   <div>
     <h1>Asgari ücret</h1>
-    <p>
-      Sistemin kullandığı güncel asgari ücret. Personel ücret formunda "asgari ücretli" işaretlenen
-      çalışanlar bu brüt tutarı kullanır; yeni tanım yaptığınızda önceki tanım geçmişe alınır ve bu
-      çalışanların ücreti otomatik güncellenir.
-    </p>
   </div>
   <div class="page-actions">
     <a class="button secondary" href="/ayarlar/tanimlar">Tüm tanımlar</a>

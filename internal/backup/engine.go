@@ -36,6 +36,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -103,6 +104,16 @@ type Manifest struct {
 	// the snapshot was taken. A non-empty list means the backup is intentionally
 	// incomplete for those keys (they were being deleted concurrently).
 	SkippedObjects []string `json:"skipped_objects,omitempty"`
+
+	// StorageMode states what the producer captured. Empty in archives written
+	// before the field existed; see Manifest.StorageModeOrInferred, which is
+	// what every reader should use. It is additive, so older readers ignore it
+	// and older archives stay readable.
+	StorageMode StorageMode `json:"storage_mode,omitempty"`
+	// StorageProvider records which provider the installation was using. A
+	// restore compares it so an archive taken from an object-store deployment
+	// is not silently presented as a full backup of a local-storage one.
+	StorageProvider string `json:"storage_provider,omitempty"`
 }
 
 // Options configures a new Engine.
@@ -122,17 +133,30 @@ type Options struct {
 	// PostgresBinDir optionally points at bundled PostgreSQL client tools. Empty
 	// retains PATH discovery for container/server deployments.
 	PostgresBinDir string
+	// StorageProvider is the configured provider name ("local", "s3", …). The
+	// engine backs up objects only for the local provider; recording the name
+	// is what lets an archive say it is database-only rather than appear to be
+	// a complete backup that happens to contain no files.
+	StorageProvider string
+	// AppDatabaseURL is the non-superuser connection the application serves
+	// traffic with. A restore uses it to prove, before committing, that the
+	// restored database is actually reachable by the role that will have to
+	// read it — a restore that only the owner can open is a restore that fails
+	// the moment traffic returns.
+	AppDatabaseURL string
 }
 
 // Engine creates and restores `.varya` archives.
 type Engine struct {
-	databaseURL    string
-	storageRoot    string
-	release        string
-	keyFingerprint string
-	pgDump         string
-	pgRestore      string
-	now            func() time.Time
+	databaseURL     string
+	appDatabaseURL  string
+	storageRoot     string
+	storageProvider string
+	release         string
+	keyFingerprint  string
+	pgDump          string
+	pgRestore       string
+	now             func() time.Time
 }
 
 // ErrToolMissing is returned when the PostgreSQL client binaries are absent.
@@ -146,11 +170,19 @@ var ErrArchiveNewer = errors.New("yedek bu sürümden daha yeni bir şema içeri
 // different master key and Force was not set.
 var ErrKeyMismatch = errors.New("yedek farklı bir ana anahtar ile alınmış")
 
+// ErrSystemInconsistent marks every Restore failure that happened AFTER the
+// database transaction committed. At that point the installation no longer
+// matches either the state it started in or, necessarily, the archive: the
+// database is new, but role privileges or the storage tree may not be. Callers
+// must keep such an installation in maintenance — no traffic, no workers — until
+// an operator has resolved it. Errors that do NOT wrap this one are proof the
+// live system was never touched.
+var ErrSystemInconsistent = errors.New("sistem tutarsız durumda: veritabanı değişti, geçiş tamamlanamadı")
+
 // ErrStoragePartial is returned by Restore when the database was restored
 // successfully but swapping the storage tree into place failed. The database is
-// on the new content; the storage tree may be stale. Callers must treat this as
-// a system-inconsistent state requiring operator attention.
-var ErrStoragePartial = errors.New("veritabanı geri yüklendi ancak depolama dosyaları yerine konulamadı")
+// on the new content; the storage tree may be stale.
+var ErrStoragePartial = fmt.Errorf("%w: veritabanı geri yüklendi ancak depolama dosyaları yerine konulamadı", ErrSystemInconsistent)
 
 // NewEngine resolves the client binaries and returns a ready engine.
 func NewEngine(opts Options) (*Engine, error) {
@@ -166,12 +198,14 @@ func NewEngine(opts Options) (*Engine, error) {
 		return nil, ErrToolMissing
 	}
 	engine := &Engine{
-		databaseURL: opts.DatabaseURL,
-		storageRoot: strings.TrimSpace(opts.StorageRoot),
-		release:     opts.Release,
-		pgDump:      pgDump,
-		pgRestore:   pgRestore,
-		now:         time.Now,
+		databaseURL:     opts.DatabaseURL,
+		appDatabaseURL:  strings.TrimSpace(opts.AppDatabaseURL),
+		storageRoot:     strings.TrimSpace(opts.StorageRoot),
+		storageProvider: strings.TrimSpace(opts.StorageProvider),
+		release:         opts.Release,
+		pgDump:          pgDump,
+		pgRestore:       pgRestore,
+		now:             time.Now,
 	}
 	if len(opts.MasterKey) > 0 {
 		sum := sha256.Sum256(opts.MasterKey)
@@ -198,8 +232,46 @@ func postgresTool(binDir, name string) (string, error) {
 // Create streams a complete `.varya` archive to w and returns the manifest it
 // wrote as the first entry.
 func (e *Engine) Create(ctx context.Context, w io.Writer) (Manifest, error) {
-	dumpStartedAt := e.now().UTC()
+	// Decide, and check, what this backup is going to contain — before pausing
+	// any writers. An installation whose storage volume failed to mount must
+	// hear about it here, not receive a clean-looking archive that silently
+	// contains none of its files.
+	storageMode, err := e.storagePreflight()
+	if err != nil {
+		return Manifest{}, err
+	}
 
+	// Pin one instant. The database snapshot, the file tree and the metadata
+	// all come from inside it, so the archive describes a state the
+	// installation actually had rather than a blend of two.
+	snapshot, err := e.beginSourceSnapshot(ctx)
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer snapshot.Close(ctx)
+	pinnedAt := e.now().UTC()
+
+	// Writers are paused from here. Everything between this point and
+	// releaseBarrier is the measured pause, so it contains only the hard-link
+	// walk — no dumping, no hashing, no compression.
+	e.cleanupInternalDirs()
+	snapshotDir, objects, skipped, err := e.snapshotStorage(ctx)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if snapshotDir != "" {
+		defer func() { _ = os.RemoveAll(snapshotDir) }()
+	}
+	migrationVersion, pgServerNum, err := snapshot.meta(ctx)
+	if err != nil {
+		return Manifest{}, err
+	}
+	snapshot.releaseBarrier(ctx)
+	storageCapturedAt := e.now().UTC()
+
+	// pg_dump now joins the snapshot taken above. Without --snapshot it would
+	// start its own transaction here and capture the database as of now, which
+	// is after the file tree was pinned and after writers resumed.
 	dumpFile, err := os.CreateTemp("", "varya-dump-*.pgdump")
 	if err != nil {
 		return Manifest{}, fmt.Errorf("create dump temp file: %w", err)
@@ -211,7 +283,9 @@ func (e *Engine) Create(ctx context.Context, w io.Writer) (Manifest, error) {
 	}()
 
 	dumpDigest := sha256.New()
-	cmd := exec.CommandContext(ctx, e.pgDump, "--format=custom", "--no-owner", "--no-privileges", e.databaseURL)
+	cmd := exec.CommandContext(ctx, e.pgDump,
+		"--format=custom", "--no-owner", "--no-privileges",
+		"--snapshot="+snapshot.snapshotID, e.databaseURL)
 	var stderr bytes.Buffer
 	cmd.Stdout = io.MultiWriter(dumpFile, dumpDigest)
 	cmd.Stderr = &stderr
@@ -226,28 +300,17 @@ func (e *Engine) Create(ctx context.Context, w io.Writer) (Manifest, error) {
 		return Manifest{}, err
 	}
 
-	e.cleanupInternalDirs()
-
-	// A hard-link snapshot pins every object's inode so concurrent writers in the
-	// storage provider (which always writes to a temp name then renames) cannot
-	// change what we archive after we have hashed it.
-	snapshot, objects, skipped, err := e.snapshotStorage(ctx)
-	if err != nil {
-		return Manifest{}, err
-	}
-	if snapshot != "" {
-		defer func() { _ = os.RemoveAll(snapshot) }()
-	}
-	storageCapturedAt := e.now().UTC()
-
-	migrationVersion, pgServerNum, err := e.readSourceMeta(ctx)
-	if err != nil {
-		return Manifest{}, err
+	if len(skipped) > 0 {
+		// Files vanished or were unreadable during the walk. The archive is
+		// still useful and must not claim to be a full recovery point.
+		storageMode = StorageDegraded
 	}
 
 	manifest := Manifest{
 		FormatVersion:        FormatVersion,
-		CreatedAt:            e.now().UTC(),
+		CreatedAt:            pinnedAt,
+		StorageMode:          storageMode,
+		StorageProvider:      e.storageProvider,
 		Release:              e.release,
 		DatabaseName:         databaseName(e.databaseURL),
 		MigrationVersion:     migrationVersion,
@@ -256,7 +319,7 @@ func (e *Engine) Create(ctx context.Context, w io.Writer) (Manifest, error) {
 		DatabaseDumpSize:     dumpSize,
 		DatabaseDumpSHA256:   hex.EncodeToString(dumpDigest.Sum(nil)),
 		Objects:              objects,
-		DumpStartedAt:        dumpStartedAt,
+		DumpStartedAt:        pinnedAt,
 		StorageCapturedAt:    storageCapturedAt,
 		SkippedObjects:       skipped,
 	}
@@ -292,7 +355,7 @@ func (e *Engine) Create(ctx context.Context, w io.Writer) (Manifest, error) {
 		if err = ctx.Err(); err != nil {
 			return Manifest{}, err
 		}
-		path := filepath.Join(snapshot, filepath.FromSlash(object.Key))
+		path := filepath.Join(snapshotDir, filepath.FromSlash(object.Key))
 		file, openErr := os.Open(path)
 		if openErr != nil {
 			return Manifest{}, fmt.Errorf("open storage snapshot %q: %w", object.Key, openErr)
@@ -321,10 +384,52 @@ func (e *Engine) Create(ctx context.Context, w io.Writer) (Manifest, error) {
 	return manifest, nil
 }
 
+// RestoreJournal receives the engine's phase transitions so a caller can make
+// them durable before the engine acts on them. The method names describe what
+// the engine is about to do, not a generic "phase", because the only reason
+// this interface exists is the distinction between the two sides of the switch.
+//
+// Switching is called BEFORE the first irreversible step and must have reached
+// stable storage by the time it returns; everything after it may have changed
+// the live installation. A nil journal disables recording, which is correct for
+// tests and for read-only callers but never for a real restore.
+type RestoreJournal interface {
+	// Prepared reports that the archive is fully staged and verified and the
+	// live installation has not been touched.
+	Prepared(fields map[string]any) error
+	// Switching is the point of no return: the intent to commit the database.
+	Switching(fields map[string]any) error
+	// Switched reports that the database transaction committed.
+	Switched(fields map[string]any) error
+	// Committed reports that every part of the switch finished.
+	Committed(fields map[string]any) error
+}
+
 // RestoreOptions tunes a Restore call.
 type RestoreOptions struct {
 	// Force restores even when the archive schema is newer than this binary.
+	//
+	// Force covers exactly two checks: the schema-version gate and the master
+	// key fingerprint. It has never covered — and must never cover — checksum
+	// verification, path validation, resource budgets, the lease or disk
+	// safety. Those are not preferences an operator can overrule; they are the
+	// reasons the restore is safe to attempt at all.
 	Force bool
+	// Mode selects the staged candidate-database restore (default) or the
+	// weaker in-place one. An installation that cannot support the former is
+	// told so rather than silently given the latter.
+	Mode RestoreMode
+	// SkipMigrations leaves the candidate at the archive's schema version
+	// instead of bringing it forward to this binary's. It exists for restoring
+	// into an older release deliberately; the default brings the schema up,
+	// because otherwise the application starts against a schema it has already
+	// moved past.
+	SkipMigrations bool
+	// Journal, when set, records the operation's progress durably. Restore
+	// fails rather than proceeding if a journal write fails: an irreversible
+	// step whose intent could not be recorded is a step nobody will be able to
+	// reconstruct afterwards, which is worse than not taking it.
+	Journal RestoreJournal
 }
 
 // Restore rebuilds the database and the local storage tree from r. It is a
@@ -336,16 +441,9 @@ type RestoreOptions struct {
 func (e *Engine) Restore(ctx context.Context, r io.Reader, opts RestoreOptions) (Manifest, error) {
 	archive := tar.NewReader(r)
 
-	header, err := archive.Next()
-	if err != nil || header.Name != manifestEntry {
-		return Manifest{}, fmt.Errorf("geçersiz .varya arşivi: ilk giriş %q", manifestName(header))
-	}
-	var manifest Manifest
-	if err = json.NewDecoder(archive).Decode(&manifest); err != nil {
-		return Manifest{}, fmt.Errorf("manifest okunamadı: %w", err)
-	}
-	if manifest.FormatVersion != FormatVersion {
-		return Manifest{}, fmt.Errorf("desteklenmeyen yedek format sürümü %d", manifest.FormatVersion)
+	manifest, err := readManifest(archive)
+	if err != nil {
+		return Manifest{}, err
 	}
 	if !opts.Force {
 		latest, latestErr := migrations.Latest()
@@ -360,10 +458,21 @@ func (e *Engine) Restore(ctx context.Context, r io.Reader, opts RestoreOptions) 
 		}
 	}
 
-	header, err = archive.Next()
-	if err != nil || header.Name != dumpEntry {
-		return Manifest{}, fmt.Errorf("geçersiz .varya arşivi: %q bekleniyordu", dumpEntry)
+	// An archive that carries storage objects cannot be restored into an
+	// installation that has no storage root: the database would come back
+	// referencing files that were never written. Fail here, before anything
+	// live is touched, rather than silently skipping the storage half.
+	if e.storageRoot == "" && len(manifest.Objects) > 0 {
+		return Manifest{}, fmt.Errorf("yedek %d depolama objesi içeriyor ancak bu kurulumda depolama kökü tanımlı değil", len(manifest.Objects))
 	}
+
+	// Check there is room before writing anything. The alternative is finding
+	// out half-way through staging, with a partly-extracted tree on a full
+	// disk and fewer options than there were a minute earlier.
+	if err = e.PreflightCapacity(manifest); err != nil {
+		return Manifest{}, err
+	}
+
 	dumpFile, err := os.CreateTemp("", "varya-restore-*.pgdump")
 	if err != nil {
 		return Manifest{}, err
@@ -373,16 +482,8 @@ func (e *Engine) Restore(ctx context.Context, r io.Reader, opts RestoreOptions) 
 		_ = dumpFile.Close()
 		_ = os.Remove(dumpPath)
 	}()
-	digest := sha256.New()
-	dumpN, err := io.Copy(io.MultiWriter(dumpFile, digest), archive)
-	if err != nil {
-		return Manifest{}, fmt.Errorf("veritabanı dökümü çıkarılamadı: %w", err)
-	}
-	if dumpN != manifest.DatabaseDumpSize {
-		return Manifest{}, fmt.Errorf("veritabanı dökümü boyutu uyuşmuyor (%d != %d)", dumpN, manifest.DatabaseDumpSize)
-	}
-	if got := hex.EncodeToString(digest.Sum(nil)); got != manifest.DatabaseDumpSHA256 {
-		return Manifest{}, fmt.Errorf("veritabanı dökümü bozuk: sağlama uyuşmuyor")
+	if err = verifyDumpEntry(archive, manifest, dumpFile); err != nil {
+		return Manifest{}, err
 	}
 	if err = dumpFile.Close(); err != nil {
 		return Manifest{}, err
@@ -404,95 +505,403 @@ func (e *Engine) Restore(ctx context.Context, r io.Reader, opts RestoreOptions) 
 		}()
 	}
 
-	e.terminateOtherConnections(ctx)
-	if err = e.runRestore(ctx, dumpPath); err != nil {
+	// Build the replacement database before touching the live one. Everything
+	// in restoreDatabase happens on a database nothing is using, so any failure
+	// inside it leaves the installation exactly as it was.
+	switch opts.Mode {
+	case "", ModeCandidate:
+		return e.restoreViaCandidate(ctx, manifest, dumpPath, stage, opts)
+	case ModeInPlace:
+		return e.restoreInPlace(ctx, manifest, dumpPath, &stage, opts)
+	default:
+		return Manifest{}, fmt.Errorf("bilinmeyen geri yükleme modu %q", opts.Mode)
+	}
+}
+
+// restoreViaCandidate loads the archive into a new database, brings its schema
+// forward, proves the application role can open it, and only then swaps it in.
+func (e *Engine) restoreViaCandidate(ctx context.Context, manifest Manifest, dumpPath, stage string, opts RestoreOptions) (Manifest, error) {
+	session, err := e.openMaintenance(ctx)
+	if err != nil {
 		return Manifest{}, err
 	}
-	if err = e.restoreAppRole(ctx); err != nil {
-		return Manifest{}, fmt.Errorf("restore varyaone_app role: %w", err)
+	defer session.Close(ctx)
+
+	allowed, err := session.canCreateDatabase(ctx)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if !allowed {
+		return Manifest{}, fmt.Errorf("%w: geri yükleme için CREATEDB yetkisi gerekiyor "+
+			"(bilinçli olarak yerinde geri yükleme yapılacaksa --in-place)", ErrCandidateUnsupported)
+	}
+
+	now := e.now().UTC()
+	candidate := candidateName(session.liveName, now)
+	retired := retiredName(session.liveName, now)
+
+	if err := session.create(ctx, candidate); err != nil {
+		return Manifest{}, err
+	}
+	committed := false
+	defer func() {
+		// Until the swap succeeds the candidate is scratch: it holds a second
+		// copy of data the archive still has. After the swap it IS the
+		// installation and must never be dropped here.
+		if !committed {
+			_ = session.drop(context.WithoutCancel(ctx), candidate)
+		}
+	}()
+
+	candidateDSN, err := withDatabase(e.databaseURL, candidate)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if err := e.restoreInto(ctx, candidateDSN, dumpPath); err != nil {
+		return Manifest{}, err
+	}
+	if err := e.prepareCandidate(ctx, candidateDSN, candidate, opts); err != nil {
+		return Manifest{}, err
+	}
+
+	if err := journalPrepared(opts.Journal, map[string]any{
+		"created_at": manifest.CreatedAt, "objects": len(manifest.Objects),
+		"migration_version":  manifest.MigrationVersion,
+		"candidate_database": candidate, "staged_storage": stage != "",
+	}); err != nil {
+		return Manifest{}, err
+	}
+
+	// The point of no return. The intent names both databases, so a crash
+	// between the two renames leaves a record that says exactly which database
+	// holds the old installation and which holds the new one.
+	if err := journalSwitching(opts.Journal, map[string]any{
+		"live": session.liveName, "candidate": candidate, "retired": retired,
+	}); err != nil {
+		return Manifest{}, err
+	}
+	if err := session.swap(ctx, candidate, retired); err != nil {
+		// swap puts the old database back when it can; if it could not, its
+		// error says so and the caller must treat the system as inconsistent.
+		if strings.Contains(err.Error(), retired) {
+			return manifest, fmt.Errorf("%w: %v", ErrSystemInconsistent, err)
+		}
+		return Manifest{}, err
+	}
+	committed = true
+
+	if err := journalSwitched(opts.Journal, map[string]any{"retired_database": retired}); err != nil {
+		return manifest, fmt.Errorf("%w: veritabanı değişti ancak kayıt yazılamadı: %v", ErrSystemInconsistent, err)
 	}
 
 	if stage != "" {
-		if err = e.swapStorage(stage); err != nil {
+		if err := e.swapStorage(stage); err != nil {
 			return manifest, fmt.Errorf("%w: %v", ErrStoragePartial, err)
 		}
-		stage = ""
+	}
+
+	// Health, after the switch and before anybody is told it worked: open the
+	// live DSN as the application role and read something real.
+	if err := e.verifyLive(ctx); err != nil {
+		return manifest, fmt.Errorf("%w: geri yükleme sonrası uygulama kontrolü başarısız: %v", ErrSystemInconsistent, err)
+	}
+	if err := journalCommitted(opts.Journal, map[string]any{
+		"objects": len(manifest.Objects), "retired_database": retired,
+	}); err != nil {
+		return manifest, fmt.Errorf("%w: geri yükleme bitti ancak kayıt yazılamadı: %v", ErrSystemInconsistent, err)
 	}
 	return manifest, nil
+}
+
+// prepareCandidate brings a freshly loaded candidate up to the state the
+// application expects: current schema, the application role with its grants,
+// and a proven login.
+//
+// Doing all three here rather than after the switch is the difference between
+// finding a problem while the installation is still untouched and finding it
+// while it is already live on the new database.
+func (e *Engine) prepareCandidate(ctx context.Context, candidateDSN, candidate string, opts RestoreOptions) error {
+	conn, err := pgx.Connect(ctx, candidateDSN)
+	if err != nil {
+		return fmt.Errorf("aday veritabanına bağlanılamadı: %w", err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+
+	if !opts.SkipMigrations {
+		// pg_dump captured the schema as it was. If this binary is newer, the
+		// forward migrations run here, on the candidate — not on a live system,
+		// and not left for whatever happens to restart first afterwards.
+		if err := migrations.New(conn).Up(ctx); err != nil {
+			return fmt.Errorf("aday veritabanında migration uygulanamadı: %w", err)
+		}
+	}
+	// pg_dump runs with --no-privileges, so grants — and on a fresh cluster the
+	// role itself — do not come back with the dump. The row-level security
+	// policies do, being schema objects, so without this the restored database
+	// rejects every application connection.
+	if _, err := conn.Exec(ctx, migrations.AppRoleSQL()); err != nil {
+		return fmt.Errorf("aday veritabanında varyaone_app rolü kurulamadı: %w", err)
+	}
+	if err := e.verifyAppAccess(ctx, candidate); err != nil {
+		return err
+	}
+	return nil
+}
+
+// verifyAppAccess opens the candidate as the application role and reads a real
+// table. A restore that only the owner can open looks perfect right up to the
+// moment traffic comes back.
+func (e *Engine) verifyAppAccess(ctx context.Context, database string) error {
+	if e.appDatabaseURL == "" {
+		// No separate application role configured: the owner connection is the
+		// serving connection, and it has already been used successfully.
+		return nil
+	}
+	dsn, err := withDatabase(e.appDatabaseURL, database)
+	if err != nil {
+		return err
+	}
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("uygulama rolü aday veritabanına bağlanamadı: %w", err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	var companies int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM companies`).Scan(&companies); err != nil {
+		return fmt.Errorf("uygulama rolü geri yüklenen veriyi okuyamadı: %w", err)
+	}
+	return nil
+}
+
+// verifyLive repeats the access check against the switched-in database.
+func (e *Engine) verifyLive(ctx context.Context) error {
+	return e.verifyAppAccess(ctx, databaseName(e.databaseURL))
+}
+
+// restoreInPlace is the legacy path: load straight into the live database.
+//
+// It is kept because an installation without CREATEDB has no alternative, and
+// it is never selected automatically. Its limits are real and unfixable here:
+// `--clean` removes only what the archive contains, so objects belonging to a
+// newer schema survive the restore, and there is no point after pg_restore
+// begins at which the previous database still exists.
+func (e *Engine) restoreInPlace(ctx context.Context, manifest Manifest, dumpPath string, stage *string, opts RestoreOptions) (Manifest, error) {
+	if err := journalPrepared(opts.Journal, map[string]any{
+		"created_at": manifest.CreatedAt, "objects": len(manifest.Objects),
+		"migration_version": manifest.MigrationVersion, "mode": string(ModeInPlace),
+		"staged_storage": *stage != "",
+	}); err != nil {
+		return Manifest{}, err
+	}
+	if err := journalSwitching(opts.Journal, map[string]any{
+		"database": databaseName(e.databaseURL), "mode": string(ModeInPlace),
+	}); err != nil {
+		return Manifest{}, err
+	}
+	e.terminateOtherConnections(ctx)
+	if err := e.runRestore(ctx, dumpPath); err != nil {
+		// --single-transaction --exit-on-error, so the database rolled back and
+		// the storage tree has not been touched: the installation is unchanged.
+		return Manifest{}, err
+	}
+	if err := journalSwitched(opts.Journal, nil); err != nil {
+		return manifest, fmt.Errorf("%w: veritabanı yüklendi ancak kayıt yazılamadı: %v", ErrSystemInconsistent, err)
+	}
+	if err := e.restoreAppRole(ctx); err != nil {
+		return manifest, fmt.Errorf("%w: varyaone_app rolü geri yüklenemedi: %v", ErrSystemInconsistent, err)
+	}
+	if *stage != "" {
+		if err := e.swapStorage(*stage); err != nil {
+			return manifest, fmt.Errorf("%w: %v", ErrStoragePartial, err)
+		}
+		*stage = ""
+	}
+	if err := e.verifyLive(ctx); err != nil {
+		return manifest, fmt.Errorf("%w: geri yükleme sonrası uygulama kontrolü başarısız: %v", ErrSystemInconsistent, err)
+	}
+	if err := journalCommitted(opts.Journal, map[string]any{"objects": len(manifest.Objects)}); err != nil {
+		return manifest, fmt.Errorf("%w: geri yükleme bitti ancak kayıt yazılamadı: %v", ErrSystemInconsistent, err)
+	}
+	return manifest, nil
+}
+
+func journalPrepared(j RestoreJournal, fields map[string]any) error {
+	if j == nil {
+		return nil
+	}
+	return j.Prepared(fields)
+}
+
+func journalSwitching(j RestoreJournal, fields map[string]any) error {
+	if j == nil {
+		return nil
+	}
+	return j.Switching(fields)
+}
+
+func journalSwitched(j RestoreJournal, fields map[string]any) error {
+	if j == nil {
+		return nil
+	}
+	return j.Switched(fields)
+}
+
+func journalCommitted(j RestoreJournal, fields map[string]any) error {
+	if j == nil {
+		return nil
+	}
+	return j.Committed(fields)
 }
 
 // Verify reads the whole archive and checks every checksum in the manifest
 // (database dump plus each storage object) without touching the database or the
 // storage tree. It is used as a pre-flight gate before an update or a restore.
+//
+// Verify and Restore share one parser, so an archive Verify accepts is an
+// archive Restore will accept and vice versa. Note what this does and does not
+// prove: it proves the bytes are the bytes the manifest describes. It does not
+// prove the archive came from a trusted producer, nor that restoring it will
+// succeed.
 func (e *Engine) Verify(ctx context.Context, r io.Reader) (Manifest, error) {
 	archive := tar.NewReader(r)
 
+	manifest, err := readManifest(archive)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if err = verifyDumpEntry(archive, manifest, io.Discard); err != nil {
+		return Manifest{}, err
+	}
+	err = walkStorageEntries(ctx, archive, manifest, func(key string, expected ObjectEntry, body io.Reader) error {
+		return checkObject(key, expected, body, io.Discard)
+	})
+	if err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+// readManifest reads and validates the archive's first entry. Every caller goes
+// through here so a manifest that one entry point would reject cannot be
+// accepted by another.
+func readManifest(archive *tar.Reader) (Manifest, error) {
 	header, err := archive.Next()
 	if err != nil || header.Name != manifestEntry {
-		return Manifest{}, fmt.Errorf("geçersiz .varya arşivi: ilk giriş %q", manifestName(header))
+		return Manifest{}, invalidArchive("ilk giriş %q", manifestName(header))
+	}
+	if header.Typeflag != tar.TypeReg {
+		return Manifest{}, invalidArchive("manifest girdisi düzenli dosya değil")
+	}
+	if header.Size > maxManifestBytes {
+		return Manifest{}, invalidArchive("manifest çok büyük (%d bayt)", header.Size)
 	}
 	var manifest Manifest
-	if err = json.NewDecoder(archive).Decode(&manifest); err != nil {
+	// Unknown fields are tolerated on purpose: new metadata may be added to the
+	// manifest additively without making older archives unreadable.
+	if err = json.NewDecoder(io.LimitReader(archive, maxManifestBytes)).Decode(&manifest); err != nil {
 		return Manifest{}, fmt.Errorf("manifest okunamadı: %w", err)
 	}
-	if manifest.FormatVersion != FormatVersion {
-		return Manifest{}, fmt.Errorf("desteklenmeyen yedek format sürümü %d", manifest.FormatVersion)
+	if err = validateManifest(manifest); err != nil {
+		return Manifest{}, err
 	}
+	return manifest, nil
+}
 
-	header, err = archive.Next()
+// verifyDumpEntry reads the database.dump entry, checks its size and checksum
+// and, when sink is not io.Discard, writes the bytes out as it goes.
+func verifyDumpEntry(archive *tar.Reader, manifest Manifest, sink io.Writer) error {
+	header, err := archive.Next()
 	if err != nil || header.Name != dumpEntry {
-		return Manifest{}, fmt.Errorf("geçersiz .varya arşivi: %q bekleniyordu", dumpEntry)
+		return invalidArchive("%q bekleniyordu", dumpEntry)
 	}
-	dumpDigest := sha256.New()
-	dumpN, err := io.Copy(dumpDigest, archive)
+	if header.Typeflag != tar.TypeReg {
+		return invalidArchive("%q düzenli dosya değil", dumpEntry)
+	}
+	if header.Size != manifest.DatabaseDumpSize {
+		return invalidArchive("veritabanı dökümü boyutu uyuşmuyor (%d != %d)", header.Size, manifest.DatabaseDumpSize)
+	}
+	digest := sha256.New()
+	// LimitReader guards against a header that lies about its size in the other
+	// direction; the size comparison below catches a short entry.
+	n, err := io.Copy(io.MultiWriter(sink, digest), io.LimitReader(archive, manifest.DatabaseDumpSize+1))
 	if err != nil {
-		return Manifest{}, fmt.Errorf("veritabanı dökümü okunamadı: %w", err)
+		return fmt.Errorf("veritabanı dökümü okunamadı: %w", err)
 	}
-	if dumpN != manifest.DatabaseDumpSize {
-		return Manifest{}, fmt.Errorf("veritabanı dökümü boyutu uyuşmuyor (%d != %d)", dumpN, manifest.DatabaseDumpSize)
+	if n != manifest.DatabaseDumpSize {
+		return invalidArchive("veritabanı dökümü boyutu uyuşmuyor (%d != %d)", n, manifest.DatabaseDumpSize)
 	}
-	if got := hex.EncodeToString(dumpDigest.Sum(nil)); got != manifest.DatabaseDumpSHA256 {
-		return Manifest{}, fmt.Errorf("veritabanı dökümü bozuk: sağlama uyuşmuyor")
+	if hex.EncodeToString(digest.Sum(nil)) != manifest.DatabaseDumpSHA256 {
+		return invalidArchive("veritabanı dökümü bozuk: sağlama uyuşmuyor")
 	}
+	return nil
+}
 
+// walkStorageEntries drives the storage section of an archive through a single
+// parser shared by Verify and Restore. It enforces the archive budget rules
+// (no unexpected keys, no duplicates, no size drift, nothing missing) and hands
+// each accepted entry's body to sink.
+func walkStorageEntries(ctx context.Context, archive *tar.Reader, manifest Manifest, sink func(key string, expected ObjectEntry, body io.Reader) error) error {
 	want := make(map[string]ObjectEntry, len(manifest.Objects))
 	for _, object := range manifest.Objects {
 		want[object.Key] = object
 	}
 	seen := make(map[string]bool, len(want))
+
 	for {
-		if err = ctx.Err(); err != nil {
-			return Manifest{}, err
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		header, err = archive.Next()
+		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return Manifest{}, err
+			return err
 		}
-		if !strings.HasPrefix(header.Name, storagePrefix) {
+		key, ok, err := storageEntryKey(header)
+		if err != nil {
+			return err
+		}
+		if !ok {
 			continue
 		}
-		key := strings.TrimPrefix(header.Name, storagePrefix)
 		expected, known := want[key]
 		if !known {
-			continue
+			return invalidArchive("arşiv manifestte bulunmayan %q objesini içeriyor", key)
 		}
-		objectDigest := sha256.New()
-		n, copyErr := io.Copy(objectDigest, archive)
-		if copyErr != nil {
-			return Manifest{}, fmt.Errorf("depolama objesi %q okunamadı: %w", key, copyErr)
+		if seen[key] {
+			return invalidArchive("arşiv %q objesini birden fazla kez içeriyor", key)
 		}
-		if n != expected.Size || hex.EncodeToString(objectDigest.Sum(nil)) != expected.SHA256 {
-			return Manifest{}, fmt.Errorf("depolama objesi %q bozuk: sağlama uyuşmuyor", key)
+		if header.Size != expected.Size {
+			return invalidArchive("depolama objesi %q boyutu uyuşmuyor (%d != %d)", key, header.Size, expected.Size)
+		}
+		if err := sink(key, expected, io.LimitReader(archive, expected.Size+1)); err != nil {
+			return err
 		}
 		seen[key] = true
 	}
+
 	if missing := missingKeys(want, seen); len(missing) > 0 {
-		return Manifest{}, fmt.Errorf("arşivde %d depolama objesi eksik: %s", len(missing), strings.Join(clip(missing, 5), ", "))
+		return invalidArchive("arşivde %d depolama objesi eksik: %s", len(missing), strings.Join(clip(missing, 5), ", "))
 	}
-	return manifest, nil
+	return nil
+}
+
+// checkObject streams one storage object through a SHA-256 digest into sink and
+// fails unless both the length and the checksum match the manifest.
+func checkObject(key string, expected ObjectEntry, body io.Reader, sink io.Writer) error {
+	digest := sha256.New()
+	n, err := io.Copy(io.MultiWriter(sink, digest), body)
+	if err != nil {
+		return fmt.Errorf("depolama objesi %q okunamadı: %w", key, err)
+	}
+	if n != expected.Size {
+		return invalidArchive("depolama objesi %q boyutu uyuşmuyor (%d != %d)", key, n, expected.Size)
+	}
+	if hex.EncodeToString(digest.Sum(nil)) != expected.SHA256 {
+		return invalidArchive("depolama objesi %q bozuk: sağlama uyuşmuyor", key)
+	}
+	return nil
 }
 
 func (e *Engine) runRestore(ctx context.Context, dumpPath string) error {
@@ -508,10 +917,18 @@ func (e *Engine) runRestore(ctx context.Context, dumpPath string) error {
 	return nil
 }
 
-// cleanupInternalDirs removes any leftover engine working directories (snapshot,
-// restore-staging, retired) from a previous crashed run. Both entry points that
-// call it (Create, Restore) are serialized by their callers, so this cannot race
-// a live operation.
+// cleanupInternalDirs removes leftover engine scratch directories from a
+// previous crashed run.
+//
+// It deliberately removes only snapshot and staging directories. Both hold
+// nothing but a second copy of data that still exists elsewhere: a snapshot is
+// hard-links to live objects, a stage is content that can be re-extracted from
+// the archive. A `.varya-retired-*` directory is the opposite — after a crash
+// part-way through swapStorage it can be the ONLY copy of the installation's
+// files, so it is never deleted here. Retired directories are reported instead
+// and must be resolved by an operator (or by a future recovery pass that can
+// read the operation journal); deleting one on the strength of its name alone
+// is how a crash turns into data loss.
 func (e *Engine) cleanupInternalDirs() {
 	if e.storageRoot == "" {
 		return
@@ -522,18 +939,45 @@ func (e *Engine) cleanupInternalDirs() {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasPrefix(name, snapPrefix) ||
-			strings.HasPrefix(name, stagePrefix) ||
-			strings.HasPrefix(name, retiredPrefix) {
+		if strings.HasPrefix(name, snapPrefix) || strings.HasPrefix(name, stagePrefix) {
 			_ = os.RemoveAll(filepath.Join(e.storageRoot, name))
 		}
 	}
+}
+
+// RetiredDirs lists `.varya-retired-*` directories left in the storage root.
+// A non-empty result means a previous restore was interrupted between moving
+// the old files aside and putting the new ones in place: the directories hold
+// recovery data and the installation needs an operator's attention.
+func (e *Engine) RetiredDirs() []string {
+	if e.storageRoot == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(e.storageRoot)
+	if err != nil {
+		return nil
+	}
+	var retired []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), retiredPrefix) {
+			retired = append(retired, filepath.Join(e.storageRoot, entry.Name()))
+		}
+	}
+	slices.Sort(retired)
+	return retired
 }
 
 // stageStorage extracts every storage/* entry the manifest expects into a
 // working directory INSIDE the storage root, verifying size and checksum for
 // each. It returns an error (and leaves nothing behind) unless every manifest
 // object was present and intact.
+//
+// Extraction is confined to the staging directory by an os.Root handle: every
+// path in the archive is resolved relative to that root by the kernel-backed
+// API, which refuses to traverse out of it and never follows a symlink. The key
+// validation in validateObjectKey already rejects escaping paths, so this is the
+// second of two independent barriers — a correct checksum on a hostile key must
+// not be able to put a byte anywhere but here.
 func (e *Engine) stageStorage(ctx context.Context, archive *tar.Reader, manifest Manifest) (string, error) {
 	if err := os.MkdirAll(e.storageRoot, 0o750); err != nil {
 		return "", err
@@ -549,59 +993,34 @@ func (e *Engine) stageStorage(ctx context.Context, archive *tar.Reader, manifest
 		}
 	}()
 
-	want := make(map[string]ObjectEntry, len(manifest.Objects))
-	for _, object := range manifest.Objects {
-		want[object.Key] = object
+	root, err := os.OpenRoot(stage)
+	if err != nil {
+		return "", err
 	}
-	seen := make(map[string]bool, len(want))
+	defer func() { _ = root.Close() }()
 
-	for {
-		if err := ctx.Err(); err != nil {
-			return "", err
+	err = walkStorageEntries(ctx, archive, manifest, func(key string, expected ObjectEntry, body io.Reader) error {
+		if parent := path.Dir(key); parent != "." {
+			if err := root.MkdirAll(filepath.FromSlash(parent), 0o750); err != nil {
+				return err
+			}
 		}
-		header, nextErr := archive.Next()
-		if errors.Is(nextErr, io.EOF) {
-			break
-		}
-		if nextErr != nil {
-			return "", nextErr
-		}
-		if !strings.HasPrefix(header.Name, storagePrefix) {
-			continue
-		}
-		key := strings.TrimPrefix(header.Name, storagePrefix)
-		expected, known := want[key]
-		if !known {
-			continue
-		}
-		destination := filepath.Join(stage, filepath.FromSlash(key))
-		if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
-			return "", err
-		}
-		file, openErr := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		// O_EXCL: the staging directory is freshly created and walkStorageEntries
+		// rejects duplicate keys, so an existing name here means something is
+		// wrong and must not be overwritten.
+		file, openErr := root.OpenFile(filepath.FromSlash(key), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if openErr != nil {
-			return "", openErr
+			return fmt.Errorf("depolama objesi %q oluşturulamadı: %w", key, openErr)
 		}
-		objectDigest := sha256.New()
-		n, copyErr := io.Copy(io.MultiWriter(file, objectDigest), archive)
+		checkErr := checkObject(key, expected, body, file)
 		closeErr := file.Close()
-		if copyErr != nil {
-			return "", fmt.Errorf("depolama objesi %q çıkarılamadı: %w", key, copyErr)
+		if checkErr != nil {
+			return checkErr
 		}
-		if closeErr != nil {
-			return "", closeErr
-		}
-		if n != expected.Size {
-			return "", fmt.Errorf("depolama objesi %q boyutu uyuşmuyor (%d != %d)", key, n, expected.Size)
-		}
-		if got := hex.EncodeToString(objectDigest.Sum(nil)); got != expected.SHA256 {
-			return "", fmt.Errorf("depolama objesi %q bozuk: sağlama uyuşmuyor", key)
-		}
-		seen[key] = true
-	}
-
-	if missing := missingKeys(want, seen); len(missing) > 0 {
-		return "", fmt.Errorf("arşivde %d depolama objesi eksik: %s", len(missing), strings.Join(clip(missing, 5), ", "))
+		return closeErr
+	})
+	if err != nil {
+		return "", err
 	}
 
 	ok = true
@@ -613,8 +1032,14 @@ func (e *Engine) stageStorage(ctx context.Context, archive *tar.Reader, manifest
 // directory, then the staged entries are renamed into place. The storage root
 // itself is never renamed (in production it is a bind mount, and renaming a
 // mount point fails with EBUSY). Each rename is atomic and the number of
-// top-level entries is tiny, so the inconsistency window is a few renames wide;
-// on failure the moved-aside entries are restored.
+// top-level entries is tiny, so the inconsistency window is a few renames wide.
+//
+// On failure it tries to put the live entries back. Whether or not that
+// succeeds, the retired directory is kept: it holds the installation's previous
+// files, and while the outcome of a rollback is in any doubt that copy is the
+// only thing standing between an interrupted restore and permanent data loss.
+// A caller that sees an error here must treat the installation as inconsistent
+// and leave it in maintenance.
 func (e *Engine) swapStorage(stage string) error {
 	root := e.storageRoot
 	if err := os.MkdirAll(root, 0o750); err != nil {
@@ -632,10 +1057,24 @@ func (e *Engine) swapStorage(stage string) error {
 	}
 
 	var moved []string // names relocated into retired/
-	restore := func() {
+	// rollback returns the names it could NOT put back. An empty result means
+	// the live tree is exactly as it was before the swap started.
+	rollback := func() []string {
+		var stuck []string
 		for _, name := range moved {
-			_ = os.Rename(filepath.Join(retired, name), filepath.Join(root, name))
+			if renameErr := os.Rename(filepath.Join(retired, name), filepath.Join(root, name)); renameErr != nil {
+				stuck = append(stuck, name)
+			}
 		}
+		return stuck
+	}
+	fail := func(cause error) error {
+		stuck := rollback()
+		if len(stuck) > 0 {
+			return fmt.Errorf("%w; geri alma da başarısız: %s hâlâ %s içinde",
+				cause, strings.Join(clip(stuck, 5), ", "), retired)
+		}
+		return fmt.Errorf("%w (önceki dosyalar korundu: %s)", cause, retired)
 	}
 
 	for _, entry := range liveEntries {
@@ -644,36 +1083,33 @@ func (e *Engine) swapStorage(stage string) error {
 			continue
 		}
 		if err := os.Rename(filepath.Join(root, name), filepath.Join(retired, name)); err != nil {
-			restore()
-			_ = os.RemoveAll(retired)
-			return err
+			return fail(err)
 		}
 		moved = append(moved, name)
 	}
 
 	stagedEntries, err := os.ReadDir(stage)
 	if err != nil {
-		restore()
-		_ = os.RemoveAll(retired)
-		return err
+		return fail(err)
 	}
+	var landed []string
 	for _, entry := range stagedEntries {
 		name := entry.Name()
 		if err := os.Rename(filepath.Join(stage, name), filepath.Join(root, name)); err != nil {
-			// Roll back: pull out whatever staged entries already landed, then
-			// put the live entries back.
-			for _, s := range stagedEntries {
-				if s.Name() == name {
-					break
-				}
-				_ = os.RemoveAll(filepath.Join(root, s.Name()))
+			// Pull out whatever staged entries already landed so the live
+			// entries have somewhere to go back to. The staged content is not
+			// recovery data — it can be re-extracted from the archive — so
+			// removing it here is safe in a way removing `retired` is not.
+			for _, name := range landed {
+				_ = os.RemoveAll(filepath.Join(root, name))
 			}
-			restore()
-			_ = os.RemoveAll(retired)
-			return err
+			return fail(err)
 		}
+		landed = append(landed, name)
 	}
 
+	// Past this point the new tree is live and complete. The retired copy is now
+	// superseded rather than load-bearing, so it may go.
 	_ = os.RemoveAll(retired)
 	_ = os.RemoveAll(stage)
 	return nil
@@ -727,11 +1163,23 @@ func (e *Engine) snapshotStorage(ctx context.Context) (snapshotDir string, objec
 		if entry.IsDir() {
 			return nil
 		}
+		// WalkDir does not follow symlinks, so entry.Type() is the lstat type.
+		// Only regular files may enter a backup: following a symlink would pull
+		// a file from outside the storage root into the archive under a storage
+		// key, and opening a FIFO or a device would block the backup outright.
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("depolama kökünde düzenli olmayan dosya: %q (%s)", pathName, entry.Type())
+		}
 		rel, relErr := filepath.Rel(e.storageRoot, pathName)
 		if relErr != nil {
 			return relErr
 		}
 		key := filepath.ToSlash(rel)
+		// The same gate the read side uses. A key the engine would refuse to
+		// restore must never be written into an archive in the first place.
+		if err := validateObjectKey(key); err != nil {
+			return err
+		}
 		destination := filepath.Join(snapshotDir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
 			return err
@@ -763,6 +1211,9 @@ func (e *Engine) snapshotStorage(ctx context.Context) (snapshotDir string, objec
 		if entry.IsDir() {
 			return nil
 		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("snapshot'ta düzenli olmayan dosya: %q (%s)", pathName, entry.Type())
+		}
 		rel, relErr := filepath.Rel(snapshotDir, pathName)
 		if relErr != nil {
 			return relErr
@@ -792,23 +1243,6 @@ func (e *Engine) snapshotStorage(ctx context.Context) (snapshotDir string, objec
 	slices.Sort(skipped)
 	done = true
 	return snapshotDir, objects, skipped, nil
-}
-
-func (e *Engine) readSourceMeta(ctx context.Context) (migrationVersion int64, pgServerNum int, err error) {
-	conn, err := pgx.Connect(ctx, e.databaseURL)
-	if err != nil {
-		return 0, 0, fmt.Errorf("connect for metadata: %w", err)
-	}
-	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
-	if err = conn.QueryRow(ctx, `SELECT COALESCE(MAX(version), 0) FROM platform_schema_migrations`).Scan(&migrationVersion); err != nil {
-		return 0, 0, fmt.Errorf("read migration version: %w", err)
-	}
-	// server_version_num: 180004 for 18.4. Recorded so a restore can tell it is
-	// loading a dump taken on a different PostgreSQL major.
-	if err = conn.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&pgServerNum); err != nil {
-		return 0, 0, fmt.Errorf("read server version: %w", err)
-	}
-	return migrationVersion, pgServerNum, nil
 }
 
 // restoreAppRole re-creates the varyaone_app role and its privileges after a
@@ -843,13 +1277,24 @@ func (e *Engine) terminateOtherConnections(ctx context.Context) {
 		WHERE datname = current_database() AND pid <> pg_backend_pid()`)
 }
 
+// copyFile is the cross-device fallback for the hard-link snapshot. It opens
+// the source with O_NOFOLLOW and re-checks through the file descriptor that it
+// really is a regular file, so a symlink swapped in between the walk's lstat
+// and this open cannot redirect the copy.
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	in, err := os.OpenFile(src, os.O_RDONLY|openNoFollowFlag, 0)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("düzenli olmayan dosya kopyalanamaz: %q (%s)", src, info.Mode())
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
