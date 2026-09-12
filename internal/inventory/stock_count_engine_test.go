@@ -39,7 +39,7 @@ func TestStockCountEngineRejectsBlindStart(t *testing.T) {
 		BlindCount:     true,
 		IdempotencyKey: "blind-start",
 	})
-	if err == nil || !strings.Contains(err.Error(), "Kör sayım artık desteklenmiyor.") {
+	if err == nil || !strings.Contains(err.Error(), "Kör sayım artık desteklenmiyor") {
 		t.Fatalf("blind start error = %v", err)
 	}
 }
