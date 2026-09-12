@@ -1156,6 +1156,42 @@ type FinancePaymentAllocation struct {
 	Snapshot       []byte
 	AllocatedAt    pgtype.Timestamptz
 	OpenItemID     pgtype.UUID
+	EffectiveDate  pgtype.Date
+}
+
+type FinancePaymentPlan struct {
+	ID             pgtype.UUID
+	CompanyID      pgtype.UUID
+	PartyID        pgtype.UUID
+	Side           string
+	Currency       string
+	Description    string
+	TotalAmount    pgtype.Numeric
+	IdempotencyKey string
+	RequestHash    string
+	CreatedBy      pgtype.UUID
+	CreatedAt      pgtype.Timestamptz
+	CancelledAt    pgtype.Timestamptz
+	CancelReason   pgtype.Text
+	Version        int64
+}
+
+type FinancePaymentPlanPart struct {
+	CompanyID     pgtype.UUID
+	PlanID        pgtype.UUID
+	OpenItemID    pgtype.UUID
+	InstallmentNo int32
+	DueDate       pgtype.Date
+	Amount        pgtype.Numeric
+	StartAmount   pgtype.Numeric
+}
+
+type FinancePaymentPlanSource struct {
+	CompanyID  pgtype.UUID
+	PlanID     pgtype.UUID
+	OpenItemID pgtype.UUID
+	Amount     pgtype.Numeric
+	Active     bool
 }
 
 type FinancePeriodLock struct {
@@ -3230,6 +3266,7 @@ type User struct {
 	CreatedAt             pgtype.Timestamptz
 	UpdatedAt             pgtype.Timestamptz
 	Version               int64
+	TotpLastStep          pgtype.Int8
 }
 
 type UserAddressPreference struct {
