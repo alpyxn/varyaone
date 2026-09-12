@@ -146,9 +146,6 @@ jobs:
       # config.Load() always requires a key; migrate/status never decrypt with
       # it. 32 zero bytes, base64 — matches the config package's own fixtures.
       VARYAONE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      # `migrate up` gates on opctl now, which needs a writable control
-      # directory. The default (/var/lib/varyaone/control) is root-owned.
-      VARYAONE_CONTROL_DIR: ${{ runner.temp }}/varyaone-control
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -186,7 +183,12 @@ jobs:
             echo "status reported pending=0 but still failed" >&2
             exit 1
           }
-      - run: $RUNNER_TEMP/varyaone migrate up
+      - name: Run migrate up
+        # `migrate up` gates on opctl now, which needs a writable control
+        # directory. The default (/var/lib/varyaone/control) is root-owned.
+        env:
+          VARYAONE_CONTROL_DIR: ${{ runner.temp }}/varyaone-control
+        run: $RUNNER_TEMP/varyaone migrate up
       - name: Nothing is pending afterwards
         shell: bash
         run: |
