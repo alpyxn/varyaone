@@ -39,8 +39,8 @@
 
   const secondary = $derived<Action[]>([
     {
-      label: 'Vade ve Taksit Planı',
-      hint: 'Açık faturaları vadelendir ve taksitlendir',
+      label: 'Taksit Planı',
+      hint: 'Açık belgeleri vadelendir ve taksitlendir',
       icon: FileText,
       href: `/cari/vade-planlari?${link()}`,
       enabled: has('finance.collection.read') || has('finance.payment.read'),

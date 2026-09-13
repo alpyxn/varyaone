@@ -55,7 +55,7 @@ type PaymentPlan struct {
 }
 type PlanSource struct {
 	OpenItemID string `json:"open_item_id"`
-	DocumentID string `json:"document_id"`
+	DocumentID string `json:"document_id,omitempty"`
 	DocumentNo string `json:"document_no"`
 	Amount     string `json:"amount"`
 }
@@ -148,9 +148,10 @@ func (s *Service) CreatePaymentPlan(ctx context.Context, session identity.Sessio
 		var partyID, side, currency string
 		var active bool
 		err = tx.QueryRow(ctx, `SELECT oi.party_id,oi.side,oi.currency,pt.is_active
-   FROM finance_invoice_open_items oi JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
+   FROM finance_invoice_open_items oi
+   LEFT JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id AND d.status='POSTED' AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
    JOIN parties pt ON pt.company_id=oi.company_id AND pt.id=oi.party_id
-   WHERE oi.company_id=$1 AND oi.id=$2 AND d.status='POSTED' AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
+   WHERE oi.company_id=$1 AND oi.id=$2 AND (d.id IS NOT NULL OR oi.manual_entry_id IS NOT NULL)
     AND (d.branch_id IS NULL OR NOT EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$3)
      OR EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$3 AND bs.branch_id=d.branch_id)) FOR UPDATE OF oi`, session.CurrentCompanyID, id, session.User.ID).Scan(&partyID, &side, &currency, &active)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -160,7 +161,7 @@ func (s *Service) CreatePaymentPlan(ctx context.Context, session identity.Sessio
 			return PaymentPlan{}, err
 		}
 		if partyID != input.PartyID || side != input.Side || currency != input.Currency || !active {
-			return PaymentPlan{}, fmt.Errorf("%w: faturalar aynı aktif cari, yön ve para biriminde olmalıdır", identity.ErrValidation)
+			return PaymentPlan{}, fmt.Errorf("%w: belgeler aynı aktif cari, yön ve para biriminde olmalıdır", identity.ErrValidation)
 		}
 		var hasPlan bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM finance_payment_plan_sources WHERE company_id=$1 AND open_item_id=$2 AND active)`, session.CurrentCompanyID, id).Scan(&hasPlan); err != nil {
@@ -246,17 +247,23 @@ func (s *Service) GetPaymentPlan(ctx context.Context, session identity.Session, 
 	if !planReadAllowed(session, p.Side) {
 		return PaymentPlan{}, identity.ErrForbidden
 	}
-	rows, err := s.pool.Query(ctx, `SELECT ps.open_item_id,oi.document_id,d.document_no,ps.amount::text FROM finance_payment_plan_sources ps
+	rows, err := s.pool.Query(ctx, `SELECT ps.open_item_id,oi.document_id,COALESCE(d.document_no,me.document_no,''),ps.amount::text FROM finance_payment_plan_sources ps
   JOIN finance_invoice_open_items oi ON oi.company_id=ps.company_id AND oi.id=ps.open_item_id
-  JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id WHERE ps.company_id=$1 AND ps.plan_id=$2 ORDER BY d.document_no`, session.CurrentCompanyID, id)
+  LEFT JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
+  LEFT JOIN finance_manual_entries me ON me.company_id=oi.company_id AND me.id=oi.manual_entry_id
+  WHERE ps.company_id=$1 AND ps.plan_id=$2 ORDER BY COALESCE(d.document_no,me.document_no)`, session.CurrentCompanyID, id)
 	if err != nil {
 		return p, err
 	}
 	for rows.Next() {
 		var src PlanSource
-		if err = rows.Scan(&src.OpenItemID, &src.DocumentID, &src.DocumentNo, &src.Amount); err != nil {
+		var documentID *string
+		if err = rows.Scan(&src.OpenItemID, &documentID, &src.DocumentNo, &src.Amount); err != nil {
 			rows.Close()
 			return p, err
+		}
+		if documentID != nil {
+			src.DocumentID = *documentID
 		}
 		p.Sources = append(p.Sources, src)
 	}

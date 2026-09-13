@@ -289,7 +289,7 @@
             ariaLabel="Para birimi"
           />
         </label>
-        {#if branches.length || !branchesFailed}
+        {#if isEdit && (branches.length || !branchesFailed)}
           <label>
             <span>Şube (opsiyonel)</span>
             <select

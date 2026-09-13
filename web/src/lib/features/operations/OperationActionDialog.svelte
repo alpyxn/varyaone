@@ -1809,12 +1809,6 @@
               required
             /></label
           >
-          <label
-            ><span>Vade tarihi</span><DateInput
-              bind:value={manual.dueDate}
-              ariaLabel="Vade tarihi"
-            /></label
-          >
           <label><span>Belge / Referans no</span><input bind:value={manual.referenceNo} /></label>
           <label class="wide"
             ><span>Açıklama <b>*</b></span><textarea
@@ -1893,13 +1887,6 @@
             >{/if}
           <label><span>Makbuz no</span><input value="Otomatik oluşturulacak" disabled /></label>
           <label><span>Referans no</span><input bind:value={payment.referenceNo} /></label>
-          <label
-            ><span>Tarih <b>*</b></span><DateInput
-              bind:value={payment.transactionDate}
-              ariaLabel="Tarih"
-              required
-            /></label
-          >
           <label class="wide"
             ><span>Açıklama</span><textarea bind:value={payment.description} rows="3"
             ></textarea></label

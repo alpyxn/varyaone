@@ -917,6 +917,7 @@
         sourceKind: sourceKindForResource(sourceResource),
         branchID: source.branch_id && !form.branchID ? source.branch_id : form.branchID,
         branchName: source.branch_id && !form.branchID ? 'Seçili şube' : form.branchName,
+        dueDate: source.due_date && !form.dueDate ? dateOnly(source.due_date, '') : form.dueDate,
         party:
           source.supplier_id || source.party_id
             ? {
@@ -1980,7 +1981,7 @@
             onclick={() =>
               goto(
                 `/cari/vade-planlari?${new URLSearchParams({ party_id: text(record?.party_id ?? record?.supplier_id), document_id: text(record?.id), currency, side: isSales ? 'RECEIVABLE' : 'PAYABLE' })}`
-              )}>Vade / Taksit Planı</Button
+              )}>Taksit Planı</Button
           >
         {/if}
         {#if canOpenFinanceAction}<Button
@@ -2131,17 +2132,6 @@
                 id="document-due-date"
                 ariaLabel="Vade tarihi"
                 bind:value={form.dueDate}
-                disabled={editorMutationDisabled}
-              />
-            </Field.Field>
-          {/if}
-          {#if resource === 'quotes'}
-            <Field.Field>
-              <Field.Label for="document-valid-until">Geçerlilik Tarihi</Field.Label>
-              <DateInput
-                id="document-valid-until"
-                ariaLabel="Teklif geçerlilik tarihi"
-                bind:value={form.validUntil}
                 disabled={editorMutationDisabled}
               />
             </Field.Field>

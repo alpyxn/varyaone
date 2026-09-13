@@ -93,10 +93,11 @@ WITH open_items AS (
     SELECT oi.party_id, oi.side, oi.currency, sd.open_amount,
            COALESCE(sd.due_date, oi.document_date) AS effective_due
       FROM finance_invoice_open_items oi
-      JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
+      LEFT JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
        AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
       JOIN finance_scheduled_dues($1,$2::date) sd ON sd.open_item_id=oi.id
-     WHERE oi.company_id=$1 AND oi.document_date <= $2::date`
+     WHERE oi.company_id=$1 AND oi.document_date <= $2::date
+       AND (d.id IS NOT NULL OR oi.manual_entry_id IS NOT NULL)`
 	if session.User.ID != "" {
 		args = append(args, session.User.ID)
 		query += fmt.Sprintf(` AND (d.branch_id IS NULL OR NOT EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$%d) OR EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$%d AND bs.branch_id=d.branch_id))`, len(args), len(args))

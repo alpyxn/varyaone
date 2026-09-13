@@ -266,7 +266,7 @@ type Allocation struct {
 type OpenItem struct {
 	DueSchedule     []OpenItemDue `json:"due_schedule,omitempty"`
 	ID              string        `json:"id"`
-	DocumentID      string        `json:"document_id"`
+	DocumentID      string        `json:"document_id,omitempty"`
 	DocumentNo      string        `json:"document_no,omitempty"`
 	PartyID         string        `json:"party_id"`
 	Side            string        `json:"side"`
@@ -842,24 +842,26 @@ func fifoOpenItemAllocationsTx(ctx context.Context, tx pgx.Tx, session identity.
 	rows, err := tx.Query(ctx, `SELECT oi.id,oi.document_id,oi.document_date,oi.due_date,oi.original_amount::text,
 		COALESCE((SELECT r.amount FROM finance_invoice_open_item_reversals r WHERE r.company_id=oi.company_id AND r.open_item_id=oi.id),0)::text
 		FROM finance_invoice_open_items oi
-		JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
+		LEFT JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
 		WHERE oi.company_id=$1 AND oi.party_id=$2 AND oi.currency=$3 AND oi.side=$4
-		  AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
+		  AND (oi.manual_entry_id IS NOT NULL OR d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE'))
 		  AND (d.branch_id IS NULL
 		    OR NOT EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$5)
 		    OR EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$5 AND bs.branch_id=d.branch_id))
-		ORDER BY COALESCE(oi.due_date,'9999-12-31'::date),oi.document_date,oi.created_at,oi.id FOR UPDATE`, companyID, partyID, currency, side, session.User.ID)
+		ORDER BY COALESCE(oi.due_date,'9999-12-31'::date),oi.document_date,oi.created_at,oi.id FOR UPDATE OF oi`, companyID, partyID, currency, side, session.User.ID)
 	if err != nil {
 		return nil, err
 	}
 	type openItemRow struct {
-		id, documentID, original, reversed string
-		documentDate                       time.Time
-		dueDate                            *time.Time
+		id, original, reversed string
+		documentID             *string
+		documentDate           time.Time
+		dueDate                *time.Time
 	}
 	openItemRows := make([]openItemRow, 0)
 	for rows.Next() {
-		var id, documentID, original, reversed string
+		var id, original, reversed string
+		var documentID *string
 		var documentDate time.Time
 		var dueDate *time.Time
 		if err = rows.Scan(&id, &documentID, &documentDate, &dueDate, &original, &reversed); err != nil {
@@ -879,9 +881,12 @@ func fifoOpenItemAllocationsTx(ctx context.Context, tx pgx.Tx, session identity.
 			return nil, allocationErr
 		}
 		open := new(big.Rat).Sub(mustRat(row.original), mustRat(row.reversed))
-		returned, returnErr := returnedAmountForDocumentTx(ctx, tx, companyID, row.documentID)
-		if returnErr != nil {
-			return nil, returnErr
+		returned := new(big.Rat)
+		if row.documentID != nil {
+			returned, err = returnedAmountForDocumentTx(ctx, tx, companyID, *row.documentID)
+			if err != nil {
+				return nil, err
+			}
 		}
 		open.Sub(open, returned)
 		open.Sub(open, mustRat(allocated))
@@ -1325,18 +1330,19 @@ func (s *Service) ListOpenItemsPage(ctx context.Context, session identity.Sessio
 		limit = 100
 	}
 	args := []any{session.CurrentCompanyID}
-	query := `SELECT oi.id,oi.document_id,COALESCE(d.document_no,''),oi.party_id,oi.side,oi.currency,oi.original_amount::text,
+	query := `SELECT oi.id,oi.document_id,COALESCE(d.document_no,me.document_no,''),oi.party_id,oi.side,oi.currency,oi.original_amount::text,
 COALESCE((SELECT SUM(CASE WHEN a.reversal_of_id IS NULL THEN a.amount ELSE -a.amount END) FROM finance_payment_allocations a WHERE a.company_id=oi.company_id AND a.open_item_id=oi.id),0)::text,
 COALESCE((SELECT r.amount FROM finance_invoice_open_item_reversals r WHERE r.company_id=oi.company_id AND r.open_item_id=oi.id),0)::text,
 COALESCE(returns.returned_amount,0)::text,oi.document_date,oi.due_date::text,oi.exchange_rate::text,oi.base_currency,oi.created_at
 FROM finance_invoice_open_items oi
-JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
+LEFT JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE')
+LEFT JOIN finance_manual_entries me ON me.company_id=oi.company_id AND me.id=oi.manual_entry_id
 LEFT JOIN LATERAL (
     SELECT COALESCE(SUM(attribution.amount),0) AS returned_amount
     FROM finance_invoice_return_attributions attribution
     WHERE attribution.company_id=oi.company_id AND attribution.document_id=oi.document_id
 ) returns ON TRUE
-WHERE oi.company_id=$1`
+WHERE oi.company_id=$1 AND (d.id IS NOT NULL OR me.id IS NOT NULL)`
 	if len(unplannedOnly) > 0 && unplannedOnly[0] {
 		query += ` AND NOT EXISTS(SELECT 1 FROM finance_payment_plan_sources ps WHERE ps.company_id=oi.company_id AND ps.open_item_id=oi.id AND ps.active)`
 	}
@@ -1380,10 +1386,14 @@ WHERE oi.company_id=$1`
 	for rows.Next() {
 		var item OpenItem
 		var original, allocated, reversed, returned string
+		var documentID *string
 		var dueDate *string
 		var createdAt time.Time
-		if err = rows.Scan(&item.ID, &item.DocumentID, &item.DocumentNo, &item.PartyID, &item.Side, &item.Currency, &original, &allocated, &reversed, &returned, &item.DocumentDate, &dueDate, &item.ExchangeRate, &item.BaseCurrency, &createdAt); err != nil {
+		if err = rows.Scan(&item.ID, &documentID, &item.DocumentNo, &item.PartyID, &item.Side, &item.Currency, &original, &allocated, &reversed, &returned, &item.DocumentDate, &dueDate, &item.ExchangeRate, &item.BaseCurrency, &createdAt); err != nil {
 			return result, err
+		}
+		if documentID != nil {
+			item.DocumentID = *documentID
 		}
 		item.OriginalAmount = original
 		item.AllocatedAmount = allocated
@@ -1941,7 +1951,7 @@ func (s *Service) PostManualEntry(ctx context.Context, session identity.Session,
 	if err = tx.QueryRow(ctx, `SELECT p.default_currency,c.base_currency FROM parties p JOIN companies c ON c.id=p.company_id WHERE p.company_id=$1 AND p.id=$2 AND p.is_active FOR UPDATE`, session.CurrentCompanyID, input.PartyID).Scan(&partyCurrency, &baseCurrency); err != nil {
 		return ManualEntry{}, identity.ErrForbidden
 	}
-	var originalManualID, originalLedgerID string
+	var originalManualID, originalLedgerID, originalOpenItemID string
 	if input.ReversalOfID != "" {
 		var originalParty, originalKind, originalCurrency, originalAmount, originalRate string
 		var originalDate time.Time
@@ -1970,6 +1980,20 @@ func (s *Service) PostManualEntry(ctx context.Context, session identity.Session,
 		rate = originalRateValue
 		if input.EntryKind == originalKind {
 			return ManualEntry{}, fmt.Errorf("%w: manuel ters kayıt karşıt yönde olmalıdır", identity.ErrValidation)
+		}
+		// The original entry's open item must be closed before it is reversed:
+		// otherwise the reversal and the still-open item would both stand,
+		// double counting the movement in aging and letting it be collected on
+		// top of a manual entry that no longer exists economically.
+		if err = tx.QueryRow(ctx, `SELECT id FROM finance_invoice_open_items WHERE company_id=$1 AND manual_entry_id=$2 FOR UPDATE`, session.CurrentCompanyID, originalManualID).Scan(&originalOpenItemID); err != nil {
+			return ManualEntry{}, err
+		}
+		allocatedText, allocErr := allocationForOpenItem(ctx, tx, session.CurrentCompanyID, originalOpenItemID)
+		if allocErr != nil {
+			return ManualEntry{}, allocErr
+		}
+		if mustRat(allocatedText).Sign() > 0 {
+			return ManualEntry{}, domainError(ErrInvoiceHasDependencies, "tahsis edilmiş tahsilat veya ödeme bulunduğu için manuel hareket ters kaydedilemez")
 		}
 	}
 	if input.Currency == baseCurrency {
@@ -2005,6 +2029,24 @@ func (s *Service) PostManualEntry(ctx context.Context, session identity.Session,
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO finance_manual_entries(id,company_id,party_id,party_ledger_entry_id,entry_kind,currency,amount,exchange_rate,base_currency,base_amount,description,transaction_date,due_date,document_no,reference_no,idempotency_key,reversal_of_id,actor_user_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,ROUND($7::numeric*$8::numeric,4),$10,$11,$12,$13,$14,$15,NULLIF($16,'')::uuid,$17)`, id, session.CurrentCompanyID, input.PartyID, ledgerID, input.EntryKind, input.Currency, amountString(amount, 4), amountString(rate, 10), baseCurrency, input.Description, input.TransactionDate, input.DueDate, input.DocumentNo, input.ReferenceNo, input.IdempotencyKey, input.ReversalOfID, nullableUUID(session.User.ID)); err != nil {
 		return ManualEntry{}, mapFinanceConstraint(err)
+	}
+	if input.ReversalOfID == "" {
+		// A manual DEBIT increases what the party owes the company, exactly
+		// like a sales invoice; a manual CREDIT increases what the company
+		// owes the party, like a purchase invoice. Without this open item the
+		// movement never showed up in aging and could never be collected or
+		// paid off from the tahsilat/ödeme screens.
+		side := "RECEIVABLE"
+		if input.EntryKind == "CREDIT" {
+			side = "PAYABLE"
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO finance_invoice_open_items(id,company_id,manual_entry_id,party_id,party_ledger_entry_id,side,currency,original_amount,exchange_rate,base_currency,base_amount,document_date,due_date) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,ROUND($8::numeric*$9::numeric,4),$11,$12)`, uuid.NewString(), session.CurrentCompanyID, id, input.PartyID, ledgerID, side, input.Currency, amountString(amount, 4), amountString(rate, 10), baseCurrency, input.TransactionDate, input.DueDate); err != nil {
+			return ManualEntry{}, mapFinanceConstraint(err)
+		}
+	} else {
+		if _, err = tx.Exec(ctx, `INSERT INTO finance_invoice_open_item_reversals(id,company_id,open_item_id,reversal_ledger_entry_id,amount) VALUES($1,$2,$3,$4,$5)`, uuid.NewString(), session.CurrentCompanyID, originalOpenItemID, ledgerID, amountString(amount, 4)); err != nil {
+			return ManualEntry{}, mapFinanceConstraint(err)
+		}
 	}
 	if err = writeAuditAndEventTx(ctx, tx, session, "FINANCE_MANUAL_ENTRY_POSTED", "finance.manual_entry.posted", "finance_manual_entry", id, meta, nil); err != nil {
 		return ManualEntry{}, err
@@ -2578,9 +2620,10 @@ func (s *Service) applyAllocationsTx(ctx context.Context, tx pgx.Tx, session ide
 		if new(big.Rat).Add(used, amount).Cmp(paymentRat) > 0 {
 			return nil, domainError(ErrPaymentAllocationExceedsOpenAmount, "tahsis toplamı ödeme tutarını aşamaz")
 		}
-		var openParty, side, currency, original, documentID, documentDate, dueDate string
+		var openParty, side, currency, original, documentDate, dueDate string
+		var documentID, manualEntryID *string
 		var reversalAmount string
-		err = tx.QueryRow(ctx, `SELECT oi.party_id,oi.side,oi.currency,oi.original_amount::text,oi.document_id,oi.document_date::text,COALESCE(oi.due_date::text,''),COALESCE((SELECT amount FROM finance_invoice_open_item_reversals r WHERE r.company_id=oi.company_id AND r.open_item_id=oi.id),'0')::text FROM finance_invoice_open_items oi JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE') WHERE oi.company_id=$1 AND oi.id=$2 AND (d.branch_id IS NULL OR NOT EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$3) OR EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$3 AND bs.branch_id=d.branch_id)) FOR UPDATE`, session.CurrentCompanyID, input.OpenItemID, session.User.ID).Scan(&openParty, &side, &currency, &original, &documentID, &documentDate, &dueDate, &reversalAmount)
+		err = tx.QueryRow(ctx, `SELECT oi.party_id,oi.side,oi.currency,oi.original_amount::text,oi.document_id,oi.manual_entry_id,oi.document_date::text,COALESCE(oi.due_date::text,''),COALESCE((SELECT amount FROM finance_invoice_open_item_reversals r WHERE r.company_id=oi.company_id AND r.open_item_id=oi.id),'0')::text FROM finance_invoice_open_items oi LEFT JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id AND d.document_type_code IN ('SALES_INVOICE','PURCHASE_INVOICE') WHERE oi.company_id=$1 AND oi.id=$2 AND (oi.manual_entry_id IS NOT NULL OR d.id IS NOT NULL) AND (d.branch_id IS NULL OR NOT EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$3) OR EXISTS(SELECT 1 FROM membership_branch_scopes bs WHERE bs.company_id=d.company_id AND bs.user_id=$3 AND bs.branch_id=d.branch_id)) FOR UPDATE OF oi`, session.CurrentCompanyID, input.OpenItemID, session.User.ID).Scan(&openParty, &side, &currency, &original, &documentID, &manualEntryID, &documentDate, &dueDate, &reversalAmount)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, identity.ErrForbidden
 		}
@@ -2594,9 +2637,12 @@ func (s *Service) applyAllocationsTx(ctx context.Context, tx pgx.Tx, session ide
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		returnedAmount, returnErr := returnedAmountForDocumentTx(ctx, tx, session.CurrentCompanyID, documentID)
-		if returnErr != nil {
-			return nil, returnErr
+		returnedAmount := new(big.Rat)
+		if documentID != nil {
+			returnedAmount, err = returnedAmountForDocumentTx(ctx, tx, session.CurrentCompanyID, *documentID)
+			if err != nil {
+				return nil, err
+			}
 		}
 		openAmount := new(big.Rat).Sub(mustRat(original), mustRat(reversalAmount))
 		openAmount.Sub(openAmount, returnedAmount)
@@ -2604,12 +2650,18 @@ func (s *Service) applyAllocationsTx(ctx context.Context, tx pgx.Tx, session ide
 		if amount.Cmp(openAmount) > 0 {
 			return nil, domainError(ErrPaymentAllocationExceedsOpenAmount, "tahsis açık fatura tutarını aşamaz")
 		}
+		targetType, targetID := "DOCUMENT", ""
+		if documentID != nil {
+			targetID = *documentID
+		} else {
+			targetType, targetID = "MANUAL_ENTRY", *manualEntryID
+		}
 		var allocation Allocation
 		allocation.ID = uuid.NewString()
-		if err = tx.QueryRow(ctx, `INSERT INTO finance_payment_allocations(id,company_id,payment_id,party_id,target_type,target_id,open_item_id,currency,amount,idempotency_key,actor_user_id,snapshot,effective_date) VALUES($1,$2,$3,$4,'DOCUMENT',$5,$6,$7,$8,$9,$10,$11,$12::date) RETURNING allocated_at`, allocation.ID, session.CurrentCompanyID, paymentID, paymentParty, documentID, input.OpenItemID, paymentCurrency, amountString(amount, 4), key, nullableUUID(session.User.ID), jsonBytes(map[string]any{"document_date": documentDate, "due_date": dueDate}), effectiveDate.Format("2006-01-02")).Scan(&allocation.AllocatedAt); err != nil {
+		if err = tx.QueryRow(ctx, `INSERT INTO finance_payment_allocations(id,company_id,payment_id,party_id,target_type,target_id,open_item_id,currency,amount,idempotency_key,actor_user_id,snapshot,effective_date) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::date) RETURNING allocated_at`, allocation.ID, session.CurrentCompanyID, paymentID, paymentParty, targetType, targetID, input.OpenItemID, paymentCurrency, amountString(amount, 4), key, nullableUUID(session.User.ID), jsonBytes(map[string]any{"document_date": documentDate, "due_date": dueDate}), effectiveDate.Format("2006-01-02")).Scan(&allocation.AllocatedAt); err != nil {
 			return nil, mapFinanceConstraint(err)
 		}
-		allocation.PaymentID, allocation.PartyID, allocation.OpenItemID, allocation.TargetType, allocation.TargetID, allocation.Currency, allocation.Amount, allocation.IdempotencyKey = paymentID, paymentParty, input.OpenItemID, "DOCUMENT", documentID, paymentCurrency, amountString(amount, 4), key
+		allocation.PaymentID, allocation.PartyID, allocation.OpenItemID, allocation.TargetType, allocation.TargetID, allocation.Currency, allocation.Amount, allocation.IdempotencyKey = paymentID, paymentParty, input.OpenItemID, targetType, targetID, paymentCurrency, amountString(amount, 4), key
 		result = append(result, allocation)
 		used.Add(used, amount)
 	}
@@ -3142,6 +3194,8 @@ func mapFinanceConstraint(err error) error {
 			return domainError(ErrAccountBranchImmutable, "hareket görmüş hesabın şubesi değiştirilemez")
 		case "finance_accounts_no_delete":
 			return domainError(ErrAccountInactive, "finans hesabı silinemez; pasifleştirilmelidir")
+		case "finance_accounts_company_code_unique":
+			return fmt.Errorf("%w: bu hesap kodu bu firmada zaten kullanılıyor", identity.ErrValidation)
 		case "finance_transfers_company_id_idempotency_key_key", "finance_transfers_company_id_reversal_of_id_key":
 			return domainError(ErrIdempotencyConflict, "transfer daha önce kaydedilmiş")
 		case "finance_account_movements_account_currency_fk", "finance_transfer_movement_pair", "finance_payment_movement_account":

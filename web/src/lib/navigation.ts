@@ -61,7 +61,7 @@ export const navigation: NavigationGroup[] = [
       { label: 'Cari Kartlar', href: '/cari/kartlar', permission: 'party.read' },
       { label: 'Cari Hareketler', href: '/cari/hareketler', permission: 'party.ledger.read' },
       {
-        label: 'Vade ve Taksit Planları',
+        label: 'Taksit Planları',
         href: '/cari/vade-planlari',
         anyPermission: ['finance.collection.read', 'finance.payment.read']
       },

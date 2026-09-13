@@ -117,8 +117,9 @@ func (s *Service) ListPaymentPlanSummaries(ctx context.Context, session identity
 		n := len(args)
 		query += fmt.Sprintf(` AND (p.description ILIKE $%[1]d OR pt.display_name ILIKE $%[1]d OR pt.code ILIKE $%[1]d OR EXISTS (
    SELECT 1 FROM finance_payment_plan_sources ps JOIN finance_invoice_open_items oi ON oi.company_id=ps.company_id AND oi.id=ps.open_item_id
-   JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
-   WHERE ps.company_id=p.company_id AND ps.plan_id=p.id AND d.document_no ILIKE $%[1]d))`, n)
+   LEFT JOIN documents d ON d.company_id=oi.company_id AND d.id=oi.document_id
+   LEFT JOIN finance_manual_entries me ON me.company_id=oi.company_id AND me.id=oi.manual_entry_id
+   WHERE ps.company_id=p.company_id AND ps.plan_id=p.id AND COALESCE(d.document_no,me.document_no) ILIKE $%[1]d))`, n)
 	}
 	query += `), dues AS MATERIALIZED (
  SELECT d.* FROM finance_scheduled_dues($1,$5::date) d JOIN visible v ON v.id=d.plan_id WHERE v.cancelled_at IS NULL

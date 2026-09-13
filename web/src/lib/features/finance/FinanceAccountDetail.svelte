@@ -66,7 +66,7 @@
   let tab = $state<Tab>('genel');
   let confirmActiveOpen = $state(false);
   let openingBusy = $state(false);
-  let openingForm = $state({ direction: 'IN' as 'IN' | 'OUT', amount: '', transaction_date: '' });
+  let openingForm = $state({ direction: 'IN' as 'IN' | 'OUT', amount: '' });
   let movementOpen = $state(false);
   let movementBusy = $state(false);
   let movementForm = $state({
@@ -163,8 +163,8 @@
     if (!account || openingBusy) return;
     // Read in Turkish notation: "1.500,50" is fifteen hundred lira, not 1,5.
     const openingAmount = parseMoneyInput(openingForm.amount);
-    if (!/^\d+(\.\d{1,4})?$/.test(openingAmount) || !openingForm.transaction_date) {
-      toast.error('Geçerli tutar ve tarih girin.');
+    if (!/^\d+(\.\d{1,4})?$/.test(openingAmount)) {
+      toast.error('Geçerli bir tutar girin.');
       return;
     }
     openingBusy = true;
@@ -175,12 +175,12 @@
           account_id: account.id,
           direction: openingForm.direction,
           amount: openingAmount,
-          transaction_date: `${openingForm.transaction_date}T00:00:00+03:00`,
+          transaction_date: `${new Date().toISOString().slice(0, 10)}T00:00:00+03:00`,
           description: 'Açılış bakiyesi'
         })
       });
       toast.success('Açılış bakiyesi kaydedildi.');
-      openingForm = { direction: 'IN', amount: '', transaction_date: '' };
+      openingForm = { direction: 'IN', amount: '' };
       await loadAccount(true);
       tab = 'hareketler';
     } catch (cause) {
@@ -456,10 +456,6 @@
           <p class="muted">Açılış bakiyesi girme yetkiniz yok.</p>
         {:else}
           <form class="opening-form" onsubmit={submitOpeningBalance}>
-            <p class="muted">
-              Açılış bakiyesi değişmez bir harekettir; kaydedildikten sonra düzeltme ancak ters
-              kayıtla yapılır.
-            </p>
             <div class="opening-grid">
               <label>
                 <span>Yön</span>
@@ -473,12 +469,6 @@
                   bind:value={openingForm.amount}
                   placeholder="0.00"
                   inputmode="decimal"
-                /></label
-              >
-              <label
-                ><span>İşlem tarihi</span><Input
-                  type="date"
-                  bind:value={openingForm.transaction_date}
                 /></label
               >
             </div>

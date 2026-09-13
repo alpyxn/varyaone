@@ -16,7 +16,7 @@
     hareketler: 'Hareketler',
     tahsilatlar: 'Tahsilatlar',
     odemeler: 'Ödemeler',
-    'vade-planlari': 'Vade ve Taksit Planları',
+    'vade-planlari': 'Taksit Planları',
     stok: 'Stok',
     urunler: 'Stok Kartları',
     depolar: 'Depolar',

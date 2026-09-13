@@ -293,9 +293,9 @@
       creating = true;
       if (documentID && !selectedIDs.length)
         message =
-          'Bu faturanın açık tutarı yok veya aktif bir planı var. Mevcut planları kontrol edin.';
+          'Bu belgenin açık tutarı yok veya aktif bir planı var. Mevcut planları kontrol edin.';
     } catch (e) {
-      error = errorMessage(e, 'Açık faturalar okunamadı.');
+      error = errorMessage(e, 'Açık belgeler okunamadı.');
     } finally {
       busy = false;
     }
@@ -315,7 +315,7 @@
     message = '';
     try {
       if (!installments.length || totalDraft !== total)
-        throw new Error('Taksit toplamı seçilen faturaların kalan tutarına eşit olmalıdır.');
+        throw new Error('Taksit toplamı seçilen belgelerin kalan tutarına eşit olmalıdır.');
       const result = await api<PaymentPlan>('/finance/payment-plans', {
         method: 'POST',
         headers: { 'Idempotency-Key': createKey },
@@ -351,7 +351,7 @@
       body: JSON.stringify({ reason })
     });
     await load();
-    message = 'Plan iptal edildi. Kalan tutarlar faturaların asıl vadelerinden takip ediliyor.';
+    message = 'Plan iptal edildi. Kalan tutarlar belgelerin asıl vadelerinden takip ediliyor.';
   }
   async function openPayment(row: PlanInstallment) {
     if (!selectedPlan) return;
@@ -408,7 +408,7 @@
         }
       );
       await load();
-      message = `${result.document_no} kaydedildi. Taksit ve fatura bakiyeleri güncellendi.`;
+      message = `${result.document_no} kaydedildi. Taksit ve belge bakiyeleri güncellendi.`;
     } catch (e) {
       paymentError = errorMessage(e, 'Ödeme kaydedilemedi.');
     } finally {
@@ -418,8 +418,8 @@
   function exportPlan() {
     if (!selectedPlan) return;
     downloadXls(
-      'vade-plani',
-      'Vade Planı',
+      'taksit-plani',
+      'Taksit Planı',
       selectedPlan.installments.map((i) => [
         String(i.number),
         i.due_date,
@@ -491,12 +491,12 @@
   });
 </script>
 
-<svelte:head><title>Vade ve Taksit Planları — Varya One</title></svelte:head>
+<svelte:head><title>Taksit Planları — Varya One</title></svelte:head>
 <div class="plan-page">
   <div class="heading">
     <div>
-      <h1>Vade ve Taksit Planları</h1>
-      <p>Fatura bazında vade ve taksit takibi</p>
+      <h1>Taksit Planları</h1>
+      <p>Belge bazında taksit takibi</p>
     </div>
     <Button variant="outline" disabled={busy || loading} onclick={() => load()}
       ><RefreshCw size={15} /> Yenile</Button
@@ -557,7 +557,7 @@
       disabled={busy}
       value={search}
       aria-label="Plan ara"
-      placeholder="Cari, plan açıklaması veya fatura no ara"
+      placeholder="Cari, plan açıklaması veya belge no ara"
       oninput={(e) => {
         search = e.currentTarget.value;
         clearTimeout(searchTimer);
@@ -617,13 +617,13 @@
         <Button variant="ghost" disabled={busy} onclick={() => (creating = false)}>Vazgeç</Button>
       </div>
       <p class="hint">
-        {party?.title} için kalan fatura tutarını tek vadeye taşıyın veya taksitlere bölün.
+        {party?.title} için kalan belge tutarını tek vadeye taşıyın veya taksitlere bölün.
       </p>
       <div class="step-heading">
         <div>
-          <h3>Faturaları seçin</h3>
+          <h3>Belgeleri seçin</h3>
           <p class="hint">
-            Aynı para birimindeki bir veya birden fazla faturayı birleştirebilirsiniz.
+            Aynı para birimindeki bir veya birden fazla belgeyi birleştirebilirsiniz.
           </p>
         </div>
       </div>
@@ -635,14 +635,14 @@
       <div class="table-wrap">
         <table>
           <thead
-            ><tr><th>Seç</th><th>Fatura</th><th>Asıl vade</th><th class="money">Kalan</th></tr
+            ><tr><th>Seç</th><th>Belge</th><th>Asıl vade</th><th class="money">Kalan</th></tr
             ></thead
           ><tbody>
             {#each items as item}<tr class:selected-source={selectedIDs.includes(item.id)}
                 ><td
                   ><input
                     type="checkbox"
-                    aria-label={`${item.document_no} faturasını seç`}
+                    aria-label={`${item.document_no} belgesini seç`}
                     checked={selectedIDs.includes(item.id)}
                     disabled={busy}
                     onchange={(e) => {
@@ -656,13 +656,13 @@
                   >{item.due_date ? formatDate(item.due_date) : 'Vadesiz'}</td
                 ><td class="money">{formatMoney(item.open_amount, currency)}</td></tr
               >{:else}<tr
-                ><td colspan="4">Bu para biriminde planlanabilecek açık fatura bulunamadı.</td></tr
+                ><td colspan="4">Bu para biriminde planlanabilecek açık belge bulunamadı.</td></tr
               >{/each}
           </tbody>
         </table>
       </div>
       <div class="selection-total">
-        <span>{selectedIDs.length} fatura seçildi</span>
+        <span>{selectedIDs.length} belge seçildi</span>
         <div><span>Planlanacak tutar</span><strong>{formatMoney(total, currency)}</strong></div>
       </div>
       <div class="step-heading">
@@ -797,7 +797,7 @@
           </div>
           {#if selectedPlan.cancelled_at}<p class="hint">
               İptal: {formatDate(selectedPlan.cancelled_at)} — {selectedPlan.cancel_reason}.
-              Faturaların kalan borcu kendi vadelerinde takip edilir.
+              Belgelerin kalan borcu kendi vadelerinde takip edilir.
             </p>{/if}
           {#if !selectedPlan.cancelled_at}
             <div class="plan-summary">
@@ -805,7 +805,7 @@
                 <span>Plan tutarı</span><strong
                   >{formatMoney(selectedPlan.total_amount, selectedPlan.currency)}</strong
                 ><small
-                  >{selectedPlan.sources.length} fatura · {selectedPlan.installments.length} taksit</small
+                  >{selectedPlan.sources.length} belge · {selectedPlan.installments.length} taksit</small
                 >
               </div>
               <div class="remaining">
@@ -828,12 +828,12 @@
             </p>
           {/if}
           <p class="source-links">
-            <FileText size={14} /> Kaynak faturalar: {#each selectedPlan.sources as source, i}{i
+            <FileText size={14} /> Kaynak belgeler: {#each selectedPlan.sources as source, i}{i
                 ? ', '
-                : ''}<a
-                href={`/${side === 'RECEIVABLE' ? 'satis' : 'alis'}/faturalar/${source.document_id}`}
-                >{source.document_no}</a
-              >{/each}
+                : ''}{#if source.document_id}<a
+                  href={`/${side === 'RECEIVABLE' ? 'satis' : 'alis'}/faturalar/${source.document_id}`}
+                  >{source.document_no}</a
+                >{:else}{source.document_no}{/if}{/each}
           </p>
           {#if payment}<form
               class="payment-form"
@@ -953,7 +953,7 @@
 <ReasonDialog
   bind:open={cancelOpen}
   title="Vade planını iptal et"
-  description="Plan geçmişte kalır. Kalan borç silinmez; kaynak faturaların asıl vadeleri yeniden geçerli olur. Yeniden planlamak için iptalden sonra yeni plan oluşturabilirsiniz."
+  description="Plan geçmişte kalır. Kalan borç silinmez; kaynak belgelerin asıl vadeleri yeniden geçerli olur. Yeniden planlamak için iptalden sonra yeni plan oluşturabilirsiniz."
   confirmLabel="Planı İptal Et"
   onConfirm={cancelPlan}
 />
