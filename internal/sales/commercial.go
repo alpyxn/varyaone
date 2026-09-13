@@ -2195,13 +2195,20 @@ func (s *Service) normalizeCommercialInput(ctx context.Context, session identity
 				return commercialError(CommercialErrorInvalidRelation, "ürün geçersiz", "product_id", index+1)
 			}
 			line.ProductID = strings.TrimSpace(line.ProductID)
-			var productKind string
+			var productKind, productName string
 			var active, variantsEnabled bool
-			if err := s.pool.QueryRow(ctx, `SELECT kind::text,is_active,variants_enabled OR EXISTS(SELECT 1 FROM product_variants pv WHERE pv.company_id=products.company_id AND pv.product_id=products.id) FROM products WHERE company_id=$1 AND id=$2`, session.CurrentCompanyID, line.ProductID).Scan(&productKind, &active, &variantsEnabled); err != nil {
+			if err := s.pool.QueryRow(ctx, `SELECT kind::text,is_active,variants_enabled OR EXISTS(SELECT 1 FROM product_variants pv WHERE pv.company_id=products.company_id AND pv.product_id=products.id),name FROM products WHERE company_id=$1 AND id=$2`, session.CurrentCompanyID, line.ProductID).Scan(&productKind, &active, &variantsEnabled, &productName); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					return commercialError(CommercialErrorInvalidRelation, "ürün bulunamadı", "product_id", index+1)
 				}
 				return err
+			}
+			// A line without its own description snapshots the product's
+			// current name, so the document reads with the real item instead
+			// of the generic placeholder normalizeCommercialLines falls back
+			// to for lines that truly carry no product (a free-text service).
+			if strings.TrimSpace(line.Description) == "" {
+				line.Description = productName
 			}
 			kindMatches := (line.LineType == "PRODUCT" && productKind == "PHYSICAL") || (line.LineType == "SERVICE" && productKind == "SERVICE")
 			if !active {
