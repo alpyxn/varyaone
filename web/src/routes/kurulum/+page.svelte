@@ -189,8 +189,8 @@
             />
           </label>
           <div class="notice">
-            Bu parolayı güvenli bir yere kaydedin. "Şifremi unuttum" mekanizması yoktur —
-            unutursanız ancak sunucuya erişimi olan biri veritabanından sıfırlayabilir.
+            Bu parolayı güvenli bir yere kaydedin, unutursanız giriş yapamazsınız — "Şifremi
+            unuttum" mekanizması yoktur.
           </div>
         </div>
       {:else if step === 2}
