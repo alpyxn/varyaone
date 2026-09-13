@@ -587,13 +587,20 @@ ensure_app_role() {
     echo "  ! varyaone_app grant'leri uygulanamadı." >&2
     return 1
   fi
-  # Parola SQL metnine gömülmez: psql değişkeni olarak geçirilir ve %L ile
-  # kaçırılır. Parola .env'den gelmiş olabilir ve hex olduğu garanti değildir;
-  # içindeki tek tırnak, SQL'i operatörün beklemediği bir şeye çevirirdi.
-  if ! compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$_pguser" -d "$_pgdb" \
-       -v apppw="$_apppw" --quiet --no-align --tuples-only \
-       -c "SELECT format('ALTER ROLE varyaone_app LOGIN PASSWORD %L', :'apppw')" \
-       2>/dev/null | compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$_pguser" -d "$_pgdb" \
+  # Parola SQL metnine gömülmez: psql değişkeni olarak geçirilir, :'apppw'
+  # psql tarafında SQL literali olarak kaçırılır. Parola .env'den gelmiş
+  # olabilir ve hex olduğu garanti değildir; içindeki tek tırnak, SQL'i
+  # operatörün beklemediği bir şeye çevirirdi.
+  #
+  # :'var' interpolasyonu psql'in kendi script okuyucusunda olur — `-c` ile
+  # verilen komutlarda ÇALIŞMAZ (psql onları yorumlamadan sunucuya geçirir),
+  # bu yüzden ifade stdin'den, grants dosyasıyla aynı `-f -` deseniyle
+  # verilir; tek bir exec, iki bağımsız execi pipe'lamanın kırılganlığı da
+  # (ikinci uç boş girdi alıp hiçbir şey yapmadan "başarılı" dönebiliyordu)
+  # böylece ortadan kalkar.
+  if ! printf "ALTER ROLE varyaone_app LOGIN PASSWORD :'apppw';\n" | \
+       compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$_pguser" -d "$_pgdb" \
+       -v apppw="$_apppw" -f - \
        >/dev/null 2>&1; then
     echo "  ! varyaone_app rolüne parola verilemedi." >&2
     return 1
