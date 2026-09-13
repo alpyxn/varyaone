@@ -111,8 +111,7 @@ fetch_and_run_root() {
     '#!'*) : ;;
     *) rm -f "$_f"; echo "  İndirilen içerik bir betik değil (shebang yok): $_url" >&2; return 1 ;;
   esac
-  run_root sh "$_f"
-  _rc=$?
+  _rc=0; run_root sh "$_f" || _rc=$?
   rm -f "$_f"
   return $_rc
 }
@@ -517,8 +516,8 @@ env_set_many() {
     # grep, eşleşmeyen satır kalmadığında da 1 döner; bu bir hata değildir.
     # Gerçek okuma hatası 2'dir. Hepsini `|| true` ile yutmak, okunamayan bir
     # .env'i sessizce birkaç satıra indirmek demekti.
-    grep -v -f "$_filter" "$project_dir/.env" > "$_tmp" 2>/dev/null
-    if [ "$?" -gt 1 ]; then
+    _grc=0; grep -v -f "$_filter" "$project_dir/.env" > "$_tmp" 2>/dev/null || _grc=$?
+    if [ "$_grc" -gt 1 ]; then
       rm -f "$_tmp" "$_filter"
       echo "env_set: .env okunamadı" >&2
       return 1
@@ -708,8 +707,8 @@ restart_services() {
 
   # Yarıda kalmış bir işlem varsa servisleri açma.
   ensure_postgres_up >/dev/null 2>&1
-  system_serviceable
-  case "$?" in
+  _ss=0; system_serviceable || _ss=$?
+  case "$_ss" in
     1)
       echo "Yarıda kalmış bir sistem işlemi var; servisler açılmıyor." >&2
       echo "  ${SYSTEM_STATUS_REASON:-}" >&2
@@ -2041,8 +2040,8 @@ rebuild() {
 
   # 1) Yarıda kalmış bir işlem varsa yeni bir deploy başlatma.
   if compose ps --status running postgres >/dev/null 2>&1 && ensure_postgres_up; then
-    system_serviceable
-    case "$?" in
+    _ss=0; system_serviceable || _ss=$?
+    case "$_ss" in
       1)
         echo "  Yarıda kalmış bir sistem işlemi var; deploy başlatılmıyor." >&2
         echo "  ${SYSTEM_STATUS_REASON:-}" >&2
@@ -2099,7 +2098,9 @@ rebuild() {
   #    Aynı kayıt sırada bekleyen başka bir işlem (API yedeği, CLI geri
   #    yükleme) için de "bu kurulum meşgul" demektir; shell kilidi yalnız bu
   #    betiğin kopyalarını durdurur.
-  pending_migrations; _pending=$?
+  # `set -e` altında çıplak bir çağrının sıfırdan farklı dönüşü betiği sessizce
+  # bitirir; bekleyen migration (dönüş 1) tam da deploy'un var olma sebebidir.
+  _pending=0; pending_migrations || _pending=$?
   case "$_pending" in
     0) echo "  Bekleyen migration yok." ;;
     1) echo "  Bekleyen migration var." ;;
@@ -2352,8 +2353,8 @@ _rollback_deploy() {
 # "Belirlenemedi" burada "var" sayılır: yedek almanın maliyeti birkaç saniye,
 # almamanın maliyeti geri dönüşü olmayan bir migration.
 system_installed_quiet() {
-  installation_state
-  [ "$?" != 1 ]
+  _is=0; installation_state || _is=$?
+  [ "$_is" != 1 ]
 }
 
 current_release() {
@@ -2423,8 +2424,8 @@ ensure_postgres_up() {
 # başlamaktır; her yeni yazma da kurtarmayı zorlaştırır.
 system_serviceable() {
   ensure_postgres_up || return 2
-  _out=$(maintenance system status 2>&1)
-  case "$?" in
+  _ssrc=0; _out=$(maintenance system status 2>&1) || _ssrc=$?
+  case "$_ssrc" in
     0) return 0 ;;
     *) case "$_out" in
          *'"serviceable"'*) SYSTEM_STATUS_REASON=$(printf '%s' "$_out" | sed -n 's/.*"reason": *"\([^"]*\)".*/\1/p'); return 1 ;;
@@ -2435,8 +2436,8 @@ system_serviceable() {
 
 # Servisleri açmadan önceki son kapı. Koordinatör "hayır" diyorsa açma.
 gate_or_stay_down() {
-  system_serviceable
-  case "$?" in
+  _ss=0; system_serviceable || _ss=$?
+  case "$_ss" in
     0) return 0 ;;
     1)
       echo >&2
@@ -2700,8 +2701,8 @@ doctor() {
   # Yarıda kalmış bir işlem, sağlıklı görünen bir kurulumda bile trafiğin
   # açılmaması gereken tek nedendir.
   check "Sistem işlem durumu"
-  system_serviceable
-  case "$?" in
+  _ss=0; system_serviceable || _ss=$?
+  case "$_ss" in
     0) pass "bekleyen işlem yok" ;;
     1) fail "${SYSTEM_STATUS_REASON:-yarıda kalmış işlem} — ./deploy.sh system-status" ;;
     *) warn "sorulamadı (servisler kapalı olabilir)" ;;
@@ -2889,8 +2890,7 @@ restore() {
   # devam etmek, geri dönüşü olmayan bir işlemi geri dönüş noktası olmadan
   # yapmak demektir.
   _safety=""
-  installation_state
-  _state=$?
+  _state=0; installation_state || _state=$?
   case "$_state" in
     1)
       echo "Kurulumda veri yok; güvenlik yedeği gerekmiyor."
@@ -2932,8 +2932,9 @@ restore() {
   fi
   ensure_postgres_up || { echo "veritabanı servisi başlatılamadı." >&2; exit 1; }
 
-  maintenance backup restore - $force < "$file"
-  _rc=$?
+  # Çıkış kodu aşağıdaki dallarda ayrıştırılıyor; `set -e` altında çıplak
+  # çağrı başarısız olduğunda betik o dallara hiç ulaşmadan biterdi.
+  _rc=0; maintenance backup restore - $force < "$file" || _rc=$?
   case "$_rc" in
     0)
       # Motor "tamam" dedi; koordinatörün kaydı da tamam demeli. İkisi
@@ -3079,8 +3080,8 @@ prune_backups() {
   # öncesi yedek olabilir. Retention, kurtarma malzemesinin önüne geçmez.
   _keep_safety=0
   if [ "$_dry" = 0 ]; then
-    system_serviceable
-    case "$?" in
+    _ss=0; system_serviceable || _ss=$?
+    case "$_ss" in
       1)
         echo "Yarıda kalmış bir sistem işlemi var; hiçbir yedek silinmiyor." >&2
         echo "  ${SYSTEM_STATUS_REASON:-}" >&2
