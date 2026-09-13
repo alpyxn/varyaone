@@ -42,7 +42,7 @@ export const STATIC_ROUTES: RouteSpec[] = [
   { path: '/cari/hareketler', heading: 'Cari Hareketler' },
   { path: '/cari/tahsilatlar', heading: 'Tahsilatlar' },
   { path: '/cari/odemeler', heading: 'Ödemeler' },
-  { path: '/cari/vade-planlari', heading: 'Vade ve Taksit Planları' },
+  { path: '/cari/vade-planlari', heading: 'Taksit Planları' },
   { path: '/cari/yaslandirma', heading: 'Cari Yaşlandırma' },
 
   { path: '/stok/urunler', heading: 'Stok Kartları' },

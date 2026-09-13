@@ -1044,6 +1044,7 @@ type FinanceInvoiceOpenItem struct {
 	DocumentDate       pgtype.Date
 	DueDate            pgtype.Date
 	CreatedAt          pgtype.Timestamptz
+	ManualEntryID      pgtype.UUID
 }
 
 type FinanceInvoiceOpenItemReversal struct {
