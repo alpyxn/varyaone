@@ -1,5 +1,6 @@
 import type { Component } from 'svelte';
 import { isModuleEnabled, type ModuleCode } from '$lib/modules';
+import { isDesktopClient } from '$lib/desktop-client';
 import {
   Boxes,
   BriefcaseBusiness,
@@ -22,6 +23,8 @@ export type NavigationChild = {
   anyPermission?: string[];
   state?: NavigationState;
   detail?: string;
+  /** Shown only inside the Windows desktop client. */
+  desktopOnly?: boolean;
 };
 export type NavigationGroup = {
   label: string;
@@ -214,7 +217,8 @@ export const navigation: NavigationGroup[] = [
         permission: 'organization.module.manage'
       },
       { label: 'Güvenlik', href: '/ayarlar/guvenlik' },
-      { label: 'Yedekleme', href: '/ayarlar/yedekleme', permission: 'system.backup.manage' }
+      { label: 'Yedekleme', href: '/ayarlar/yedekleme', permission: 'system.backup.manage' },
+      { label: 'Program Ayarları', href: '/ayarlar/program', desktopOnly: true }
     ]
   }
 ];
@@ -228,6 +232,7 @@ export function canOpenNavigation(
   item: { permission?: string } | NavigationGroup | NavigationChild,
   permissions?: readonly string[]
 ) {
+  if ('desktopOnly' in item && item.desktopOnly && !isDesktopClient()) return false;
   const permission = 'permission' in item ? item.permission : undefined;
   const anyPermission = 'anyPermission' in item ? item.anyPermission : undefined;
   if (permissions === undefined) return true;

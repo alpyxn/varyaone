@@ -96,6 +96,7 @@ func main() {
 		setupTray(uintptr(view.Window()), hidden)
 	} else {
 		installDownloadPrompt(view)
+		installZoomMemory(view)
 		view.SetHtml(app.clientDocument())
 		subclassWindow(uintptr(view.Window()), instanceModeApp)
 	}
@@ -110,6 +111,9 @@ type serverInfo struct {
 type clientConfig struct {
 	LastURL string   `json:"lastURL"`
 	History []string `json:"history"`
+	// Zoom is this Windows user's display scale for the app window (1 = 100%).
+	// Zero means never changed.
+	Zoom float64 `json:"zoom,omitempty"`
 }
 
 type panelState struct {
@@ -145,6 +149,8 @@ func (a *clientApp) bind() {
 	_ = a.view.Bind("hostRepair", a.repairService)
 	_ = a.view.Bind("hostOpenLogs", a.openLogs)
 	_ = a.view.Bind("hostAlive", a.alive)
+	_ = a.view.Bind("hostGetZoom", a.getZoom)
+	_ = a.view.Bind("hostSetZoom", a.setZoom)
 }
 
 // alive is the served page answering "are you still there". It carries no
@@ -260,6 +266,9 @@ func (a *clientApp) connect(raw string) error {
 		a.view.Init(controlPanelButtonJS)
 		a.view.SetTitle("Varya One — " + target)
 		a.view.Navigate(target)
+		if saved := loadConfig().Zoom; saved > 0 {
+			applyZoom(a.view, clampZoom(saved))
+		}
 	})
 	a.watchOnce.Do(func() { go a.watchServer() })
 	return nil
@@ -659,15 +668,27 @@ func loadConfig() clientConfig {
 }
 
 func rememberURL(u string) {
-	c := loadConfig()
-	c.LastURL = u
-	hist := []string{u}
-	for _, h := range c.History {
-		if h != u && len(hist) < 8 {
-			hist = append(hist, h)
+	updateConfig(func(c *clientConfig) {
+		c.LastURL = u
+		hist := []string{u}
+		for _, h := range c.History {
+			if h != u && len(hist) < 8 {
+				hist = append(hist, h)
+			}
 		}
-	}
-	c.History = hist
+		c.History = hist
+	})
+}
+
+var configMu sync.Mutex
+
+// updateConfig reads client.json, applies change and writes it back, so the
+// remembered address and the display scale never overwrite each other.
+func updateConfig(change func(*clientConfig)) {
+	configMu.Lock()
+	defer configMu.Unlock()
+	c := loadConfig()
+	change(&c)
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return

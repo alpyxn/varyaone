@@ -152,7 +152,8 @@ export const STATIC_ROUTES: RouteSpec[] = [
   { path: '/ayarlar/doviz-kurlari', heading: 'Döviz kurları' },
   { path: '/ayarlar/e-posta', heading: 'E-posta Ayarları' },
   { path: '/ayarlar/e-posta-taslaklari', heading: 'E-posta taslakları' },
-  { path: '/ayarlar/yedekleme', heading: 'Yedekleme' }
+  { path: '/ayarlar/yedekleme', heading: 'Yedekleme' },
+  { path: '/ayarlar/program', heading: 'Program ayarları' }
 ];
 
 /** Reachable without a session. */
