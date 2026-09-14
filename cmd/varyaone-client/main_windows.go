@@ -85,13 +85,17 @@ func main() {
 	}
 	defer view.Destroy()
 
-	app := &clientApp{view: view, panelToken: newCapability(), clientToken: newCapability()}
+	app := &clientApp{
+		view: view, panelToken: newCapability(), clientToken: newCapability(),
+		aliveCh: make(chan struct{}, 1),
+	}
 	app.bind()
 
 	if panel {
 		view.SetHtml(app.panelDocument())
 		setupTray(uintptr(view.Window()), hidden)
 	} else {
+		installDownloadPrompt(view)
 		view.SetHtml(app.clientDocument())
 		subclassWindow(uintptr(view.Window()), instanceModeApp)
 	}
@@ -125,6 +129,8 @@ type clientApp struct {
 	current     string
 	panelToken  string
 	clientToken string
+	aliveCh     chan struct{}
+	watchOnce   sync.Once
 }
 
 func (a *clientApp) bind() {
@@ -138,6 +144,16 @@ func (a *clientApp) bind() {
 	_ = a.view.Bind("hostStop", a.stopService)
 	_ = a.view.Bind("hostRepair", a.repairService)
 	_ = a.view.Bind("hostOpenLogs", a.openLogs)
+	_ = a.view.Bind("hostAlive", a.alive)
+}
+
+// alive is the served page answering "are you still there". It carries no
+// capability because it does nothing but prove the page is running script.
+func (a *clientApp) alive() {
+	select {
+	case a.aliveCh <- struct{}{}:
+	default:
+	}
 }
 
 func newCapability() string {
@@ -245,7 +261,77 @@ func (a *clientApp) connect(raw string) error {
 		a.view.SetTitle("Varya One — " + target)
 		a.view.Navigate(target)
 	})
+	a.watchOnce.Do(func() { go a.watchServer() })
 	return nil
+}
+
+// watchServer brings the window back after the server has been away.
+//
+// When the server is unreachable while the window navigates (a restart after
+// a restore, a service restart, a reboot of the server PC) WebView2 shows its
+// own error page and stays there. That page runs none of our script, so
+// nothing on it will ever retry. The watch waits for the server to go down and
+// come back, then asks the page whether it is still alive; only a page that
+// does not answer is reloaded, so a working page with unsaved input is left
+// alone.
+//
+// If the server stays away (its address changed when its network restarted),
+// a dead page goes back to the connection screen, where discovery fills in the
+// address it is reachable at now.
+func (a *clientApp) watchServer() {
+	var downSince time.Time
+	for {
+		time.Sleep(3 * time.Second)
+		a.mu.Lock()
+		target := a.current
+		a.mu.Unlock()
+		if target == "" {
+			// On the connection screen; nothing to watch until a connect.
+			continue
+		}
+		if ping(target) != nil {
+			if downSince.IsZero() {
+				downSince = time.Now()
+			}
+			if time.Since(downSince) > serverGoneWait && !a.pageAnswers() {
+				downSince = time.Time{}
+				a.mu.Lock()
+				a.current = ""
+				a.mu.Unlock()
+				a.view.Dispatch(func() {
+					a.view.SetTitle("Varya One")
+					a.view.SetHtml(a.clientDocument())
+				})
+			}
+			continue
+		}
+		if downSince.IsZero() {
+			continue
+		}
+		downSince = time.Time{}
+		if a.pageAnswers() {
+			continue
+		}
+		a.view.Dispatch(func() { a.view.Navigate(target) })
+	}
+}
+
+// serverGoneWait is how long a dead page waits for its server before the
+// window returns to the connection screen.
+const serverGoneWait = 20 * time.Second
+
+func (a *clientApp) pageAnswers() bool {
+	select {
+	case <-a.aliveCh:
+	default:
+	}
+	a.view.Dispatch(func() { a.view.Eval("window.hostAlive && window.hostAlive()") })
+	select {
+	case <-a.aliveCh:
+		return true
+	case <-time.After(3 * time.Second):
+		return false
+	}
 }
 
 const controlPanelButtonJS = `(function(){

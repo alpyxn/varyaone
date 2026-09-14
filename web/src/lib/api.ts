@@ -141,6 +141,31 @@ async function requestCSRFRefresh(signal?: AbortSignal): Promise<string> {
   return payload.csrf_token;
 }
 
+/**
+ * The server's data generation as first seen by this page.
+ *
+ * A restore replaces the database under open pages. They keep the session and
+ * company they loaded at start, so lists come back empty until the page is
+ * loaded again — which used to mean restarting the desktop client. The server
+ * changes this value when that happens (and when it starts); a page that sees a
+ * new value reloads from the login screen, which forwards a still-valid session
+ * straight on.
+ */
+let seenGeneration: string | null = null;
+let reloadingForGeneration = false;
+
+function checkDataGeneration(response: Response): void {
+  const generation = response.headers?.get?.('x-varya-generation');
+  if (!generation || typeof window === 'undefined') return;
+  if (seenGeneration === null) {
+    seenGeneration = generation;
+    return;
+  }
+  if (generation === seenGeneration || reloadingForGeneration) return;
+  reloadingForGeneration = true;
+  window.location.href = '/giris';
+}
+
 let csrfRefreshPromise: Promise<string> | null = null;
 
 function refreshCSRF(signal?: AbortSignal): Promise<string> {
@@ -192,6 +217,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
     response = await send();
+    checkDataGeneration(response);
     if (!response.ok && method !== 'GET' && method !== 'HEAD') {
       const error = await responseError(response);
       if (error.code === 'CSRF_REJECTED') {

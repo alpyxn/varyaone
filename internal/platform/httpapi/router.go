@@ -319,6 +319,7 @@ func NewRouter(logger *slog.Logger, release string, readiness Readiness, options
 	requestScopePool.Store(configuration.scopePool)
 	router := chi.NewRouter()
 	router.Use(RequestContext)
+	router.Use(dataGenerationHeader)
 	router.Use(func(next http.Handler) http.Handler { return Recover(logger, next) })
 	router.Use(func(next http.Handler) http.Handler { return AccessLog(logger, next) })
 	// The 30s request timeout is right for the ordinary API and wrong for the

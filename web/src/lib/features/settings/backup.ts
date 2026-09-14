@@ -118,6 +118,29 @@ export async function operation(id: string): Promise<OperationRecord> {
   return ((await response.json()) as { operation: OperationRecord }).operation;
 }
 
+/**
+ * Resolve once the server answers again.
+ *
+ * After a restore the database underneath the server has been replaced, and on
+ * some installations the service restarts too. `/setup` is public and reads the
+ * database, so a successful answer means the restored system is serving.
+ */
+export async function waitForServer(signal?: AbortSignal): Promise<void> {
+  for (;;) {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    try {
+      const response = await fetch('/api/v1/setup', {
+        credentials: 'same-origin',
+        cache: 'no-store'
+      });
+      if (response.ok) return;
+    } catch {
+      /* server still away */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+
 /** Phases from which an installation may serve traffic again. */
 const RESOLVED_PHASES = ['COMMITTED', 'FAILED_UNCHANGED', 'ROLLED_BACK'];
 

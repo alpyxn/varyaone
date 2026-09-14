@@ -59,6 +59,8 @@ const forward: RequestHandler = async ({ request, params, fetch, getClientAddres
       // body, so dropping it here would throw away the one piece of
       // information that survives a lost response.
       'x-operation-id',
+      // Changes when a restore replaces the data; open pages reload on it.
+      'x-varya-generation',
       // A backup is the whole installation. No intermediary may cache it.
       'cache-control',
       'pragma',

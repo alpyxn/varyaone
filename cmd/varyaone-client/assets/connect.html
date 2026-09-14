@@ -89,8 +89,30 @@
     }
   }
 
+  // Set as soon as the user types, so discovery finishing late never replaces
+  // an address they are writing.
+  let userTyped = false;
+
   goBtn.addEventListener("click", connect);
+  addr.addEventListener("input", () => { userTyped = true; });
   addr.addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
+
+  function showFound(discovered) {
+    const box = $("found");
+    box.textContent = "Bulundu: ";
+    discovered.forEach((server, index) => {
+      if (index) box.append(document.createTextNode(" · "));
+      const link = document.createElement("a");
+      link.href = "#";
+      link.textContent = server.name || server.url;
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        addr.value = server.url;
+        connect();
+      });
+      box.append(link);
+    });
+  }
 
   (async function init() {
     let saved = { lastURL: "", history: [] };
@@ -100,26 +122,20 @@
       const o = document.createElement("option"); o.value = u; dl.appendChild(o);
     });
 
+    // Fill the box straight away; discovery takes a few seconds.
+    if (saved.lastURL) addr.value = saved.lastURL;
+
     let discovered = [];
     try { discovered = await window.hostDiscover(clientToken); } catch (e) {}
     if (discovered.length) {
-      addr.value = discovered[0].url;
-      const box = $("found");
-      box.textContent = "Bulundu: ";
-      discovered.forEach((server, index) => {
-        if (index) box.append(document.createTextNode(" · "));
-        const link = document.createElement("a");
-        link.href = "#";
-        link.textContent = server.name || server.url;
-        link.addEventListener("click", (event) => {
-          event.preventDefault();
-          addr.value = server.url;
-          connect();
-        });
-        box.append(link);
-      });
+      // The server's address can change when its network restarts (after a
+      // restore, a reboot). A last address that discovery no longer sees is
+      // stale, so the server that was actually found goes in the box.
+      const lastStillThere = discovered.some((server) => server.url === saved.lastURL);
+      if (!userTyped && !lastStillThere) addr.value = discovered[0].url;
+      showFound(discovered);
     } else if (saved.lastURL) {
-      addr.value = saved.lastURL;
+      // Nothing discovered: keep the last address in the box.
     } else {
       addr.value = "http://localhost:8080";
       // A clean Windows installation includes its own local server. Open it

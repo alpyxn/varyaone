@@ -24,6 +24,7 @@
     operationStatus,
     needsRecovery,
     newOperationKey,
+    waitForServer,
     type RestoreResult,
     type OperationRecord
   } from '$lib/features/settings/backup';
@@ -37,6 +38,8 @@
   let restoring = $state(false);
   let error = $state('');
   let result = $state<RestoreResult | null>(null);
+  /** Set once the restore is over and the page is on its way to the login screen. */
+  let reconnecting = $state<'restored' | 'disconnected' | null>(null);
 
   /**
    * The operation this page is following. It is loaded on mount as well as
@@ -111,13 +114,36 @@
     followOperation(id, (record) => (tracked = record), follower.signal)
       .then((record) => {
         if (needsRecovery(record)) recovery = record;
-        else if (record.phase === 'COMMITTED') error = '';
-        else if (record.error) error = record.error;
+        else if (record.phase === 'COMMITTED') {
+          error = '';
+          void returnToLogin('restored');
+        } else if (record.error) error = record.error;
       })
-      .catch(() => {
-        /* aborted, or the API went away mid-restore — the record survives */
+      .catch((cause) => {
+        // The API went away mid-restore, or the restored database no longer
+        // knows this session. Either way the record survives on the server;
+        // come back once it answers and let sign-in sort out the session.
+        if (cause instanceof DOMException && cause.name === 'AbortError') return;
+        void returnToLogin('disconnected');
       })
       .finally(() => (restoring = false));
+  }
+
+  /**
+   * Leave for the login screen once the server is serving again.
+   *
+   * The restore replaced the sessions along with everything else, so the page
+   * this user is looking at belongs to a session that may no longer exist. A
+   * full load (not a client-side goto) also drops every cached store.
+   */
+  async function returnToLogin(reason: 'restored' | 'disconnected') {
+    if (reconnecting) return;
+    reconnecting = reason;
+    follower?.abort();
+    await waitForServer();
+    // Long enough to read that it worked before the page changes under them.
+    if (reason === 'restored') await new Promise((resolve) => setTimeout(resolve, 1500));
+    window.location.href = '/giris';
   }
 
   function humanSize(bytes: number) {
@@ -151,8 +177,15 @@
       }
       result = outcome.result;
       files = [];
-      await refreshStatus();
+      void returnToLogin('restored');
     } catch (cause) {
+      if (!(cause instanceof APIRequestError)) {
+        // No response at all: the connection dropped while the server was
+        // switching databases. What happened is in the server's record, which
+        // this session may no longer be allowed to read.
+        void returnToLogin('disconnected');
+        return;
+      }
       error = errorMessage(cause, 'Geri yükleme başarısız oldu.');
       if (cause instanceof APIRequestError && INCONSISTENT_CODES.includes(cause.code)) {
         // Not a retryable failure: the database has already changed. Refresh
@@ -285,11 +318,18 @@
           <span>
             {new Date(result.restored_from).toLocaleString('tr-TR')} tarihli yedek geri yüklendi —
             {result.objects} dosya, şema sürümü {result.migration_version}.
-            {#if result.restart_required}
-              <br />Veriler doğru: uygulama geri yüklenen veritabanına kendiliğinden yeniden
-              bağlandı. İsterseniz sunucuda <code>./deploy.sh restart</code> ile servisleri tazeleyebilirsiniz.
+          </span>
+        </p>
+      {/if}
+      {#if reconnecting}
+        <p class="notice progress" role="status">
+          <RefreshCw size={15} class="spin" />
+          <span>
+            {#if reconnecting === 'restored'}
+              Geri yükleme tamamlandı. Giriş ekranına yönlendiriliyorsunuz…
+            {:else}
+              Sunucuyla bağlantı koptu. Sunucu hazır olunca giriş ekranına yönlendirileceksiniz…
             {/if}
-            <br />Oturumunuz sona ermiş olabilir; gerekirse yeniden giriş yapın.
           </span>
         </p>
       {/if}

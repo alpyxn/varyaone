@@ -254,6 +254,7 @@ func (h systemHandler) restore(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case restoreErr == nil:
+		bumpDataGeneration()
 		released = true
 		_ = lease.Release()
 		// Not "restart required": the swap terminated the pool's connections, so
@@ -271,6 +272,8 @@ func (h systemHandler) restore(w http.ResponseWriter, r *http.Request) {
 		return
 
 	case errors.Is(restoreErr, backup.ErrSystemInconsistent):
+		// The database did change, so open pages are stale either way.
+		bumpDataGeneration()
 		// Recorded as RECOVERY_REQUIRED, which keeps this installation out of
 		// service on its next start until an operator resolves it.
 		_ = lease.Fail(opctl.PhaseRecoveryRequired, restoreErr)
