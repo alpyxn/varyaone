@@ -112,7 +112,6 @@
           >
         </div>
       {/if}
-
     </article>
   </section>
 {/if}
@@ -166,14 +165,5 @@
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-  }
-  .notes {
-    display: grid;
-    gap: 6px;
-    margin: 4px 0 0;
-    padding-left: 18px;
-    color: var(--text-subtle);
-    font-size: 13px;
-    line-height: 1.5;
   }
 </style>
