@@ -113,19 +113,6 @@
         </div>
       {/if}
 
-      <ul class="notes">
-        <li>
-          Seçiminiz hemen uygulanır ve kaydedilir. Program bir sonraki açılışta aynı ölçekle başlar.
-        </li>
-        <li>
-          Ayar yalnızca <strong>bu bilgisayarda, bu Windows kullanıcısı için</strong> geçerlidir. Aynı
-          sunucuya bağlanan diğer bilgisayarları ve bu bilgisayardaki diğer kullanıcıları etkilemez.
-        </li>
-        <li>
-          Kısayol: Ctrl tuşunu basılı tutup fare tekerleğini çevirerek ya da Ctrl + / Ctrl − ile de
-          değiştirebilirsiniz. Bu şekilde yaptığınız değişiklik de hatırlanır.
-        </li>
-      </ul>
     </article>
   </section>
 {/if}
