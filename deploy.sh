@@ -1021,7 +1021,9 @@ nginx_has_foreign_default_server() {
 # "# configuration file <yol>:" satırlarıyla ayrılır; kendi dosyamıza ait blok
 # bu satırlara bakılarak atlanır.
 nginx_domain_already_served_elsewhere() {
-  _d=$(printf '%s' "$1" | sed 's/[.]/\\./g')
+  # Nokta `[.]` ile kaçırılır: awk `-v` ile gelen `\.` dizisini kendisi çözüp
+  # düz `.` yapar (ve uyarı basar); o zaman nokta her karakterle eşleşirdi.
+  _d=$(printf '%s' "$1" | sed 's/[.]/[.]/g')
   run_root nginx -T 2>/dev/null | awk -v ours="$NGINX_SITE_FILE" -v link="$NGINX_SITE_LINK" -v pat="$_d" '
     /^# configuration file / { file = $4; sub(/:$/, "", file); next }
     file == ours || file == link { next }
@@ -1112,8 +1114,25 @@ cert_live_dir() {
   fi
 }
 
+# nginx 1.25.1 ve sonrası HTTP/2'yi `listen ... http2` ile değil, server
+# başına `http2 on;` ile açar. Eski biçim aynı 443 soketini paylaşan, certbot'un
+# yazdığı düz `listen 443 ssl` bloklarıyla "protocol options redefined" uyarısı
+# verir. Sürüm okunamazsa eski biçim kullanılır: o her sürümde geçerlidir.
+nginx_http2_directive() {
+  _v=$(run_root nginx -v 2>&1 | sed -n 's|.*nginx/\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*|\1 \2 \3|p')
+  set -- $_v
+  if [ $# -eq 3 ] && { [ "$1" -gt 1 ] || { [ "$1" -eq 1 ] && { [ "$2" -gt 25 ] || { [ "$2" -eq 25 ] && [ "$3" -ge 1 ]; }; }; }; }; then
+    NGINX_H2_LISTEN=""
+    NGINX_H2_LINE="    http2 on;"
+  else
+    NGINX_H2_LISTEN=" http2"
+    NGINX_H2_LINE=""
+  fi
+}
+
 render_host_nginx_conf() {
   _domain=$1; _mode=$2; _www=${3:-0}; _catchall=${4:-0}
+  nginx_http2_directive
   CERT_DIR=$(cert_live_dir "$_domain")
   WEB_PORT=${WEB_PORT:-$(env_get VARYAONE_WEB_PORT)}; WEB_PORT=${WEB_PORT:-3000}
   mkdir -p "$NGINX_CONF_DIR"
@@ -1145,7 +1164,8 @@ render_host_nginx_conf() {
     if [ "$_www" = 1 ]; then
       cat <<EOF
 server {
-    listen 443 ssl http2;
+    listen 443 ssl${NGINX_H2_LISTEN};
+${NGINX_H2_LINE}
     server_name www.$_domain;
     ssl_certificate     $CERT_DIR/fullchain.pem;
     ssl_certificate_key $CERT_DIR/privkey.pem;
@@ -1158,7 +1178,8 @@ EOF
     # --- port 443: asıl uygulama -----------------------------------------
     cat <<EOF
 server {
-    listen 443 ssl http2;
+    listen 443 ssl${NGINX_H2_LISTEN};
+${NGINX_H2_LINE}
     server_name $_domain;
 
     ssl_certificate     $CERT_DIR/fullchain.pem;
@@ -1179,7 +1200,8 @@ EOF
 
 server {
     listen 80 default_server;
-    listen 443 ssl http2 default_server;
+    listen 443 ssl${NGINX_H2_LISTEN} default_server;
+${NGINX_H2_LINE}
     server_name _;
     ssl_certificate     /etc/nginx/varyaone-dummy.crt;
     ssl_certificate_key /etc/nginx/varyaone-dummy.key;
@@ -1431,8 +1453,16 @@ configure_host_nginx() {
   _probe_path="$CERTBOT_WEBROOT/.well-known/acme-challenge/$_probe"
   printf 'varyaone-acme-ok' | run_root tee "$_probe_path" >/dev/null 2>&1 || true
   run_root chmod 644 "$_probe_path" 2>/dev/null || true
-  _got=$(curl -s --max-time 5 -H "Host: $_domain" \
-    "http://127.0.0.1/.well-known/acme-challenge/$_probe" 2>/dev/null)
+  # `nginx -s reload` beklemez: yeni worker'lar ayağa kalkana kadar istekleri
+  # eski yapılandırma karşılar ve prob, bloğumuzu hiç görmeden başka bir
+  # sitenin yanıtını alır. Birkaç kez dene.
+  _got=""
+  for _try in 1 2 3 4 5; do
+    _got=$(curl -s --max-time 5 -H "Host: $_domain" \
+      "http://127.0.0.1/.well-known/acme-challenge/$_probe" 2>/dev/null)
+    [ "$_got" = "varyaone-acme-ok" ] && break
+    sleep 1
+  done
   run_root rm -f "$_probe_path" 2>/dev/null || true
   if [ "$_got" != "varyaone-acme-ok" ]; then
     echo "  ! nginx 80 portunda ACME dizinini beklendiği gibi sunmuyor" >&2
