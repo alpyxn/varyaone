@@ -1118,16 +1118,38 @@ cert_live_dir() {
 # başına `http2 on;` ile açar. Eski biçim aynı 443 soketini paylaşan, certbot'un
 # yazdığı düz `listen 443 ssl` bloklarıyla "protocol options redefined" uyarısı
 # verir. Sürüm okunamazsa eski biçim kullanılır: o her sürümde geçerlidir.
+#
+# Eski sürümlerde http2 soketin ayarıdır, server'ın değil: 443'ü paylaşan
+# bloklardan biri açarsa hepsinde açılır. Bizden önce yüklenen bir komşu blok
+# `http2`'siz dinliyorsa (certbot'un yazdığı düz `listen 443 ssl` gibi) bizim
+# `http2`'miz yine "protocol options redefined" uyarısı verir. O durumda yazmayız;
+# HTTP/2, komşulardan biri açıyorsa yine açık kalır (Ubuntu'nun 1.24 paketinde
+# ölçüldü).
 nginx_http2_directive() {
   _v=$(run_root nginx -v 2>&1 | sed -n 's|.*nginx/\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*|\1 \2 \3|p')
   set -- $_v
   if [ $# -eq 3 ] && { [ "$1" -gt 1 ] || { [ "$1" -eq 1 ] && { [ "$2" -gt 25 ] || { [ "$2" -eq 25 ] && [ "$3" -ge 1 ]; }; }; }; }; then
     NGINX_H2_LISTEN=""
     NGINX_H2_LINE="    http2 on;"
+  elif nginx_foreign_443_without_http2; then
+    NGINX_H2_LISTEN=""
+    NGINX_H2_LINE=""
   else
     NGINX_H2_LISTEN=" http2"
     NGINX_H2_LINE=""
   fi
+}
+
+# Başka bir dosyada `http2`'siz bir IPv4 443 dinleyicisi var mı? Bizim bloklar
+# yalnız IPv4'te dinlediği için [::]:443 ayrı sokettir ve sayılmaz.
+nginx_foreign_443_without_http2() {
+  run_root nginx -T 2>/dev/null | awk -v ours="$NGINX_SITE_FILE" -v link="$NGINX_SITE_LINK" '
+    /^# configuration file / { file = $4; sub(/:$/, "", file); next }
+    file == ours || file == link { next }
+    { line = $0; sub(/#.*/, "", line) }
+    line ~ /^[[:space:]]*listen[[:space:]]+([0-9.*]+:)?443([[:space:];]|$)/ && line !~ /[[:space:]]http2([[:space:];]|$)/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  '
 }
 
 render_host_nginx_conf() {
