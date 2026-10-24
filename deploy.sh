@@ -434,8 +434,9 @@ Komutlar:
   system-resolve "<not>"  Yarıda kalmış işlemi elle incelenip düzeltildi olarak
                           işaretle ve servisleri aç. Not zorunludur.
   prune-backups [--dry-run]
-                          Saklama süresini geçmiş .varya dosyalarını sil.
-                          En yeni birkaç yedek ve geri dönüş noktaları korunur.
+                          75 günden eski .varya dosyalarını sil (rebuild
+                          bunu başarılı her deploy sonunda kendisi yapar).
+                          En yeni 7 yedek her durumda korunur.
   recovery-bundle <dizin> Yeni bir sunucuda sıfırdan kurtarmak için gereken her
                           şeyi tek dizinde toplar: doğrulanmış yedek, kurulum
                           bilgisi, ana anahtar (ayrı dosyada) ve adımlar.
@@ -487,6 +488,20 @@ env_get() {
   # Çevreleyen tırnakları soy (Compose da soyar).
   _v=$(printf '%s' "$_v" | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/")
   printf '%s' "$_v"
+}
+
+# Sayısal bir saklama ayarı: önce ortam, sonra .env, yoksa varsayılan.
+# Betik .env'i kendisi yüklemez; yalnız ortama bakmak, .env'e yazılan ayarın
+# sessizce yok sayılması demekti. Sayı olmayan bir değer varsayılana düşer:
+# budama döngüsündeki `[ -le ]` karşılaştırması bozuk bir değerle bir şeyi
+# yanlışlıkla silmesin.
+env_number() {
+  eval "_n=\${$1:-}"
+  [ -n "$_n" ] || _n=$(env_get "$1")
+  case "$_n" in
+    ''|*[!0-9]*) printf '%s' "$2" ;;
+    *) printf '%s' "$_n" ;;
+  esac
 }
 
 # Tek anahtar yaz.
@@ -982,11 +997,20 @@ nginx_reload() {
     || run_root service nginx restart >/dev/null 2>&1
 }
 
-# nginx -T çıktısında bir default_server tanımı var mı? (kendi bloğumuz
-# configure_host_nginx tarafından bu kontrolden önce kaldırılır.)
+# nginx -T çıktısında BAŞKA bir dosyada default_server tanımı var mı?
+#
+# Kendi dosyamız, nginx_domain_already_served_elsewhere'deki gibi
+# "# configuration file" satırlarına bakılarak atlanır. Atlanmazsa ikinci bir
+# `install`, bir önceki kurulumun catch-all bloğunu yabancı sanıp onu
+# yeniden üretmeden bırakıyordu. Yorum satırları da sayılmaz.
 nginx_has_foreign_default_server() {
-  run_root nginx -T 2>/dev/null \
-    | grep -Eq '[[:space:]]default_server([[:space:];]|$)'
+  run_root nginx -T 2>/dev/null | awk -v ours="$NGINX_SITE_FILE" -v link="$NGINX_SITE_LINK" '
+    /^# configuration file / { file = $4; sub(/:$/, "", file); next }
+    file == ours || file == link { next }
+    /^[[:space:]]*#/ { next }
+    /[[:space:]]default_server([[:space:];]|$)/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  '
 }
 
 # Bu alan adı BAŞKA bir server bloğunda mı tanımlı?
@@ -2009,6 +2033,25 @@ prune_releases() {
   done
 }
 
+# Derleme önbelleğini buda. `rebuild` her seferinde sunucuda derler ve
+# BuildKit'in önbelleği kendiliğinden hiç küçülmez; yıllarca deploy edilen bir
+# sunucuda diski dolduran şey veri değil bu önbellek olur.
+#
+# Son birkaç günde kullanılan kayıtlar kalır: az önce biten derlemenin önbelleği
+# bir sonraki deploy'u hızlı tutar. Önbellek Docker'ın tamamına aittir, yani
+# aynı sunucudaki başka projelerin eski önbelleği de gider — bu yalnız onların
+# bir sonraki derlemesini yavaşlatır, hiçbir veri ya da image silinmez.
+BUILD_CACHE_KEEP_HOURS=$(env_number VARYAONE_BUILD_CACHE_KEEP_HOURS 72)
+
+prune_build_cache() {
+  if _bp=$($DK builder prune -f --filter "until=${BUILD_CACHE_KEEP_HOURS}h" 2>/dev/null); then
+    _freed=$(printf '%s\n' "$_bp" | sed -n 's/^Total:[[:space:]]*//p')
+    echo "  Derleme önbelleği temizlendi${_freed:+ ($_freed boşaldı)}."
+  else
+    echo "  Not: derleme önbelleği temizlenemedi; deploy etkilenmedi." >&2
+  fi
+}
+
 rebuild() {
   require_docker
   oplog_start rebuild "$@"
@@ -2175,6 +2218,12 @@ rebuild() {
 
   reload_nginx_soft
   prune_releases 10
+  prune_build_cache
+  # Deploy başarılı ve işlem kaydı kapandı; saklama süresini geçmiş yedekler
+  # burada silinir. Budamanın kendi korumaları (en yeni yedekler, yarıda kalmış
+  # işlem) aynen geçerli; başarısız olması deploy'u başarısız saymaz.
+  echo "  Eski yedekler temizleniyor..."
+  prune_backups || echo "  Not: yedek budaması çalışmadı; deploy etkilenmedi." >&2
   echo
   compose ps
   echo
@@ -3059,6 +3108,9 @@ system_promote() {
 # backups/ tek diskte büyür ve dolduğunda yeni yedek alınamaz — yani yedekleme,
 # tam da ihtiyaç duyulacağı dönemde sessizce durur.
 #
+# Başarılı her `rebuild` sonunda kendiliğinden, ya da `prune-backups` ile elle
+# çalışır.
+#
 # Budama kuralları, yedeklerin var olma nedenini bozmayacak biçimde:
 #   - Her zaman en yeni N tam yedek korunur.
 #   - Koruma penceresinden yeni hiçbir şey silinmez.
@@ -3066,9 +3118,11 @@ system_promote() {
 #     işlem varsa geri dönüş noktasıdır; ayrı ve daha uzun süre korunurlar.
 #   - Doğrulanamayan bir dosya silinmez: bozuk olabilir, ama elde kalan tek
 #     kopya da olabilir ve kararı operatör verir.
-BACKUP_KEEP=${VARYAONE_BACKUP_KEEP:-7}
-BACKUP_KEEP_DAYS=${VARYAONE_BACKUP_KEEP_DAYS:-30}
-BACKUP_KEEP_SAFETY_DAYS=${VARYAONE_BACKUP_KEEP_SAFETY_DAYS:-90}
+BACKUP_KEEP=$(env_number VARYAONE_BACKUP_KEEP 7)
+# ~2,5 ay. Geri dönüş noktaları da aynı süre: deploy sonrası otomatik budama
+# bunları da kapsadığı için ayrı, daha uzun bir pencere diski yine doldururdu.
+BACKUP_KEEP_DAYS=$(env_number VARYAONE_BACKUP_KEEP_DAYS 75)
+BACKUP_KEEP_SAFETY_DAYS=$(env_number VARYAONE_BACKUP_KEEP_SAFETY_DAYS 75)
 
 prune_backups() {
   _dry=0
