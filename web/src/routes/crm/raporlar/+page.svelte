@@ -222,25 +222,30 @@
         <p class="hint">
           Şu anki aday havuzu{canSeeAll && !userID ? '' : ' (sorumlu olduklarınız)'}.
         </p>
-        <table>
-          <tbody>
-            {#each ['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'DISQUALIFIED'] as status (status)}
-              <tr>
-                <td>{leadStatusLabel(status)}</td>
-                <td class="num">{report.lead_status.find((r) => r.key === status)?.count ?? 0}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-        {#if report.sources.length}
-          <h3>Bu aralıkta eklenen adayların kaynağı</h3>
+        <div class="table-scroll">
           <table>
             <tbody>
-              {#each report.sources as row (row.key)}
-                <tr><td>{row.key}</td><td class="num">{row.count}</td></tr>
+              {#each ['NEW', 'CONTACTED', 'QUALIFIED', 'CONVERTED', 'DISQUALIFIED'] as status (status)}
+                <tr>
+                  <td>{leadStatusLabel(status)}</td>
+                  <td class="num">{report.lead_status.find((r) => r.key === status)?.count ?? 0}</td
+                  >
+                </tr>
               {/each}
             </tbody>
           </table>
+        </div>
+        {#if report.sources.length}
+          <h3>Bu aralıkta eklenen adayların kaynağı</h3>
+          <div class="table-scroll">
+            <table>
+              <tbody>
+                {#each report.sources as row (row.key)}
+                  <tr><td>{row.key}</td><td class="num">{row.count}</td></tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
         {/if}
       </section>
     </div>
@@ -291,33 +296,35 @@
           Açık aşamalar bugünkü durumu, kapanan aşamalar seçili aralıkta kapananları gösterir.
           Beklenen = tutar × olasılık.
         </p>
-        <table>
-          <thead>
-            <tr
-              ><th>Aşama</th><th class="num">Fırsat</th><th class="num">Tutar</th><th class="num"
-                >Beklenen</th
-              ></tr
-            >
-          </thead>
-          <tbody>
-            {#each report.pipeline as row (row.stage_id + row.currency)}
-              <tr>
-                <td>
-                  {row.name}
-                  {#if row.kind !== 'OPEN'}<span class="muted">({stageKindLabel(row.kind)})</span
-                    >{/if}
-                </td>
-                <td class="num">{row.count}</td>
-                <td class="num">{row.currency ? formatMoney(row.amount, row.currency) : '—'}</td>
-                <td class="num">
-                  {row.currency && row.kind === 'OPEN'
-                    ? formatMoney(row.weighted, row.currency)
-                    : '—'}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr
+                ><th>Aşama</th><th class="num">Fırsat</th><th class="num">Tutar</th><th class="num"
+                  >Beklenen</th
+                ></tr
+              >
+            </thead>
+            <tbody>
+              {#each report.pipeline as row (row.stage_id + row.currency)}
+                <tr>
+                  <td>
+                    {row.name}
+                    {#if row.kind !== 'OPEN'}<span class="muted">({stageKindLabel(row.kind)})</span
+                      >{/if}
+                  </td>
+                  <td class="num">{row.count}</td>
+                  <td class="num">{row.currency ? formatMoney(row.amount, row.currency) : '—'}</td>
+                  <td class="num">
+                    {row.currency && row.kind === 'OPEN'
+                      ? formatMoney(row.weighted, row.currency)
+                      : '—'}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section class="panel" aria-labelledby="lost-title">
@@ -325,31 +332,36 @@
         {#if !report.lost_reasons.length}
           <p class="state">Bu aralıkta kaybedilen fırsat yok.</p>
         {:else}
-          <table>
-            <tbody>
-              {#each report.lost_reasons as row (row.key)}
-                <tr><td>{row.key}</td><td class="num">{row.count}</td></tr>
-              {/each}
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table>
+              <tbody>
+                {#each report.lost_reasons as row (row.key)}
+                  <tr><td>{row.key}</td><td class="num">{row.count}</td></tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
         {/if}
       </section>
     </div>
 
     <details class="panel data">
       <summary>Günlük aramalar tablosu</summary>
-      <table>
-        <thead><tr><th>Gün</th><th class="num">Arama</th><th class="num">Ulaşılan</th></tr></thead>
-        <tbody>
-          {#each days.filter((d) => d.calls) as day (day.day)}
-            <tr
-              ><td>{shortDay(day.day)}</td><td class="num">{day.calls}</td><td class="num"
-                >{day.reached}</td
-              ></tr
-            >
-          {/each}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Gün</th><th class="num">Arama</th><th class="num">Ulaşılan</th></tr></thead
+          >
+          <tbody>
+            {#each days.filter((d) => d.calls) as day (day.day)}
+              <tr
+                ><td>{shortDay(day.day)}</td><td class="num">{day.calls}</td><td class="num"
+                  >{day.reached}</td
+                ></tr
+              >
+            {/each}
+          </tbody>
+        </table>
+      </div>
     </details>
   {/if}
 {/if}
