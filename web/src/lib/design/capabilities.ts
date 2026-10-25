@@ -377,6 +377,32 @@ export const CAPABILITY_DOMAINS: CapabilityDomain[] = [
     ]
   },
   {
+    key: 'crm',
+    label: 'Müşteri ilişkileri',
+    icon: 'Headset',
+    blurb: 'Adaylar, aramalar, görüşme notları ve görevler.',
+    levels: [
+      {
+        key: 'view',
+        label: 'Görüntüleme',
+        phrase: 'kendi adaylarını ve görüşmelerini görüntüler',
+        grants: ['crm.read']
+      },
+      {
+        key: 'operate',
+        label: 'Arama ve takip',
+        phrase: 'aday ekler, arama sonucu ve görev kaydeder',
+        grants: ['crm.edit']
+      },
+      {
+        key: 'full',
+        label: 'Satış yöneticisi',
+        phrase: 'bütün ekibin adaylarını görür ve adayları dağıtır',
+        grants: ['crm.manage', 'crm.view_all']
+      }
+    ]
+  },
+  {
     key: 'reporting',
     label: 'Raporlar',
     icon: 'BarChart3',
@@ -615,6 +641,7 @@ export const ROLE_PRESETS: RolePreset[] = [
       party: 'operate',
       product: 'view',
       inventory: 'view',
+      crm: 'operate',
       reporting: 'view'
     }
   },
@@ -824,6 +851,10 @@ export const PERMISSION_LABELS: Record<string, string> = {
   'fixed_asset.read': 'Sabit kıymet görüntüleme',
   'fixed_asset.edit': 'Sabit kıymet düzenleme',
   'fixed_asset.assign': 'Sabit kıymet zimmetleme',
+  'crm.read': 'CRM adaylarını görüntüleme',
+  'crm.edit': 'Aday, arama ve görev kaydetme',
+  'crm.manage': 'Adayları ve görevleri başkasına atama',
+  'crm.view_all': 'Bütün ekibin CRM kayıtlarını görme',
   'reporting.read': 'Rapor çalıştırma',
   'security.user.read': 'Kullanıcı görüntüleme',
   'security.user.manage': 'Kullanıcı yönetimi',

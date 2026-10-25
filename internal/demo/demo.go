@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/alpyxn/varyaone/internal/crm"
 	"github.com/alpyxn/varyaone/internal/finance"
 	"github.com/alpyxn/varyaone/internal/fixedasset"
 	"github.com/alpyxn/varyaone/internal/hr/employee"
@@ -213,6 +214,7 @@ type services struct {
 	employee   *employee.Service
 	timesheet  *timesheet.Service
 	fixedAsset *fixedasset.Service
+	crm        *crm.Service
 }
 
 // services builds the domain services the seeder drives. No exchange-rate
@@ -229,6 +231,7 @@ func (r *Runner) services() (*services, error) {
 	}
 	return &services{
 		party:      party.NewService(pool),
+		crm:        crm.NewService(pool),
 		products:   products.NewService(pool),
 		finance:    financeService,
 		inventory:  inventoryService,

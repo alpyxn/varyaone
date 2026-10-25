@@ -58,6 +58,18 @@
       module: 'fixed_asset'
     },
     {
+      label: 'Fırsat Aşamaları',
+      href: '/crm/asamalar',
+      permission: 'crm.read',
+      module: 'crm'
+    },
+    {
+      label: 'Konuşma Metinleri',
+      href: '/crm/metinler',
+      permission: 'crm.read',
+      module: 'crm'
+    },
+    {
       label: 'Asgari Ücret',
       href: '/ayarlar/tanimlar/asgari-ucret',
       permission: 'hr.legislation.read',

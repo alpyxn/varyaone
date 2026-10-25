@@ -39,6 +39,7 @@
     type Warehouse
   } from '$lib/features/warehouses/types';
   import { getParty, listParties } from '$lib/features/parties/api';
+  import { linkOpportunityQuote } from '$lib/features/crm/api';
   import type { Party } from '$lib/features/parties/types';
   import { printDocument } from '$lib/design/print';
   import { printableCompany } from '$lib/features/settings/company-profile';
@@ -1102,10 +1103,35 @@
 
   async function loadSourceFromQuery() {
     if (!isNew) return;
+    await loadPartyFromQuery();
     const sourceID = page.url.searchParams.get('source_id')?.trim();
     const sourceResource = page.url.searchParams.get('source_resource')?.trim();
     if (!sourceID || !sourceResource || !sourceResources().includes(sourceResource)) return;
     await selectSourceAndLoad({ id: sourceID, title: 'Seçili kaynak belge', kind: sourceResource });
+  }
+
+  // A CRM opportunity opens a new quote with its cari already chosen.
+  async function loadPartyFromQuery() {
+    const partyID = page.url.searchParams.get('party_id')?.trim();
+    if (!isSales || !partyID || form.party) return;
+    try {
+      const party = await getParty(partyID);
+      selectParty({ id: party.id, title: party.display_name, subtitle: party.code });
+    } catch {
+      /* the user can still pick the cari by hand */
+    }
+  }
+
+  // Ties a quote created from a CRM opportunity back to it, so accepting the
+  // quote wins the opportunity.
+  async function linkCrmOpportunity(quoteID: string) {
+    const opportunityID = page.url.searchParams.get('crm_opportunity')?.trim();
+    if (!opportunityID || resource !== 'quotes' || !isSales) return;
+    try {
+      await linkOpportunityQuote(opportunityID, quoteID);
+    } catch (cause) {
+      toast.error(friendlyError(cause, 'Teklif fırsata bağlanamadı.'));
+    }
   }
 
   function selectParty(option: PartyOption) {
@@ -1253,6 +1279,7 @@
       );
       // Başarılı kayıt sonrası yerel taslak da silinir.
       drafts.clear();
+      if (isNew && result.id) await linkCrmOpportunity(result.id);
       if (isNew && result.id && !options.chain) {
         navigationInProgress = true;
         await goto(`${routePath}/${encodeURIComponent(result.id)}`);

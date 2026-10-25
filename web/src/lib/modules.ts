@@ -1,7 +1,7 @@
 // Feature module catalog - mirrors internal/modules/modules.go. Keep the codes
 // and order in sync with the backend.
 
-export type ModuleCode = 'preaccounting' | 'hr' | 'fixed_asset';
+export type ModuleCode = 'preaccounting' | 'hr' | 'fixed_asset' | 'crm';
 
 export type ModuleDefinition = {
   code: ModuleCode;
@@ -24,6 +24,11 @@ export const MODULE_CATALOG: readonly ModuleDefinition[] = [
     code: 'fixed_asset',
     name: 'Sabit Kıymetler',
     description: 'Sabit kıymet kartları, kategoriler ve zimmet takibi.'
+  },
+  {
+    code: 'crm',
+    name: 'Müşteri İlişkileri',
+    description: 'Adaylar, arama takibi, görüşme notları ve görevler.'
   }
 ];
 
@@ -31,6 +36,7 @@ export const MODULE_CATALOG: readonly ModuleDefinition[] = [
 export const MODULE_PATHS: readonly { prefix: string; module: ModuleCode }[] = [
   { prefix: '/personel', module: 'hr' },
   { prefix: '/sabit-kiymetler', module: 'fixed_asset' },
+  { prefix: '/crm', module: 'crm' },
   { prefix: '/cari', module: 'preaccounting' },
   { prefix: '/stok', module: 'preaccounting' },
   { prefix: '/satis', module: 'preaccounting' },

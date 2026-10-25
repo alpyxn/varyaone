@@ -106,6 +106,17 @@ export const STATIC_ROUTES: RouteSpec[] = [
 
   { path: '/sabit-kiymetler', heading: 'Sabit Kıymetler' },
 
+  { path: '/crm', lands: '/crm/adaylar', heading: 'Adaylar' },
+  { path: '/crm/adaylar', heading: 'Adaylar' },
+  { path: '/crm/gorevler', heading: 'Görevler' },
+  { path: '/crm/arama', heading: 'Arama' },
+  { path: '/crm/adaylar/ice-aktar', heading: 'Aday Aktarımı' },
+  { path: '/crm/listeler', heading: 'Arama Listeleri' },
+  { path: '/crm/metinler', heading: 'Konuşma Metinleri' },
+  { path: '/crm/firsatlar', heading: 'Fırsatlar' },
+  { path: '/crm/asamalar', heading: 'Fırsat Aşamaları' },
+  { path: '/crm/raporlar', heading: 'CRM Raporları' },
+
   {
     path: '/raporlar',
     lands: '/raporlar/vadesi-gecen-alacaklar',

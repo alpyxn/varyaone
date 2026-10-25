@@ -65,52 +65,135 @@ type xlsxRow struct {
 type xlsxSheet struct {
 	Rows []xlsxRow `xml:"sheetData>row"`
 }
+
+// xlsxSharedStrings reads plain strings (<si><t>) and rich-text strings, whose
+// text is split over formatting runs (<si><r><t>). Phonetic hints (<rPh>) are
+// not part of the cell text and are ignored.
 type xlsxSharedStrings struct {
 	Items []struct {
 		Text string `xml:"t"`
+		Runs []struct {
+			Text string `xml:"t"`
+		} `xml:"r"`
 	} `xml:"si"`
 }
 
-func readXLSX(payload []byte) (Table, error) {
+type xlsxWorkbook struct {
+	Sheets []struct {
+		Name string `xml:"name,attr"`
+		ID   string `xml:"http://schemas.openxmlformats.org/officeDocument/2006/relationships id,attr"`
+	} `xml:"sheets>sheet"`
+}
+
+type xlsxRelationships struct {
+	Items []struct {
+		ID     string `xml:"Id,attr"`
+		Target string `xml:"Target,attr"`
+	} `xml:"Relationship"`
+}
+
+type xlsxSheetRef struct{ name, path string }
+
+type xlsxArchive struct {
+	files  map[string]*zip.File
+	shared []string
+	sheets []xlsxSheetRef
+}
+
+// NamedTable is one worksheet of a workbook.
+type NamedTable struct {
+	Name  string
+	Table Table
+}
+
+func openXLSX(payload []byte) (xlsxArchive, error) {
 	archive, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
 	if err != nil {
-		return Table{}, fmt.Errorf("%w: XLSX arşivi geçersiz", ErrInvalidTable)
+		return xlsxArchive{}, fmt.Errorf("%w: XLSX arşivi geçersiz", ErrInvalidTable)
 	}
-	files := map[string]*zip.File{}
+	result := xlsxArchive{files: map[string]*zip.File{}}
 	for _, file := range archive.File {
 		if file.FileInfo().IsDir() || len(file.Name) > 200 || strings.Contains(file.Name, "..") {
 			continue
 		}
-		files[file.Name] = file
+		result.files[file.Name] = file
 	}
-	shared := []string{}
-	if file := files["xl/sharedStrings.xml"]; file != nil {
+	if file := result.files["xl/sharedStrings.xml"]; file != nil {
 		data, readErr := readZipMember(file, 64<<20)
 		if readErr != nil {
-			return Table{}, readErr
+			return xlsxArchive{}, readErr
 		}
 		var parsed xlsxSharedStrings
 		if err = xml.Unmarshal(data, &parsed); err != nil {
-			return Table{}, fmt.Errorf("%w: XLSX ortak metinleri geçersiz", ErrInvalidTable)
+			return xlsxArchive{}, fmt.Errorf("%w: XLSX ortak metinleri geçersiz", ErrInvalidTable)
 		}
 		for _, item := range parsed.Items {
-			shared = append(shared, item.Text)
+			text := item.Text
+			for _, run := range item.Runs {
+				text += run.Text
+			}
+			result.shared = append(result.shared, text)
 		}
 	}
-	sheet := files["xl/worksheets/sheet1.xml"]
+	result.sheets = workbookSheets(result.files)
+	return result, nil
+}
+
+// workbookSheets lists worksheets in the order the workbook shows them. The
+// part names (sheet1.xml, sheet2.xml …) need not follow that order, so the
+// workbook and its relationships are read; a workbook without them falls back
+// to sheet1.xml.
+func workbookSheets(files map[string]*zip.File) []xlsxSheetRef {
+	fallback := []xlsxSheetRef{{"Sayfa1", "xl/worksheets/sheet1.xml"}}
+	book, rels := files["xl/workbook.xml"], files["xl/_rels/workbook.xml.rels"]
+	if book == nil || rels == nil {
+		return fallback
+	}
+	bookData, err := readZipMember(book, 8<<20)
+	if err != nil {
+		return fallback
+	}
+	relData, err := readZipMember(rels, 8<<20)
+	if err != nil {
+		return fallback
+	}
+	var workbook xlsxWorkbook
+	var relationships xlsxRelationships
+	if xml.Unmarshal(bookData, &workbook) != nil || xml.Unmarshal(relData, &relationships) != nil {
+		return fallback
+	}
+	targets := map[string]string{}
+	for _, rel := range relationships.Items {
+		if strings.HasPrefix(rel.Target, "/") {
+			targets[rel.ID] = strings.TrimPrefix(rel.Target, "/")
+		} else {
+			targets[rel.ID] = "xl/" + rel.Target
+		}
+	}
+	sheets := []xlsxSheetRef{}
+	for _, sheet := range workbook.Sheets {
+		if target, ok := targets[sheet.ID]; ok && files[target] != nil {
+			sheets = append(sheets, xlsxSheetRef{sheet.Name, target})
+		}
+	}
+	if len(sheets) == 0 {
+		return fallback
+	}
+	return sheets
+}
+
+func (a xlsxArchive) records(path string) ([][]string, error) {
+	sheet := a.files[path]
 	if sheet == nil {
-		return Table{}, fmt.Errorf("%w: ilk XLSX çalışma sayfası bulunamadı", ErrInvalidTable)
+		return nil, fmt.Errorf("%w: ilk XLSX çalışma sayfası bulunamadı", ErrInvalidTable)
 	}
 	data, err := readZipMember(sheet, 128<<20)
 	if err != nil {
-		return Table{}, err
+		return nil, err
 	}
 	var parsed xlsxSheet
 	if err = xml.Unmarshal(data, &parsed); err != nil {
-		return Table{}, fmt.Errorf("%w: XLSX çalışma sayfası geçersiz", ErrInvalidTable)
-	}
-	if len(parsed.Rows) == 0 {
-		return Table{}, fmt.Errorf("%w: XLSX çalışma sayfası boş", ErrInvalidTable)
+		return nil, fmt.Errorf("%w: XLSX çalışma sayfası geçersiz", ErrInvalidTable)
 	}
 	width := 0
 	records := make([][]string, len(parsed.Rows))
@@ -119,7 +202,7 @@ func readXLSX(payload []byte) (Table, error) {
 		for _, cell := range row.Cells {
 			index := columnIndex(cell.Ref)
 			if index < 0 || index >= maxTableCells {
-				return Table{}, fmt.Errorf("%w: XLSX hücre başvurusu geçersiz", ErrInvalidTable)
+				return nil, fmt.Errorf("%w: XLSX hücre başvurusu geçersiz", ErrInvalidTable)
 			}
 			for len(values) <= index {
 				values = append(values, "")
@@ -130,10 +213,10 @@ func readXLSX(payload []byte) (Table, error) {
 			}
 			if cell.Type == "s" {
 				sharedIndex, parseErr := strconv.Atoi(cell.V)
-				if parseErr != nil || sharedIndex < 0 || sharedIndex >= len(shared) {
-					return Table{}, fmt.Errorf("%w: XLSX ortak metin dizini geçersiz", ErrInvalidTable)
+				if parseErr != nil || sharedIndex < 0 || sharedIndex >= len(a.shared) {
+					return nil, fmt.Errorf("%w: XLSX ortak metin dizini geçersiz", ErrInvalidTable)
 				}
-				value = shared[sharedIndex]
+				value = a.shared[sharedIndex]
 			}
 			values[index] = value
 		}
@@ -142,10 +225,129 @@ func readXLSX(payload []byte) (Table, error) {
 		}
 		records[rowIndex] = values
 	}
-	if width == 0 || int64(width)*int64(len(records)) > maxTableCells {
-		return Table{}, fmt.Errorf("%w: XLSX tablosu çok büyük", ErrInvalidTable)
+	if int64(width)*int64(len(records)) > maxTableCells {
+		return nil, fmt.Errorf("%w: XLSX tablosu çok büyük", ErrInvalidTable)
+	}
+	return records, nil
+}
+
+func readXLSX(payload []byte) (Table, error) {
+	archive, err := openXLSX(payload)
+	if err != nil {
+		return Table{}, err
+	}
+	records, err := archive.records(archive.sheets[0].path)
+	if err != nil {
+		return Table{}, err
+	}
+	width := 0
+	for _, record := range records {
+		if len(record) > width {
+			width = len(record)
+		}
+	}
+	if len(records) == 0 || width == 0 {
+		return Table{}, fmt.Errorf("%w: XLSX çalışma sayfası boş", ErrInvalidTable)
 	}
 	return NewTable(records[0], records[1:])
+}
+
+// ReadWorkbook returns every non-empty worksheet of an XLSX file (a CSV file
+// is a single sheet) for callers that let the user pick the sheet. It is
+// lenient about headers typed by hand: the first non-empty row is the header,
+// a blank heading becomes "Sütun N", a repeated one gets " (2)", and cells past
+// the last heading get a heading of their own.
+func ReadWorkbook(reader io.Reader, filename string) ([]NamedTable, error) {
+	payload, err := io.ReadAll(io.LimitReader(reader, (256<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > 256<<20 {
+		return nil, fmt.Errorf("%w: dosya çok büyük", ErrInvalidTable)
+	}
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("%w: dosya boş", ErrInvalidTable)
+	}
+	if !strings.EqualFold(filepath.Ext(filename), ".xlsx") && !bytes.HasPrefix(payload, []byte("PK\x03\x04")) {
+		csvReader := csv.NewReader(bytes.NewReader(bytes.TrimPrefix(payload, []byte("\xef\xbb\xbf"))))
+		csvReader.FieldsPerRecord = -1
+		csvReader.LazyQuotes = true
+		records, err := csvReader.ReadAll()
+		if err != nil {
+			return nil, fmt.Errorf("%w: CSV okunamadı", ErrInvalidTable)
+		}
+		table, ok := lenientTable(records)
+		if !ok {
+			return nil, fmt.Errorf("%w: dosya boş", ErrInvalidTable)
+		}
+		return []NamedTable{{Name: "CSV", Table: table}}, nil
+	}
+	archive, err := openXLSX(payload)
+	if err != nil {
+		return nil, err
+	}
+	sheets := []NamedTable{}
+	for _, sheet := range archive.sheets {
+		records, err := archive.records(sheet.path)
+		if err != nil {
+			return nil, err
+		}
+		if table, ok := lenientTable(records); ok {
+			sheets = append(sheets, NamedTable{Name: sheet.name, Table: table})
+		}
+	}
+	if len(sheets) == 0 {
+		return nil, fmt.Errorf("%w: dosyada dolu çalışma sayfası yok", ErrInvalidTable)
+	}
+	return sheets, nil
+}
+
+func lenientTable(records [][]string) (Table, bool) {
+	blank := func(record []string) bool {
+		for _, value := range record {
+			if strings.TrimSpace(value) != "" {
+				return false
+			}
+		}
+		return true
+	}
+	for len(records) > 0 && blank(records[0]) {
+		records = records[1:]
+	}
+	if len(records) == 0 {
+		return Table{}, false
+	}
+	width := 0
+	for _, record := range records {
+		if len(record) > width {
+			width = len(record)
+		}
+	}
+	headers := make([]string, width)
+	seen := map[string]bool{}
+	for index := range headers {
+		header := ""
+		if index < len(records[0]) {
+			header = strings.TrimSpace(records[0][index])
+		}
+		if normalizeHeader(header) == "" {
+			header = "Sütun " + strconv.Itoa(index+1)
+		}
+		unique := header
+		for n := 2; seen[normalizeHeader(unique)]; n++ {
+			unique = header + " (" + strconv.Itoa(n) + ")"
+		}
+		seen[normalizeHeader(unique)] = true
+		headers[index] = unique
+	}
+	rows := make([][]string, 0, len(records)-1)
+	for _, record := range records[1:] {
+		if !blank(record) {
+			rows = append(rows, record)
+		}
+	}
+	table, err := NewTable(headers, rows)
+	return table, err == nil
 }
 
 func readZipMember(file *zip.File, max int64) ([]byte, error) {

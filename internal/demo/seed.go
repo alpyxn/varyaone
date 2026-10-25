@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alpyxn/varyaone/internal/crm"
 	"github.com/alpyxn/varyaone/internal/finance"
 	"github.com/alpyxn/varyaone/internal/fixedasset"
 	"github.com/alpyxn/varyaone/internal/hr/employee"
@@ -177,6 +178,7 @@ func (r *Runner) seed(ctx context.Context, session identity.Session) error {
 		{"hr", r.seedHR},
 		{"timesheet", r.seedTimesheet},
 		{"fixed assets", r.seedFixedAssets},
+		{"crm", r.seedCRM},
 	}
 	for _, step := range steps {
 		if err = step.run(ctx, session, svc, built); err != nil {
@@ -438,4 +440,121 @@ func (r *Runner) seedFixedAssets(ctx context.Context, session identity.Session, 
 		}
 	}
 	return nil
+}
+
+// seedCRM fills the CRM module with a small cold-call campaign: a script, a
+// call list of leads in various states, a promised callback and a pipeline
+// with open, won and lost opportunities.
+func (r *Runner) seedCRM(ctx context.Context, session identity.Session, svc *services, built *catalogue) error {
+	script, err := svc.crm.CreateScript(ctx, session, crm.CallScriptInput{
+		Name: "Tanışma araması",
+		Body: "Merhaba, ben Varya Demo'dan arıyorum. Ofis ve depo ihtiyaçlarınız için kısa bir bilgi vermek istiyorum, uygun musunuz?\n\n" +
+			"İtirazlar:\n- \"Tedarikçimiz var\": Fiyat karşılaştırması için bir teklif bırakmamıza izin verir misiniz?\n" +
+			"- \"Şu an meşgulüm\": Ne zaman tekrar arayayım?",
+	}, seedMeta("crm-script"))
+	if err != nil {
+		return err
+	}
+	list, err := svc.crm.CreateCallList(ctx, session, crm.CallListInput{
+		Name: "Ekim tanışma aramaları", Description: "Fuar katılımcıları ve referanslar", ScriptID: script.ID,
+		RetryMinutes: 120, MaxAttempts: 4,
+	}, seedMeta("crm-list"))
+	if err != nil {
+		return err
+	}
+	leads := []crm.LeadInput{
+		{DisplayName: "Ege Ambalaj Ltd.", ContactName: "Selin Aydın", ContactTitle: "Satın alma müdürü", Phone: "0232 555 10 01", City: "İzmir", Sector: "Ambalaj", Source: "Fuar"},
+		{DisplayName: "Kuzey Lojistik A.Ş.", ContactName: "Murat Kaya", ContactTitle: "Operasyon müdürü", Phone: "0216 555 10 02", City: "İstanbul", Sector: "Lojistik", Source: "Fuar"},
+		{DisplayName: "Anadolu Gıda", ContactName: "Elif Şahin", Phone: "0312 555 10 03", City: "Ankara", Sector: "Gıda", Source: "Referans"},
+		{DisplayName: "Marmara Yapı", ContactName: "Can Öztürk", Phone: "0224 555 10 04", City: "Bursa", Sector: "İnşaat", Source: "Web sitesi"},
+		{DisplayName: "Akdeniz Otelcilik", ContactName: "Zeynep Arslan", ContactTitle: "Genel müdür yardımcısı", Phone: "0242 555 10 05", City: "Antalya", Sector: "Turizm", Source: "Fuar"},
+		{DisplayName: "Trakya Tekstil", ContactName: "Burak Demir", Phone: "0282 555 10 06", City: "Tekirdağ", Sector: "Tekstil", Source: "Soğuk arama listesi"},
+		{DisplayName: "Karadeniz Mobilya", Phone: "0462 555 10 07", City: "Trabzon", Sector: "Mobilya", Source: "Soğuk arama listesi"},
+		{DisplayName: "Başkent Eczanesi", ContactName: "Ayşe Yıldız", Phone: "0312 555 10 08", City: "Ankara", Sector: "Sağlık", Source: "Referans"},
+	}
+	created := make([]crm.Lead, 0, len(leads))
+	ids := make([]string, 0, len(leads))
+	for index, input := range leads {
+		lead, err := svc.crm.CreateLead(ctx, session, input, seedMeta(fmt.Sprintf("crm-lead-%d", index)))
+		if err != nil {
+			return err
+		}
+		created = append(created, lead)
+		ids = append(ids, lead.ID)
+	}
+	if _, err = svc.crm.AddLeads(ctx, session, list.ID, crm.AddLeadsInput{LeadIDs: ids}, seedMeta("crm-list-add")); err != nil {
+		return err
+	}
+	// Work through the first few leads the way a rep would from the call screen.
+	callback := time.Now().Add(26 * time.Hour).Truncate(time.Hour)
+	outcomes := []struct {
+		outcome  string
+		note     string
+		callback *time.Time
+	}{
+		{crm.OutcomeInterested, "Depo rafları için teklif istedi; 40 m² alan.", nil},
+		{crm.OutcomeMeetingSet, "Perşembe 14:00 ofislerinde toplantı.", nil},
+		{crm.OutcomeCallback, "Toplantıdaydı, yarın öğleden sonra aranacak.", &callback},
+		{crm.OutcomeNoAnswer, "", nil},
+		{crm.OutcomeNotInterested, "Yeni tedarikçi çalışmıyorlar.", nil},
+	}
+	for index, step := range outcomes {
+		next, err := svc.crm.ClaimNext(ctx, session, list.ID)
+		if err != nil {
+			return err
+		}
+		duration := 60 + index*45
+		if _, err = svc.crm.LogCall(ctx, session, next.Lead.ID, crm.CallInput{
+			CallListItemID: next.Item.ID, Outcome: step.outcome, Note: step.note,
+			DurationSeconds: &duration, CallbackAt: timeText(step.callback), RemindMinutes: 10,
+		}, seedMeta(fmt.Sprintf("crm-call-%d", index))); err != nil {
+			return err
+		}
+	}
+
+	stages, err := svc.crm.ListStages(ctx, session)
+	if err != nil {
+		return err
+	}
+	stageByName := map[string]crm.Stage{}
+	for _, stage := range stages {
+		stageByName[stage.Name] = stage
+	}
+	type plan struct {
+		input crm.OpportunityInput
+		stage string
+		lost  string
+	}
+	plans := []plan{
+		{input: crm.OpportunityInput{Title: "Depo raf sistemi", LeadID: created[0].ID, Amount: "185000", ExpectedCloseDate: r.day(20).Format("2006-01-02")}, stage: "Görüşme"},
+		{input: crm.OpportunityInput{Title: "Filo için ofis malzemesi", LeadID: created[1].ID, Amount: "64000", ExpectedCloseDate: r.day(35).Format("2006-01-02")}, stage: "Yeni"},
+	}
+	if len(built.customers) >= 3 {
+		plans = append(plans,
+			plan{input: crm.OpportunityInput{Title: "Yıllık sarf malzemesi anlaşması", PartyID: built.customers[0].ID, Amount: "420000", ExpectedCloseDate: r.day(14).Format("2006-01-02")}, stage: "Pazarlık"},
+			plan{input: crm.OpportunityInput{Title: "Yeni şube donanımı", PartyID: built.customers[1].ID, Amount: "96500"}, stage: "Kazanıldı"},
+			plan{input: crm.OpportunityInput{Title: "Kampanya baskıları", PartyID: built.customers[2].ID, Amount: "28000"}, stage: "Kaybedildi", lost: "Fiyat yüksek bulundu"},
+		)
+	}
+	for index, p := range plans {
+		opportunity, err := svc.crm.CreateOpportunity(ctx, session, p.input, seedMeta(fmt.Sprintf("crm-opportunity-%d", index)))
+		if err != nil {
+			return err
+		}
+		stage, ok := stageByName[p.stage]
+		if !ok || stage.ID == opportunity.StageID {
+			continue
+		}
+		if _, err = svc.crm.MoveStage(ctx, session, opportunity.ID, opportunity.Version, stage.ID, p.lost, seedMeta(fmt.Sprintf("crm-opportunity-move-%d", index))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func timeText(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }

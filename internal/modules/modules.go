@@ -18,6 +18,8 @@ const (
 	PreAccounting Code = "preaccounting"
 	// FixedAsset covers the fixed-asset register and assignments.
 	FixedAsset Code = "fixed_asset"
+	// CRM covers leads, cold-call work and the customer activity timeline.
+	CRM Code = "crm"
 )
 
 // Definition is a catalog entry describing a module to operators.
@@ -34,6 +36,7 @@ var Catalog = []Definition{
 	{Code: PreAccounting, Name: "Ön Muhasebe", Description: "Cari, stok, satış, alış, banka & kasa ve raporlar."},
 	{Code: HR, Name: "İnsan Kaynakları", Description: "Çalışanlar, izin, çalışma planı, puantaj, avanslar ve bordro."},
 	{Code: FixedAsset, Name: "Sabit Kıymetler", Description: "Sabit kıymet kartları, kategoriler ve zimmet takibi."},
+	{Code: CRM, Name: "Müşteri İlişkileri", Description: "Adaylar, arama takibi, görüşme notları ve görevler."},
 }
 
 // Valid reports whether code names a known module.

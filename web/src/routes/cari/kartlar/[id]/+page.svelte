@@ -10,6 +10,7 @@
   import PartyQuickActions from '$lib/features/parties/PartyQuickActions.svelte';
   import PartyBalancesCard from '$lib/features/parties/PartyBalancesCard.svelte';
   import PartyRecentActivity from '$lib/features/parties/PartyRecentActivity.svelte';
+  import PartyCrmPanel from '$lib/features/crm/PartyCrmPanel.svelte';
   import { ConfirmDialog } from '$lib/components/varya/confirm-dialog';
   import { activateParty, deactivateParty, getParty, updateParty } from '$lib/features/parties/api';
   import { api, type Session } from '$lib/api';
@@ -27,6 +28,9 @@
   let party = $state<Party>();
   let form = $state<PartyInput>();
   let permissions = $state<string[]>([]);
+  let modules = $state<string[]>([]);
+  let userID = $state('');
+  const crmVisible = $derived(modules.includes('crm') && permissions.includes('crm.read'));
   const canReadLedger = $derived(permissions.includes('party.ledger.read'));
   const detailBalance = $derived(
     party
@@ -63,6 +67,8 @@
       ]);
       party = loaded;
       permissions = session?.permissions ?? [];
+      modules = session?.modules ?? [];
+      userID = session?.user.id ?? '';
       form = partyToInput(party);
     } catch (cause) {
       error =
@@ -295,6 +301,11 @@
     </div>
   </div>
   <PartyRecentActivity partyID={party.id} canRead={canReadLedger} />
+  {#if crmVisible}
+    {#key party.id}
+      <PartyCrmPanel partyID={party.id} partyName={party.display_name} {permissions} {userID} />
+    {/key}
+  {/if}
 {/if}
 
 <style>

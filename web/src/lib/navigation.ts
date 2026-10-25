@@ -7,6 +7,7 @@ import {
   FileInput,
   FileOutput,
   Gauge,
+  Headset,
   Landmark,
   Package,
   Settings,
@@ -147,6 +148,20 @@ export const navigation: NavigationGroup[] = [
       { label: 'İzin Türleri', href: '/personel/izinler', permission: 'hr.leave.read' },
       { label: 'Puantaj', href: '/personel/puantaj', permission: 'hr.timesheet.read' },
       { label: 'Bordro', href: '/personel/bordro', permission: 'hr.payroll.read' }
+    ]
+  },
+  {
+    label: 'Müşteri İlişkileri',
+    icon: Headset,
+    state: 'active',
+    module: 'crm',
+    children: [
+      { label: 'Arama', href: '/crm/arama', permission: 'crm.edit' },
+      { label: 'Adaylar', href: '/crm/adaylar', permission: 'crm.read' },
+      { label: 'Arama Listeleri', href: '/crm/listeler', permission: 'crm.read' },
+      { label: 'Fırsatlar', href: '/crm/firsatlar', permission: 'crm.read' },
+      { label: 'Görevler', href: '/crm/gorevler', permission: 'crm.read' },
+      { label: 'Raporlar', href: '/crm/raporlar', permission: 'crm.read' }
     ]
   },
   {

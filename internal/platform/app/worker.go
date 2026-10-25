@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/alpyxn/varyaone/internal/crm"
 	"github.com/alpyxn/varyaone/internal/demo"
 	"github.com/alpyxn/varyaone/internal/exchange"
 	"github.com/alpyxn/varyaone/internal/platform/config"
@@ -47,7 +48,12 @@ func RunWorker(ctx context.Context, cfg config.Config, logger *slog.Logger, pool
 		logger.Info("demo mode enabled", "reset_interval", cfg.DemoResetInterval)
 		go runDemoResetScheduler(ctx, logger, demoRunner)
 	}
-	if err := outbox.New(pool, logger).Run(ctx); err != nil {
+	// An accepted sales quote wins the CRM opportunities linked to it.
+	crmService := crm.NewService(pool)
+	worker := outbox.New(pool, logger).Handle("commercial.sales_quote.accept", func(ctx context.Context, event outbox.Event) error {
+		return crmService.HandleQuoteAccepted(ctx, event.CompanyID, event.Payload)
+	})
+	if err := worker.Run(ctx); err != nil {
 		return fmt.Errorf("run outbox worker: %w", err)
 	}
 	logger.Info("worker stopped")

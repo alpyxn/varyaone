@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alpyxn/varyaone/internal/agenda"
+	"github.com/alpyxn/varyaone/internal/crm"
 	"github.com/alpyxn/varyaone/internal/dashboard"
 	"github.com/alpyxn/varyaone/internal/demo"
 	"github.com/alpyxn/varyaone/internal/email"
@@ -114,6 +115,7 @@ type routerOptions struct {
 	payrollPayment  *payrollpayment.Service
 	payrollDeliv    *delivery.Service
 	fixedAsset      *fixedasset.Service
+	crm             *crm.Service
 	systemBackup    backupEngine
 	opController    *opctl.Controller
 	controlDir      string
@@ -265,6 +267,10 @@ func WithFixedAsset(service *fixedasset.Service) RouterOption {
 	return func(options *routerOptions) { options.fixedAsset = service }
 }
 
+func WithCRM(service *crm.Service) RouterOption {
+	return func(options *routerOptions) { options.crm = service }
+}
+
 func WithHREmployment(service *employment.Service) RouterOption {
 	return func(options *routerOptions) { options.hrEmployment = service }
 }
@@ -410,6 +416,9 @@ func NewRouter(logger *slog.Logger, release string, readiness Readiness, options
 		}
 		if configuration.fixedAsset != nil {
 			mountFixedAssetRoutes(router, configuration.identity, configuration.fixedAsset)
+		}
+		if configuration.crm != nil {
+			mountCRMRoutes(router, configuration.identity, configuration.crm)
 		}
 		if configuration.hrEmployment != nil {
 			mountHREmploymentRoutes(router, configuration.identity, configuration.hrEmployment)

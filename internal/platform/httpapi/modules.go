@@ -25,6 +25,8 @@ var modulePathPrefixes = []struct {
 	// Fixed assets. /api/v1/hr/employees/{id}/asset-assignments is HR-gated by
 	// the earlier prefix, which is acceptable.
 	{"/api/v1/fixed-asset", modules.FixedAsset},
+	// CRM.
+	{"/api/v1/crm/", modules.CRM},
 	// Ön Muhasebe - cari.
 	{"/api/v1/parties", modules.PreAccounting},
 	{"/api/v1/party-movements", modules.PreAccounting},

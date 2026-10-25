@@ -128,6 +128,15 @@ export const DETAIL_SCENARIOS: DetailScenario[] = [
  * covered, and the inventory reports these separately from the working ones.
  */
 export const PENDING_DETAIL_ROUTES: Record<string, string> = {
+  '/crm/adaylar/[id]':
+    'fixture bekliyor: seed hiç CRM adayı oluşturmuyor. Aday ekleyen bir fixture eklenince ' +
+    'senaryo /crm/adaylar listesinden açılacak.',
+  '/crm/listeler/[id]':
+    'fixture bekliyor: seed hiç arama listesi oluşturmuyor. Liste ekleyen bir fixture eklenince ' +
+    'senaryo /crm/listeler sayfasından açılacak.',
+  '/crm/firsatlar/[id]':
+    'fixture bekliyor: seed hiç fırsat oluşturmuyor. Fırsat ekleyen bir fixture eklenince ' +
+    'senaryo /crm/firsatlar panosundan açılacak.',
   '/personel/avanslar/[id]':
     'fixture bekliyor: seed hiç avans vermiyor. Avans veren bir fixture eklenince ' +
     'senaryo /personel/avanslar listesinden açılacak.',

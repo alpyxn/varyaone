@@ -5161,6 +5161,104 @@ paths:
   /api/v1/hr/asset-assignments/{assignmentID}/return:
     parameters: [{ name: assignmentID, in: path, required: true, schema: { type: string, format: uuid } }]
     post: { operationId: returnFixedAsset, summary: Return an active assignment, x-varya-permission: fixed_asset.assign, responses: { "200": { description: Asset returned }, "409": { description: Assignment already returned } } }
+  /api/v1/crm/leads:
+    get: { operationId: listCRMLeads, summary: Leads visible to the caller (own and unassigned without crm.view_all); sort priority|newest|name, cursor is the last seen lead id; callable=true keeps leads a call flow may offer (never called or callback due), x-varya-permission: crm.read, responses: { "200": { description: Leads } } }
+    post: { operationId: createCRMLead, summary: Create a lead; a phone number already on another lead answers 409 unless allow_duplicate is set, x-varya-permission: crm.edit, responses: { "201": { description: Lead created }, "409": { description: Duplicate phone number with matches in details } } }
+  /api/v1/crm/leads/duplicates:
+    get: { operationId: findCRMLeadDuplicates, summary: Leads sharing a phone number, x-varya-permission: crm.read, responses: { "200": { description: Matching leads } } }
+  /api/v1/crm/leads/{leadID}:
+    parameters: [{ name: leadID, in: path, required: true, schema: { type: string, format: uuid } }]
+    get: { operationId: getCRMLead, summary: Read a lead, x-varya-permission: crm.read, responses: { "200": { description: Lead } } }
+    patch: { operationId: patchCRMLead, summary: Update a lead with If-Match, x-varya-permission: crm.edit, responses: { "200": { description: Lead updated }, "412": { description: Version conflict } } }
+  /api/v1/crm/leads/{leadID}/do-not-call:
+    parameters: [{ name: leadID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: setCRMLeadDoNotCall, summary: Mark a lead do-not-call (lifting it needs crm.manage), x-varya-permission: crm.edit, responses: { "200": { description: Lead updated } } }
+  /api/v1/crm/leads/{leadID}/calls:
+    parameters: [{ name: leadID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: logCRMCall, summary: Record a call outcome and move the lead forward; a callback opens a task, x-varya-permission: crm.edit, responses: { "201": { description: Call recorded }, "409": { description: Lead is do-not-call or converted } } }
+  /api/v1/crm/leads/{leadID}/activities:
+    parameters: [{ name: leadID, in: path, required: true, schema: { type: string, format: uuid } }]
+    get: { operationId: listCRMLeadActivities, summary: Lead timeline, x-varya-permission: crm.read, responses: { "200": { description: Activities } } }
+    post: { operationId: createCRMLeadActivity, summary: Add a note, meeting, e-mail or task to a lead, x-varya-permission: crm.edit, responses: { "201": { description: Activity created } } }
+  /api/v1/crm/parties/{partyID}/activities:
+    parameters: [{ name: partyID, in: path, required: true, schema: { type: string, format: uuid } }]
+    get: { operationId: listCRMPartyActivities, summary: Cari timeline, x-varya-permission: crm.read, responses: { "200": { description: Activities } } }
+    post: { operationId: createCRMPartyActivity, summary: Add a call, note, meeting, e-mail or task to a cari, x-varya-permission: crm.edit, responses: { "201": { description: Activity created } } }
+  /api/v1/crm/tasks:
+    get: { operationId: listCRMTasks, summary: Follow-up tasks (scope mine|all, state open|overdue|today|done), x-varya-permission: crm.read, responses: { "200": { description: Tasks } } }
+  /api/v1/crm/tasks/{activityID}/done:
+    parameters: [{ name: activityID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: setCRMTaskDone, summary: Complete or reopen a task, x-varya-permission: crm.edit, responses: { "200": { description: Task updated } } }
+  /api/v1/crm/members:
+    get: { operationId: listCRMMembers, summary: Active company users for owner and assignee pickers, x-varya-permission: crm.read, responses: { "200": { description: Members } } }
+  /api/v1/crm/leads/{leadID}/convert:
+    parameters: [{ name: leadID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: convertCRMLead, summary: Link a lead to the cari created from it and close it as converted, x-varya-permission: crm.edit, responses: { "200": { description: Lead converted }, "409": { description: Already converted } } }
+  /api/v1/crm/leads/import/preview:
+    post: { operationId: previewCRMLeadImport, summary: Parse a CSV/XLSX lead file (multipart fields file and optional sheet; the first sheet that looks like a lead list is chosen) and suggest a column mapping, x-varya-permission: crm.edit, responses: { "200": { description: Parsed rows } } }
+  /api/v1/crm/leads/import:
+    post: { operationId: importCRMLeads, summary: Create mapped lead rows in one transaction; known and do-not-call numbers are skipped, x-varya-permission: crm.edit, responses: { "200": { description: Import result } } }
+  /api/v1/crm/call-lists:
+    get: { operationId: listCRMCallLists, summary: Call lists with queue counts, x-varya-permission: crm.read, responses: { "200": { description: Call lists } } }
+    post: { operationId: createCRMCallList, summary: Create a call list, x-varya-permission: crm.manage, responses: { "201": { description: Call list created } } }
+  /api/v1/crm/call-lists/preview:
+    post: { operationId: previewCRMCallListSelection, summary: Count what a new list would receive for a lead filter (and why the rest would be left out), x-varya-permission: crm.manage, responses: { "200": { description: Added and left-out counts } } }
+  /api/v1/crm/call-lists/{listID}/archive:
+    parameters: [{ name: listID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: archiveCRMCallList, summary: Archive or restore a call list; archived lists cannot be called or filled, x-varya-permission: crm.manage, responses: { "200": { description: Call list } } }
+  /api/v1/crm/call-lists/{listID}:
+    parameters: [{ name: listID, in: path, required: true, schema: { type: string, format: uuid } }]
+    get: { operationId: getCRMCallList, summary: Read a call list, x-varya-permission: crm.read, responses: { "200": { description: Call list } } }
+    patch: { operationId: patchCRMCallList, summary: Update a call list with If-Match, x-varya-permission: crm.manage, responses: { "200": { description: Call list updated } } }
+    delete: { operationId: deleteCRMCallList, summary: Delete a call list and its queue; calls stay on the leads' timelines, x-varya-permission: crm.manage, responses: { "204": { description: Deleted } } }
+  /api/v1/crm/call-lists/{listID}/items:
+    parameters: [{ name: listID, in: path, required: true, schema: { type: string, format: uuid } }]
+    get: { operationId: listCRMCallListItems, summary: Queue entries in call order, x-varya-permission: crm.read, responses: { "200": { description: Items } } }
+    post: { operationId: addCRMCallListItems, summary: Queue leads by id or by lead filter (dry_run counts only). Leads waiting in another open list, ruled out, or already called without a due callback are left out unless include_called, x-varya-permission: crm.manage, responses: { "200": { description: Added and skipped counts } } }
+  /api/v1/crm/call-lists/{listID}/items/remove:
+    parameters: [{ name: listID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: removeCRMCallListItems, summary: Take items off the list, x-varya-permission: crm.manage, responses: { "200": { description: Removed count } } }
+  /api/v1/crm/call-lists/{listID}/next:
+    parameters: [{ name: listID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: claimNextCRMCall, summary: Claim the next lead to call (SKIP LOCKED, 15 minute hold); empty:true when nothing is due, x-varya-permission: crm.edit, responses: { "200": { description: Next call or empty } } }
+  /api/v1/crm/call-lists/{listID}/items/{itemID}/release:
+    parameters: [{ name: listID, in: path, required: true, schema: { type: string, format: uuid } }, { name: itemID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: releaseCRMCallItem, summary: Give back a held lead, or skip it for good, x-varya-permission: crm.edit, responses: { "204": { description: Released } } }
+  /api/v1/crm/scripts:
+    get: { operationId: listCRMScripts, summary: Call scripts, x-varya-permission: crm.read, responses: { "200": { description: Scripts } } }
+    post: { operationId: createCRMScript, summary: Create a call script, x-varya-permission: crm.manage, responses: { "201": { description: Script created } } }
+  /api/v1/crm/scripts/{scriptID}:
+    parameters: [{ name: scriptID, in: path, required: true, schema: { type: string, format: uuid } }]
+    patch: { operationId: patchCRMScript, summary: Update a call script with If-Match, x-varya-permission: crm.manage, responses: { "200": { description: Script updated } } }
+  /api/v1/crm/stages:
+    get: { operationId: listCRMStages, summary: Pipeline stages (defaults created on first use), x-varya-permission: crm.read, responses: { "200": { description: Stages } } }
+    post: { operationId: createCRMStage, summary: Create a pipeline stage, x-varya-permission: crm.manage, responses: { "201": { description: Stage created } } }
+  /api/v1/crm/stages/{stageID}:
+    parameters: [{ name: stageID, in: path, required: true, schema: { type: string, format: uuid } }]
+    patch: { operationId: patchCRMStage, summary: Rename, reorder or retire a stage with If-Match (kind is fixed), x-varya-permission: crm.manage, responses: { "200": { description: Stage updated } } }
+  /api/v1/crm/opportunities:
+    get: { operationId: listCRMOpportunities, summary: Opportunities (state open|won|lost|all), x-varya-permission: crm.read, responses: { "200": { description: Opportunities } } }
+    post: { operationId: createCRMOpportunity, summary: Create an opportunity on a lead or a cari, x-varya-permission: crm.edit, responses: { "201": { description: Opportunity created } } }
+  /api/v1/crm/opportunities/{opportunityID}:
+    parameters: [{ name: opportunityID, in: path, required: true, schema: { type: string, format: uuid } }]
+    get: { operationId: getCRMOpportunity, summary: Read an opportunity, x-varya-permission: crm.read, responses: { "200": { description: Opportunity } } }
+    patch: { operationId: patchCRMOpportunity, summary: Update an opportunity with If-Match, x-varya-permission: crm.edit, responses: { "200": { description: Opportunity updated } } }
+  /api/v1/crm/opportunities/{opportunityID}/stage:
+    parameters: [{ name: opportunityID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: moveCRMOpportunity, summary: Move to a stage with If-Match; LOST needs a reason, x-varya-permission: crm.edit, responses: { "200": { description: Opportunity moved } } }
+  /api/v1/crm/opportunities/{opportunityID}/quote:
+    parameters: [{ name: opportunityID, in: path, required: true, schema: { type: string, format: uuid } }]
+    post: { operationId: linkCRMOpportunityQuote, summary: Link a sales quote of the same cari; accepting it wins the opportunity, x-varya-permission: crm.edit, responses: { "200": { description: Quote linked }, "409": { description: Opportunity has no cari yet } } }
+  /api/v1/crm/opportunities/{opportunityID}/activities:
+    parameters: [{ name: opportunityID, in: path, required: true, schema: { type: string, format: uuid } }]
+    get: { operationId: listCRMOpportunityActivities, summary: Opportunity timeline, x-varya-permission: crm.read, responses: { "200": { description: Activities } } }
+    post: { operationId: createCRMOpportunityActivity, summary: Add a note, meeting, e-mail, task or (cari) call, x-varya-permission: crm.edit, responses: { "201": { description: Activity created } } }
+  /api/v1/crm/reminders:
+    get: { operationId: listCRMReminders, summary: My open tasks whose reminder has not rung, x-varya-permission: crm.read, responses: { "200": { description: Reminders } } }
+  /api/v1/crm/reminders/notified:
+    post: { operationId: markCRMRemindersNotified, summary: Record that reminders rang, x-varya-permission: crm.read, responses: { "204": { description: Recorded } } }
+  /api/v1/crm/reports:
+    get: { operationId: getCRMReport, summary: Call and pipeline report for from/to days (own work only without crm.view_all), x-varya-permission: crm.read, responses: { "200": { description: Report } } }
   /api/v1/hr/work-schedules:
     get: { operationId: listWorkSchedules, summary: List effective work schedule templates, x-varya-permission: hr.schedule.read, responses: { "200": { description: Work schedules } } }
     post: { operationId: createWorkSchedule, summary: Create a work schedule template, x-varya-permission: hr.schedule.edit, responses: { "201": { description: Work schedule created } } }

@@ -51,6 +51,13 @@ func New(pool *pgxpool.Pool, logger *slog.Logger) *Worker {
 	}
 }
 
+// Handle subscribes h to an event type. A handled type is processed by h even
+// when it is also a plain audit event; a handler error retries the event.
+func (w *Worker) Handle(eventType string, h Handler) *Worker {
+	w.handlers[eventType] = h
+	return w
+}
+
 func (w *Worker) Run(ctx context.Context) error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()

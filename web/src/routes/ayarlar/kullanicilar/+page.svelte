@@ -5,6 +5,7 @@
     BarChart3,
     Contact,
     HeartHandshake,
+    Headset,
     Package,
     Settings,
     ShoppingCart,
@@ -58,6 +59,7 @@
     purchase: Truck,
     finance: Wallet,
     hr: HeartHandshake,
+    crm: Headset,
     reporting: BarChart3,
     system: Settings
   };

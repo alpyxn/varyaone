@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alpyxn/varyaone/internal/modules"
 	"github.com/alpyxn/varyaone/internal/platform/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -38,7 +39,7 @@ func TestUserHasIndependentPermissionsAcrossCompanies(t *testing.T) {
 	if !session.HasPermission("security.token.manage") {
 		t.Fatal("setup administrator did not receive administrator permissions")
 	}
-	for _, code := range []string{"preaccounting", "hr", "fixed_asset"} {
+	for _, code := range modules.Codes() {
 		if !session.HasModule(code) {
 			t.Fatalf("setup without an explicit module list did not enable %s", code)
 		}
@@ -61,7 +62,7 @@ func TestUserHasIndependentPermissionsAcrossCompanies(t *testing.T) {
 		t.Fatalf("session did not reflect the disabled module: %v", reloaded.Modules)
 	}
 	states, err := service.ListModules(ctx, session)
-	if err != nil || len(states) != 3 {
+	if err != nil || len(states) != len(modules.Catalog) {
 		t.Fatalf("ListModules returned %d states, err=%v", len(states), err)
 	}
 	rows, err := pool.Query(ctx, `SELECT code, name FROM party_groups WHERE company_id=$1 ORDER BY code`, session.CurrentCompanyID)

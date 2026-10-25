@@ -19,6 +19,7 @@
   import FeedbackDialog from './FeedbackDialog.svelte';
   import Calculator from './Calculator.svelte';
   import Calendar from './Calendar.svelte';
+  import CrmReminders from '$lib/features/crm/CrmReminders.svelte';
   import ToolsMenu from './ToolsMenu.svelte';
   import CompanySwitcher from './CompanySwitcher.svelte';
   import GlobalSearch from './GlobalSearch.svelte';
@@ -146,6 +147,11 @@
         {/if}
         <Calculator bind:open={calculatorOpen} showTrigger={!phone.matches} />
         <Calendar bind:open={calendarOpen} showTrigger={!phone.matches} />
+        <CrmReminders
+          enabled={Boolean(
+            session?.modules.includes('crm') && session.permissions.includes('crm.read')
+          )}
+        />
         {#if phone.matches}
           <ToolsMenu
             onCalculator={() => (calculatorOpen = true)}
