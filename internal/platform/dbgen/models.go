@@ -497,6 +497,144 @@ type CompanySmtpSetting struct {
 	Version               int64
 }
 
+type CrmActivity struct {
+	ID              pgtype.UUID
+	CompanyID       pgtype.UUID
+	LeadID          pgtype.UUID
+	PartyID         pgtype.UUID
+	Kind            string
+	Subject         string
+	Body            string
+	CallOutcome     pgtype.Text
+	DurationSeconds pgtype.Int4
+	OccurredAt      pgtype.Timestamptz
+	DueAt           pgtype.Timestamptz
+	RemindMinutes   int32
+	NotifiedAt      pgtype.Timestamptz
+	DoneAt          pgtype.Timestamptz
+	AssignedUserID  pgtype.UUID
+	CreatedBy       pgtype.UUID
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	Version         int64
+	OpportunityID   pgtype.UUID
+	CallListID      pgtype.UUID
+}
+
+type CrmCallList struct {
+	ID           pgtype.UUID
+	CompanyID    pgtype.UUID
+	Name         string
+	Description  string
+	ScriptID     pgtype.UUID
+	RetryMinutes int32
+	MaxAttempts  int32
+	IsActive     bool
+	CreatedBy    pgtype.UUID
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	Version      int64
+}
+
+type CrmCallListItem struct {
+	ID           pgtype.UUID
+	CompanyID    pgtype.UUID
+	ListID       pgtype.UUID
+	LeadID       pgtype.UUID
+	Position     int64
+	Status       string
+	Attempts     int32
+	AvailableAt  pgtype.Timestamptz
+	LastOutcome  pgtype.Text
+	LastCalledAt pgtype.Timestamptz
+	ClaimedBy    pgtype.UUID
+	ClaimedUntil pgtype.Timestamptz
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
+type CrmCallScript struct {
+	ID        pgtype.UUID
+	CompanyID pgtype.UUID
+	Name      string
+	Body      string
+	IsActive  bool
+	CreatedBy pgtype.UUID
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+	Version   int64
+}
+
+type CrmLead struct {
+	ID               pgtype.UUID
+	CompanyID        pgtype.UUID
+	DisplayName      string
+	ContactName      string
+	ContactTitle     string
+	Phone            string
+	PhoneNormalized  string
+	Phone2           string
+	Email            string
+	City             string
+	District         string
+	Sector           string
+	Source           string
+	Notes            string
+	Status           string
+	OwnerUserID      pgtype.UUID
+	NextActionAt     pgtype.Timestamptz
+	DoNotCall        bool
+	DoNotCallReason  string
+	DoNotCallAt      pgtype.Timestamptz
+	PrivacyNoticeAt  pgtype.Timestamptz
+	CallAttempts     int32
+	LastCallAt       pgtype.Timestamptz
+	LastCallOutcome  pgtype.Text
+	ConvertedPartyID pgtype.UUID
+	ConvertedAt      pgtype.Timestamptz
+	CreatedBy        pgtype.UUID
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	Version          int64
+	Address          string
+	Website          string
+	Priority         string
+}
+
+type CrmOpportunity struct {
+	ID                pgtype.UUID
+	CompanyID         pgtype.UUID
+	Title             string
+	LeadID            pgtype.UUID
+	PartyID           pgtype.UUID
+	StageID           pgtype.UUID
+	Amount            pgtype.Numeric
+	Currency          string
+	ExpectedCloseDate pgtype.Date
+	OwnerUserID       pgtype.UUID
+	Notes             string
+	LostReason        string
+	QuoteID           pgtype.UUID
+	ClosedAt          pgtype.Timestamptz
+	CreatedBy         pgtype.UUID
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+	Version           int64
+}
+
+type CrmPipelineStage struct {
+	ID          pgtype.UUID
+	CompanyID   pgtype.UUID
+	Name        string
+	SortOrder   int32
+	Probability int32
+	Kind        string
+	IsActive    bool
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	Version     int64
+}
+
 type DemoState struct {
 	Singleton   bool
 	Status      string
